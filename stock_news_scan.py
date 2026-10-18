@@ -53,19 +53,34 @@ class ScanError(RuntimeError):
 # ---------------- 通用请求 ----------------
 
 def http_request(url: str, headers: dict | None = None, timeout: int = 15,
-                 encoding: str = "utf-8") -> tuple[int, str]:
-    req = urllib.request.Request(url, method="GET")
-    req.add_header("User-Agent", "Mozilla/5.0 (stock-scan/1.0; 14-platforms)")
-    if headers:
-        for k, v in headers.items():
-            req.add_header(k, v)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read().decode(encoding, "replace")
-    except urllib.error.HTTPError as e:
-        raise ScanError(f"HTTP {e.code}") from e
-    except Exception as e:
-        raise ScanError(f"网络失败 {e}") from e
+                 encoding: str = "utf-8", retries: int = 2) -> tuple[int, str]:
+    """带指数退避重试，避免瞬时 502/503 导致数据丢失。"""
+    import time
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(url, method="GET")
+            req.add_header("User-Agent", "Mozilla/5.0 (stock-scan/1.0; 14-platforms)")
+            if headers:
+                for k, v in headers.items():
+                    req.add_header(k, v)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return resp.status, resp.read().decode(encoding, "replace")
+            except urllib.error.HTTPError as e:
+                if e.code in (429, 502, 503, 504) and attempt < retries:
+                    time.sleep(0.5 * (2 ** attempt))
+                    continue
+                raise ScanError(f"HTTP {e.code}") from e
+        except ScanError:
+            raise
+        except Exception as e:
+            last_exc = e
+            if attempt < retries:
+                time.sleep(0.5 * (2 ** attempt))
+                continue
+            raise ScanError(f"网络失败 {e}") from e
+    raise ScanError(f"网络失败 {last_exc}") from last_exc
 
 
 # ---------------- 轻量情绪词典（与主脚本口径一致，独立实现避免交叉依赖） ----------------
@@ -272,7 +287,7 @@ class ScanPack:
     sectors: list[str] = field(default_factory=list)
     dyn_sectors: list[tuple[str, int]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
-    platforms_total: int = 17
+    platforms_total: int = 18  # 财经 7+DeepSeek 1 + 社媒 10 = 18
     agg: dict = field(default_factory=dict)
 
 
@@ -594,15 +609,33 @@ def fetch_xueqiu(q: StockQuery, timeout: int, now: datetime) -> list[ScanItem]:
     return items
 
 
+# ---------------- DeepSeek 搜索（AI 搜索引擎，新增） ----------------
+
+def fetch_deepseek_search_api(query: str, timeout: int, hours: int = DEFAULT_WINDOW_HOURS) -> list[dict]:
+    """DeepSeek API 作为搜索引擎，返回 [{title,url,ts}]，供财经快讯链路复用"""
+    try:
+        import deepseek_search
+    except ImportError as e:
+        raise ScanError(f"deepseek_search 模块不可用: {e}") from e
+    # deepseek_search 自带 hours 窗口
+    return deepseek_search.fetch_deepseek_search(query, timeout=timeout, hours=hours)
+
+
+def fetch_deepseek(query: str, timeout: int) -> list[dict]:
+    # 兼容旧签名，默认 48h，与 sentiment 因子一致
+    return fetch_deepseek_search_api(query, timeout, hours=48)
+
+
 # ---------------- 扫描主流程 ----------------
 
-FINANCE_FETCHERS = {                     # 财经 7 源中的 6 个 JSON/RSS 源
-    "Google新闻": fetch_google,          # 签名 (query, timeout)，其余为 (timeout)
+FINANCE_FETCHERS = {                     # 财经 7 源中的 6 个 JSON/RSS 源 + DeepSeek AI 搜索
+    "Google新闻": fetch_google,          # 签名 (query, timeout)，其余为 (timeout)；DeepSeek 同为 query
     "财联社 电报": fetch_cls,
     "华尔街见闻 快讯": fetch_wscn,
     "格隆汇 事件": fetch_gelonghui,
     "金十数据": fetch_jin10,
     "MKTNews 快讯": fetch_mktnews,
+    "DeepSeek 搜索": fetch_deepseek,     # 新增：DeepSeek API 作为智能搜索引擎
 }
 
 
@@ -622,13 +655,19 @@ def scan_stock(code: str = "", name: str = "", hours: int = DEFAULT_WINDOW_HOURS
     q = build_stock_query(code, name, extra_sectors)
     pack = ScanPack(hours=hours, code=q.code, name=q.name, sectors=q.sectors)
 
-    # ---- 财经 7 源（Google 之外的 6 源 + 雪球在下方专用流程）----
+    # ---- 财经 7+1 源（Google/DeepSeek 需要 query，其余仅 timeout；DeepSeek 带 hours）----
     for platform, fn in FINANCE_FETCHERS.items():
         try:
-            raw = fn(_needs(q), timeout) if platform == "Google新闻" else fn(timeout)
+            if platform in ("Google新闻", "DeepSeek 搜索"):
+                if platform == "DeepSeek 搜索":
+                    raw = fetch_deepseek_search_api(_needs(q), timeout, hours=hours)
+                else:
+                    raw = fn(_needs(q), timeout)
+            else:
+                raw = fn(timeout)
             d_items, s_items = classify_items(platform, raw, q, hours, now)
-            if platform == "Google新闻":
-                # RSS 检索本身即相关：窗口内未命中代码字面的条目仍计直接相关
+            if platform in ("Google新闻", "DeepSeek 搜索"):
+                # 检索本身即相关：窗口内未命中代码字面的条目仍计直接相关
                 known = {i.title for i in d_items} | {i.title for i in s_items}
                 for r in raw:
                     ts = r.get("ts")
@@ -716,14 +755,20 @@ def _related_sector_lines(pack: ScanPack) -> list[str]:
 
 
 def render_scan_md(pack: ScanPack) -> str:
-    """十七平台扫描的 Markdown 附录（直接相关 + 板块相关 + 有关板块 + 缺口）。"""
+    """多平台扫描的 Markdown 附录（直接相关 + 板块相关 + 有关板块 + 缺口），当前 18 平台含 DeepSeek 搜索。"""
     a = pack.agg
     subject = f"HK{pack.code} {pack.name}".strip() or "标的"
+    total = a.get('platforms_total', pack.platforms_total)
+    # 兼容旧称：18 平台为十八平台，17 为十七
+    label = f"{total}平台" if total != 18 else "十八平台"
+    # 若为 17 保持旧文案兼容
+    if total == 17:
+        label = "十七平台"
     lines = [
         "---",
-        f"🛰 **{subject} · {pack.hours}h 十七平台扫描**"
+        f"🛰 **{subject} · {pack.hours}h {label}扫描**"
         f"（直接 {a.get('n_direct', 0)} 条 / 板块相关 {a.get('n_sector', 0)} 条，"
-        f"命中 {a.get('platforms_hit', 0)}/{a.get('platforms_total', 17)} 平台）",
+        f"命中 {a.get('platforms_hit', 0)}/{total} 平台）",
         "",
         f"- **情绪概览**：利好 {a.get('pos', 0)} / 利空 {a.get('neg', 0)}"
         f" / 中性 {a.get('neu', 0)}，动量均值 {a.get('mean', 0):+.2f}",
@@ -759,13 +804,15 @@ def render_scan_md(pack: ScanPack) -> str:
 
 
 def scan_context(pack: ScanPack) -> str:
-    """给 AI 的紧凑上下文（本地已分组打标，AI 只做综合）。"""
+    """给 AI 的紧凑上下文（本地已分组打标，AI 只做综合），当前 18 平台含 DeepSeek。"""
     a = pack.agg
+    total = a.get('platforms_total', pack.platforms_total)
+    label = f"{total}平台" if total not in (17, 18) else ("十七平台" if total == 17 else "十八平台")
     lines = [
-        f"【量价舆情动量·十七平台扫描：{pack.code or '—'}/{pack.name or '—'}，"
+        f"【量价舆情动量·{label}扫描：{pack.code or '—'}/{pack.name or '—'}，"
         f"窗口 {pack.hours}h】",
         f"直接相关 {a.get('n_direct', 0)} 条 / 板块相关 {a.get('n_sector', 0)} 条，"
-        f"命中 {a.get('platforms_hit', 0)}/{a.get('platforms_total', 17)} 平台；"
+        f"命中 {a.get('platforms_hit', 0)}/{total} 平台；"
         f"情绪 利好{a.get('pos', 0)}/利空{a.get('neg', 0)}/中性{a.get('neu', 0)}，"
         f"动量均值 {a.get('mean', 0):+.2f}",
     ]
@@ -909,13 +956,13 @@ def demo_scan_pack(now: datetime | None = None) -> ScanPack:
         "mean": round(sum(i.score for i in all_items) / len(all_items), 2)
         if all_items else 0.0,
         "platforms_hit": len(set(pack.direct) | set(pack.sector_hits)),
-        "platforms_total": 17,
+        "platforms_total": 18,  # 含 DeepSeek 搜索
     }
     return pack
 
 
 def selftest_scan() -> int:
-    """离线自检：解析器 + 156h 窗口 + 代码/板块匹配 + 动态板块 + 渲染。"""
+    """离线自检：解析器 + 156h 窗口 + 代码/板块匹配 + 动态板块 + 渲染，当前 18 平台含 DeepSeek。"""
     fails = 0
 
     def check(name: str, cond: bool):
@@ -924,7 +971,7 @@ def selftest_scan() -> int:
         if not cond:
             fails += 1
 
-    print("🛰 十七平台股票扫描（离线自检，不触网）")
+    print("🛰 十八平台股票扫描（离线自检，不触网，含 DeepSeek 搜索）")
     now = datetime(2026, 8, 6, 12, 0, tzinfo=UTC)
     ts10h = int(now.timestamp() - 10 * 3600)
     ts160h = int(now.timestamp() - 160 * 3600)
@@ -1008,9 +1055,9 @@ def selftest_scan() -> int:
     a = pack.agg
     check("聚合：直接相关 ≥5 条", a["n_direct"] >= 5)
     check("聚合：板块相关 ≥2 条", a["n_sector"] >= 2)
-    check("聚合：命中平台 3<n≤17", 3 < a["platforms_hit"] <= 17)
+    check("聚合：命中平台 3<n≤18", 3 < a["platforms_hit"] <= 18)
     md = render_scan_md(pack)
-    check("渲染：标题含十七平台/156h", "十七平台扫描" in md and "156h" in md)
+    check("渲染：标题含平台扫描/156h", ("平台扫描" in md) and "156h" in md)
     check("渲染：含直接分组与有关板块",
           "直接相关新闻" in md and "有关板块" in md)
     check("渲染：动态板块提取「电商板块」",
@@ -1019,7 +1066,7 @@ def selftest_scan() -> int:
     ctx = scan_context(pack)
     check("AI 上下文含代码+板块行", "09988" in ctx and "有关板块" in ctx)
 
-    print(f"\n{'✅ 十七平台扫描自检通过' if fails == 0 else f'❌ {fails} 项失败'}")
+    print(f"\n{'✅ 十八平台扫描自检通过' if fails == 0 else f'❌ {fails} 项失败'}")
     return 1 if fails else 0
 
 

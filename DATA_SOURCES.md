@@ -1,8 +1,8 @@
 # 数据源配置说明
 
-> 最后更新：2026-08-14　·　覆盖 **17 个舆情数据源**（财经快讯 7 源 + 社媒热榜 10 源，2026-08-13 由 7 源扩充至 10 源：新增今日头条 / 百度 / B 站）+ **境外（美股）行情 4 源**（2026-08-14 新增，带交叉验证）。
+> 最后更新：2026-10-19　·　覆盖 **18 个舆情数据源**（财经快讯 8 源 = 原 7 + DeepSeek AI 搜索 1，2026-10-19 新增 + 社媒热榜 10 源，2026-08-13 由 7 源扩充至 10 源：新增今日头条 / 百度 / B 站）+ **境外（美股）行情 4 源**（2026-08-14 新增，带交叉验证）+ **AI 搜索 1 源**（DeepSeek，2026-10-19 新增，可作为搜索引擎独立使用）+ **国外机构一周研报 12 家**（2026-10-19 新增，168h 窗口，DeepSeek 主 + Google 备，独立栏目 `foreign_weekly`）。
 
-> 行情链路另计：港股/A股走 `hk_quote.py`（腾讯主→东财备→Yahoo 核验）；美股走 `us_quote.py`（腾讯美股/东财美股/Yahoo/Stooq 四源交叉验证，详见本文 二、3）。
+> 行情链路另计：港股/A股走 `hk_quote.py`（腾讯主→东财备→Yahoo 核验）；美股走 `us_quote.py`（腾讯美股/东财美股/Yahoo/Stooq 四源交叉验证，详见本文 二、3）；国外机构研报走 `foreign_institution_weekly.py`（DeepSeek AI 搜索主链路 + Google新闻 RSS 备用）。
 
 本项目全部采集器仅依赖 Python 标准库，任何单源失败只记入「数据缺口」，不中断整体流程。
 
@@ -25,7 +25,7 @@
 | `baidu` 🆕 | 百度实时热点 | `top.baidu.com/api/board?platform=wise&tab=realtime` | JSON | 移动端 UA + Referer | utf-8 |
 | `bilibili` 🆕 | B站热榜 | `api.bilibili.com/x/web-interface/popular` | JSON | UA + Referer | utf-8 |
 
-### 财经快讯 7 源（`stock_news_scan.py`，带时间戳的按 `--hours` 窗口过滤）
+### 财经快讯 8 源（`stock_news_scan.py`，带时间戳的按 `--hours` 窗口过滤，2026-10-19 新增 DeepSeek）
 
 | 源 | 协议 | 说明 |
 |---|---|---|
@@ -36,6 +36,42 @@
 | 金十数据 | JSON（JS 壳剥离） | 同上 |
 | MKTNews 快讯 | JSON | 同上 |
 | 雪球热门股票 | JSON | Cookie 预热（`xueqiu.com/hq`）；实时热榜，标记「实时」不过滤 |
+| DeepSeek 搜索 🆕 | Chat Completions JSON | **AI 搜索引擎**：`deepseek-chat` 按关键词检索，返回 JSON 数组，带指数退避重试；无 Key 时记缺口不中断 |
+
+### AI 搜索 1 源（`deepseek_search.py`，2026-10-19 新增，可独立作为搜索引擎）
+
+| 键名 | 源名 | 端点 | 协议 | 鉴权/前置 | 编码 |
+|---|---|---|---|---|---|
+| `deepseek` | DeepSeek 搜索 | `api.deepseek.com/chat/completions` | JSON (Chat) | `DEEPSEEK_API_KEY` Bearer | utf-8 |
+
+- **角色**：智能搜索引擎，输入任意关键词/股票代码，返回结构化新闻列表（标题/链接/摘要/来源/时间）
+- **提示词**：强制 JSON 数组输出，兼容 ```json 围栏与前后解释文字，自动提取 `[`…`]` 区间
+- **容错**：429/502/503/504 指数退避重试 2 次；无 Key 时抛错由上层记“跳过”；空数组视为未命中而非错误
+- **接入**：`stock_news_scan.py` 自动注册为第 8 财经源，`pushplus_deepseek.py` 作为 feedscan 第 13 源，`source_check_db.py` 离线/在线均覆盖
+
+### 国外专业投资机构一周研报 12 家（`foreign_institution_weekly.py`，2026-10-19 新增，独立栏目 `foreign_weekly`）
+
+| 键名 | 机构名 | 别名 | 角色 | 搜索链路 |
+|---|---|---|---|---|
+| `goldman` | 高盛 Goldman Sachs | Goldman Sachs / 高盛 | 主流投行 | DeepSeek 主 + Google RSS 备 |
+| `morgan_stanley` | 摩根士丹利 | Morgan Stanley / 大摩 | 全球策略 | DeepSeek 主 + Google RSS 备 |
+| `jpmorgan` | 摩根大通 | JPMorgan / 小摩 | 宏观/新兴 | DeepSeek 主 + Google RSS 备 |
+| `bofa` | 美银 BofA Securities | BofA / 美银 | 资金流/量化 | DeepSeek 主 + Google RSS 备 |
+| `citi` | 花旗 Citi Research | Citi / 花旗 | 全球宏观 | DeepSeek 主 + Google RSS 备 |
+| `ubs` | 瑞银 UBS | UBS / 瑞银 | 全球配置 | DeepSeek 主 + Google RSS 备 |
+| `deutsche` | 德银 Deutsche Bank | Deutsche Bank | 欧股/信用 | DeepSeek 主 + Google RSS 备 |
+| `barclays` | 巴克莱 Barclays | Barclays / 巴克莱 | 英股/策略 | DeepSeek 主 + Google RSS 备 |
+| `hsbc` | 汇丰 HSBC | HSBC / 汇丰 | 亚洲/利率 | DeepSeek 主 + Google RSS 备 |
+| `morningstar` | 晨星 Morningstar | Morningstar | 估值/ETF | DeepSeek 主 + Google RSS 备 |
+| `bernstein` | 伯恩斯坦 Bernstein | Bernstein | 科技/中概 | DeepSeek 主 + Google RSS 备 |
+| `nomura` | 野村 Nomura | Nomura / 野村 | 日本/亚洲 | DeepSeek 主 + Google RSS 备 |
+
+- **窗口**：默认 168h（一周），支持 `--hours 168` 自定义
+- **采集**：每机构单查询 `"{机构别名} {topic} research report weekly rating target"`，DeepSeek 优先（需 `DEEPSEEK_API_KEY`），Google RSS 备用，失败记缺口不中断；无 Key 时前 2 家连续失败快速降级演示包
+- **打标**：`_score_text` 按利好/利空关键词映射情绪（利好/中性/利空）与分数（-1..+1），`_mk_item` 提取评级关键词（增持/买入/中性/减持/卖出/上调/下调/overweight/underweight 等）
+- **渲染**：`render_foreign_weekly_rule` 表格（机构|评级|标题|来源|时间）+ 汇总（篇数/机构/情绪均值→偏多/偏空）+ 附录明细（标题+链接+摘要）；`foreign_weekly_context` 供 AI 模板上下文
+- **自检**：`python foreign_institution_weekly.py --selftest` 7 项离线检查（机构清单/别名/样本/情绪/渲染/上下文/附录），`pushplus_deepseek.py --template foreign_weekly --ai-provider rule --dry-run` 可验证推送管线
+- **推送**：已注册到 `pushplus_deepseek.py` TEMPLATES（共 24 模板），标题“国外机构一周研报”，`build_messages` 中 prompt 要求 12机构表格+主线+板块+评级调整+风险+下周关注，`gen_by_rule` 走 `demo_pack` 离线样本，AI 路径走 168h 上下文；大屏 `server_dashboard.py` 新增 `/api/foreign_weekly` 与前端独立板块
 
 ### 境外（美股）行情 4 源（`us_quote.py`，2026-08-14 新增）
 
@@ -90,14 +126,17 @@ SQLite 持久化每次检查：**运行台账 + 逐源明细 + 违例字段**，
 ### 命令
 
 ```bash
-python source_check_db.py               # 离线校验 14 源（社媒10样本 + 境外行情4样本），不落网
-python source_check_db.py --live        # 真抓取：社媒 10 源 + 境外行情 4 源 + 财经快讯 7 源
+python source_check_db.py               # 离线校验 15 源（社媒10样本 + 境外行情4样本 + DeepSeek 1样本），不落网
+python source_check_db.py --live        # 真抓取：社媒 10 源 + 境外行情 4 源 + 财经快讯 8 源（含 DeepSeek）+ AI搜索 1 源
 python source_check_db.py --report      # 打印最近一次运行报告（不重新检查）
 python source_check_db.py --history toutiao   # 单源历史记录（报错率/延迟趋势）
 python source_check_db.py --history us_stooq  # 境外行情源键名带 us_ 前缀
+python source_check_db.py --history deepseek  # DeepSeek 搜索历史
 python source_check_db.py --db my.db    # 指定库文件（默认 SOURCE_CHECK_DB 或 ./source_check.db）
-python source_check_db.py --only zhihu,baidu --live   # 只检查指定源
+python source_check_db.py --only zhihu,baidu,deepseek --live   # 只检查指定源
 python source_check_db.py --selftest    # 内存库自检（不落盘不触网）
+python deepseek_search.py --selftest    # DeepSeek 搜索引擎自检
+python deepseek_search.py --query "阿里巴巴 09988" --hours 48 --json  # 在线搜索
 ```
 
 ### 状态与校验规则

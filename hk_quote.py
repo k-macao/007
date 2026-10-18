@@ -60,6 +60,46 @@ TIMEOUT = _env_float("HK_QUOTE_TIMEOUT", 3.5)   # 单次请求超时（秒）
 CACHE_TTL = _env_float("HK_QUOTE_TTL", 10)      # 正缓存（秒）
 NEG_CACHE_TTL = _env_float("HK_QUOTE_NEG_TTL", 60)  # 失败负缓存（秒），避免离线反复请求
 
+# 文件缓存：避免数据丢失，成功后落盘，失败时读取最近一次成功结果（标记 stale）
+FILE_CACHE_DIR = os.environ.get(
+    "HK_QUOTE_CACHE_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", "quote_cache"))
+FILE_CACHE_ENABLED = os.environ.get("HK_QUOTE_FILE_CACHE", "1") not in ("", "0", "false", "False")
+FILE_CACHE_TTL = _env_float("HK_QUOTE_FILE_TTL", 3600)  # 文件缓存有效期（秒），默认1小时内视为可用
+
+def _save_file_cache(market: str, code: str, quote: dict) -> None:
+    if not FILE_CACHE_ENABLED:
+        return
+    try:
+        os.makedirs(FILE_CACHE_DIR, exist_ok=True)
+        path = os.path.join(FILE_CACHE_DIR, f"{market}_{code}.json")
+        # 仅保存必要字段 + 时间戳，避免过大
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(quote, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def _load_file_cache(market: str, code: str) -> dict | None:
+    if not FILE_CACHE_ENABLED:
+        return None
+    try:
+        path = os.path.join(FILE_CACHE_DIR, f"{market}_{code}.json")
+        if not os.path.exists(path):
+            return None
+        mtime = os.path.getmtime(path)
+        age = time.time() - mtime
+        # 超过 FILE_CACHE_TTL 仍返回，但标记过期，由调用方决定是否使用
+        with open(path, "r", encoding="utf-8") as f:
+            q = json.load(f)
+        q = dict(q)
+        q["stale"] = age > FILE_CACHE_TTL
+        q["stale_age_s"] = int(age)
+        q["source_label"] = (q.get("source_label") or q.get("source") or "") + (" (文件缓存)" if not q.get("stale") else " (文件缓存-过期)")
+        q["from_file_cache"] = True
+        return q
+    except Exception:
+        return None
+
 # 默认数据源链路：腾讯财经(主) → 东方财富(备) → 静态兜底
 # 可用环境变量 HK_QUOTE_CHAIN=tencent,eastmoney,yahoo 覆盖
 DEFAULT_CHAIN = tuple(
@@ -100,20 +140,31 @@ def now_str() -> str:
 
 
 def _http_get(url: str, encoding: str = "utf-8", timeout: float = TIMEOUT,
-              headers: dict | None = None) -> tuple[str, float]:
-    """GET 文本内容，返回 (text, 耗时秒)。失败抛异常。"""
+              headers: dict | None = None, retries: int = 2) -> tuple[str, float]:
+    """GET 文本内容，返回 (text, 耗时秒)。失败抛异常，带指数退避重试避免瞬时丢失。"""
     t0 = time.monotonic()
     hdrs = {"User-Agent": UA, "Accept": "*/*"}
     if headers:
         hdrs.update(headers)
-    req = urllib.request.Request(url, headers=hdrs)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read()
-    try:
-        text = raw.decode(encoding, errors="replace")
-    except LookupError:
-        text = raw.decode("utf-8", errors="replace")
-    return text, time.monotonic() - t0
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(url, headers=hdrs)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+            try:
+                text = raw.decode(encoding, errors="replace")
+            except LookupError:
+                text = raw.decode("utf-8", errors="replace")
+            return text, time.monotonic() - t0
+        except Exception as e:
+            last_exc = e
+            # 仅对可重试错误退避
+            if attempt < retries:
+                time.sleep(0.4 * (2 ** attempt))
+                continue
+            raise
+    raise last_exc  # type: ignore
 
 
 def normalize_code(code: str) -> str:
@@ -515,7 +566,17 @@ def fetch_quote(code: str, chain: tuple | list | None = None,
     if quote:
         quote = dict(quote)
         quote["error"] = None
-    return quote
+        # 成功落盘，避免数据丢失
+        _save_file_cache(market, code, quote)
+        return quote
+
+    # 全部链路失败 → 尝试文件缓存兜底（避免数据完全丢失）
+    cached = _load_file_cache(market, code)
+    if cached:
+        with _lock:
+            _cache[cache_key] = (now + CACHE_TTL, cached)
+        return dict(cached)
+    return None
 
 
 # ================================================================ 三源对比测试

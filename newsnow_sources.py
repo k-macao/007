@@ -36,30 +36,45 @@ UTC = timezone.utc
 # ---------------- 通用请求 ----------------
 
 def http_request(url: str, headers: dict | None = None, timeout: int = 15,
-                 encoding: str = "utf-8") -> tuple[int, str, bytes]:
-    req = urllib.request.Request(url, method="GET")
-    req.add_header("User-Agent", "Mozilla/5.0 (newsnow-py/1.0; pixel-theme)")
-    if headers:
-        for k, v in headers.items():
-            req.add_header(k, v)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-            try:
-                text = raw.decode(encoding, "replace")
-            except Exception:
-                text = raw.decode("utf-8", "replace")
-            return resp.status, text, raw
-    except urllib.error.HTTPError as e:
+                 encoding: str = "utf-8", retries: int = 2) -> tuple[int, str, bytes]:
+    """带指数退避重试的通用请求，避免瞬时抖动导致数据丢失。"""
+    import time
+    last_exc = None
+    for attempt in range(retries + 1):
         try:
-            raw = e.read()
-            txt = raw.decode(encoding, "replace")
-        except Exception:
-            raw = b""
-            txt = str(e)
-        return e.code, txt, raw
-    except Exception as e:
-        raise RuntimeError(f"网络请求失败 {url}: {e}") from e
+            req = urllib.request.Request(url, method="GET")
+            req.add_header("User-Agent", "Mozilla/5.0 (newsnow-py/1.0; pixel-theme)")
+            if headers:
+                for k, v in headers.items():
+                    req.add_header(k, v)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    raw = resp.read()
+                    try:
+                        text = raw.decode(encoding, "replace")
+                    except Exception:
+                        text = raw.decode("utf-8", "replace")
+                    return resp.status, text, raw
+            except urllib.error.HTTPError as e:
+                try:
+                    raw = e.read()
+                    txt = raw.decode(encoding, "replace")
+                except Exception:
+                    raw = b""
+                    txt = str(e)
+                # 502/503/429 可重试
+                if e.code in (429, 502, 503, 504) and attempt < retries:
+                    time.sleep(0.5 * (2 ** attempt))
+                    continue
+                return e.code, txt, raw
+        except Exception as e:
+            last_exc = e
+            if attempt < retries:
+                time.sleep(0.5 * (2 ** attempt))
+                continue
+            raise RuntimeError(f"网络请求失败 {url}: {e}") from e
+    # 理论上不会到这里
+    raise RuntimeError(f"网络请求失败 {url}: {last_exc}") from last_exc
 
 
 # ---------------- 数据结构 ----------------
