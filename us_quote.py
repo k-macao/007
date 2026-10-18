@@ -38,6 +38,51 @@ TIMEOUT = 6.0                    # 单次请求超时（秒）；美股源较多
 CACHE_TTL = 10                   # 正缓存（秒）
 NEG_CACHE_TTL = 60               # 失败负缓存（秒）
 
+import os
+def _env_float_us(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+# 文件缓存：避免数据丢失（与 hk_quote.py 同策略）
+FILE_CACHE_DIR = os.environ.get(
+    "US_QUOTE_CACHE_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", "quote_cache"))
+FILE_CACHE_ENABLED = os.environ.get("US_QUOTE_FILE_CACHE", "1") not in ("", "0", "false", "False")
+FILE_CACHE_TTL = _env_float_us("US_QUOTE_FILE_TTL", 3600)
+
+def _save_file_cache_us(code: str, quote: dict) -> None:
+    if not FILE_CACHE_ENABLED:
+        return
+    try:
+        os.makedirs(FILE_CACHE_DIR, exist_ok=True)
+        path = os.path.join(FILE_CACHE_DIR, f"us_{code}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(quote, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def _load_file_cache_us(code: str) -> dict | None:
+    if not FILE_CACHE_ENABLED:
+        return None
+    try:
+        path = os.path.join(FILE_CACHE_DIR, f"us_{code}.json")
+        if not os.path.exists(path):
+            return None
+        mtime = os.path.getmtime(path)
+        age = time.time() - mtime
+        with open(path, "r", encoding="utf-8") as f:
+            q = json.load(f)
+        q = dict(q)
+        q["stale"] = age > FILE_CACHE_TTL
+        q["stale_age_s"] = int(age)
+        q["source_label"] = (q.get("source_label") or q.get("source") or "") + (" (文件缓存)" if not q.get("stale") else " (文件缓存-过期)")
+        q["from_file_cache"] = True
+        return q
+    except Exception:
+        return None
+
 EM_US_PRICE_SCALE = 1000         # 东财美股价格为实际价格×1000（3 位小数）
 EM_US_MARKET_IDS = ("105", "106", "107")   # 105=NASDAQ 106=NYSE 107=AMEX，未知交易所逐个尝试
 EM_HOSTS = ("push2.eastmoney.com", "push2delay.eastmoney.com")
@@ -71,14 +116,24 @@ def now_str() -> str:
 
 
 def _http_get(url: str, encoding: str = "utf-8", timeout: float = TIMEOUT,
-              headers: dict | None = None) -> tuple[str, bytes]:
-    req = urllib.request.Request(url, method="GET")
-    req.add_header("User-Agent", UA)
-    for k, v in (headers or {}).items():
-        req.add_header(k, v)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read()
-    return raw.decode(encoding, "replace"), raw
+              headers: dict | None = None, retries: int = 2) -> tuple[str, bytes]:
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(url, method="GET")
+            req.add_header("User-Agent", UA)
+            for k, v in (headers or {}).items():
+                req.add_header(k, v)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+            return raw.decode(encoding, "replace"), raw
+        except Exception as e:
+            last_exc = e
+            if attempt < retries:
+                time.sleep(0.4 * (2 ** attempt))
+                continue
+            raise
+    raise last_exc  # type: ignore
 
 
 def _fnum(parts, idx, scale=1.0):
@@ -433,6 +488,12 @@ def fetch_us_quote(code: str, chain: tuple | list | None = None,
     with _lock:
         _cache[code] = (now + (CACHE_TTL if quote else NEG_CACHE_TTL), quote)
     if not quote:
+        # 文件缓存兜底
+        cached = _load_file_cache_us(code)
+        if cached:
+            with _lock:
+                _cache[code] = (now + CACHE_TTL, cached)
+            return dict(cached)
         return None
     quote = dict(quote)
     quote["cross_verdict"] = "⚠️ 单源模式（未做交叉验证；用 fetch_us_verified 获取逐源核验）"
@@ -440,6 +501,7 @@ def fetch_us_quote(code: str, chain: tuple | list | None = None,
     quote["cross_ok"] = False
     quote["market"] = "us"
     quote["error"] = None
+    _save_file_cache_us(code, quote)
     return quote
 
 
@@ -461,12 +523,22 @@ def fetch_us_verified(code: str, timeout: float | None = None) -> tuple[dict | N
             break
     if primary is None and pack["quotes"]:
         primary = dict(pack["quotes"][0])      # 极端：只剩延迟源也展示（带标注）
+    if primary is None:
+        # 全部失败 → 文件缓存兜底
+        cached = _load_file_cache_us(code)
+        if cached:
+            primary = dict(cached)
+            # 保留原 cross，但标注来自文件缓存
+            primary["cross_verdict"] = (primary.get("cross_verdict") or "") + " (文件缓存兜底)"
+            pack["errors"].append(f"文件缓存兜底：使用 {primary.get('source_label')} 的历史数据")
+            return primary, pack
     if primary is not None:
         primary["market"] = "us"
         primary["cross_verdict"] = cross["verdict"]
         primary["consensus_price"] = cross["consensus"]
         primary["cross_ok"] = cross["ok"] and cross["n_ok"] >= 2
         primary["error"] = None
+        _save_file_cache_us(code, primary)
     return primary, pack
 
 

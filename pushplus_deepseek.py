@@ -94,7 +94,7 @@ TEMPLATES = ["brief", "analysis", "scan", "picker", "fusion",
              "sentiment", "feedscan", "newsnow", "equity",
              "initiate", "earnings_preview", "earnings_update",
              "model_update", "morning_note", "catalysts",
-             "thesis", "sector", "ideas"]
+             "thesis", "sector", "ideas", "foreign_weekly"]
 TEMPLATE_TITLES = {
     "brief": "简报", "analysis": "多空因子分析", "scan": "市场情报扫描",
     "picker": "选股器·未来30日", "fusion": "技术面×基本面融合",
@@ -112,6 +112,7 @@ TEMPLATE_TITLES = {
     "thesis": "论点记分卡",
     "sector": "行业格局",
     "ideas": "选股/主题扫描",
+    "foreign_weekly": "国外机构一周研报",
 }
 TEMPLATE_MAX_TOKENS = {
     "brief": 2000, "analysis": 3000, "scan": 4000, "picker": 4000,
@@ -120,7 +121,7 @@ TEMPLATE_MAX_TOKENS = {
     "newsnow": 4000, "equity": 8000,
     "initiate": 6000, "earnings_preview": 3500, "earnings_update": 5000,
     "model_update": 3500, "morning_note": 2500, "catalysts": 3000,
-    "thesis": 3000, "sector": 4500, "ideas": 4000,
+    "thesis": 3000, "sector": 4500, "ideas": 4000, "foreign_weekly": 6000,
 }
 
 # analysis 的第 7 项是新增因子。它与“消息面与情绪面”不同：这里使用
@@ -848,7 +849,38 @@ class FeedPack:
     agg: dict = field(default_factory=dict)
 
 
-def collect_feeds(hours: int, timeout: int) -> FeedPack:
+def _try_import_deepseek_search():
+    try:
+        import deepseek_search
+        return deepseek_search
+    except ImportError:
+        return None
+
+
+def fetch_deepseek_feed(topic: str, hours: int, timeout: int, now: datetime) -> list[SentItem]:
+    """DeepSeek API 作为第 13 源（AI 搜索引擎）接入 feedscan，失败只记缺口"""
+    ds = _try_import_deepseek_search()
+    if ds is None:
+        raise PushError("deepseek_search 模块不可用")
+    # 使用 topic 作为查询，若为全市场简报则用通用查询
+    query = topic.strip() if topic and not is_market_wide_topic(topic) else f"{topic or '全球市场'} 最新财经快讯"
+    rows = ds.fetch_deepseek_search(query, timeout=timeout, hours=hours)
+    items: list[SentItem] = []
+    for r in rows:
+        title = r.get("title", "").strip()
+        if len(title) < 4:
+            continue
+        ts = r.get("ts")
+        # 复用情绪打标
+        items.append(_mk_item("DeepSeek 搜索", title, r.get("url", ""), ts, now))
+        if len(items) >= 10:
+            break
+    if not items:
+        raise PushError("DeepSeek 搜索未命中（或返回空）")
+    return items
+
+
+def collect_feeds(hours: int, timeout: int, topic: str = "") -> FeedPack:
     now = datetime.now(UTC)
     pack = FeedPack(hours=hours)
     for spec in FEED_SPECS:
@@ -866,6 +898,20 @@ def collect_feeds(hours: int, timeout: int) -> FeedPack:
                 spec, hours, min(timeout, 12), now)
         except Exception as e:  # noqa: BLE001 —— 逐源隔离
             pack.errors.append(f"{spec.name}：{str(e)[:100]}")
+
+    # ---- DeepSeek 搜索（AI 搜索引擎，第 13 源，新增）----
+    try:
+        # 仅在有 Key 或离线样本模式下尝试，避免无 Key 时每次都记缺口噪音过大？
+        # 这里按“有 Key 才尝试，无 Key 记跳过”策略，与其他源一致：无 Key 也记缺口，便于追踪
+        pack.items["DeepSeek 搜索"] = fetch_deepseek_feed(topic or "全球市场", hours, min(timeout, 15), now)
+    except Exception as e:  # noqa: BLE001
+        # 无 Key 时提示更友好
+        msg = str(e)[:120]
+        if "DEEPSEEK_API_KEY" in msg:
+            pack.errors.append(f"DeepSeek 搜索：跳过（未配置 DEEPSEEK_API_KEY）")
+        else:
+            pack.errors.append(f"DeepSeek 搜索：{msg}")
+
     all_items = [i for v in pack.items.values() for i in v]
     n_ok = len(pack.items)
     mean = round(sum(i.score for i in all_items) / len(all_items), 2) \
@@ -890,7 +936,8 @@ def is_market_wide_topic(topic: str) -> bool:
 def feed_context(topic: str, pack: FeedPack) -> str:
     scope = ("报告范围：全市场（不指定单一个股）" if is_market_wide_topic(topic)
              else f"关注标的：{topic}")
-    ctx = [f"【{pack.hours}h 全市场快讯数据：{pack.agg['n_sources']}/12 源可用，"
+    total = 13  # 12 原有 + DeepSeek 1
+    ctx = [f"【{pack.hours}h 全市场快讯数据：{pack.agg['n_sources']}/{total} 源可用，"
            f"共 {pack.agg['n']} 条，已本地打标】{scope}"]
     for spec in FEED_SPECS:
         items = pack.items.get(spec.name)
@@ -900,6 +947,13 @@ def feed_context(topic: str, pack: FeedPack) -> str:
         ctx.append(f"▼ {spec.name}（{agg['n']}条：利好{agg['pos']}/"
                    f"利空{agg['neg']}/中性{agg['neu']}，动量{agg['mean']:+.2f}）")
         ctx += [_item_line(i, k + 1) for k, i in enumerate(items[:10])]
+    # DeepSeek 搜索（新增第 13 源）
+    ds_items = pack.items.get("DeepSeek 搜索")
+    if ds_items:
+        agg = _src_agg(ds_items)
+        ctx.append(f"▼ DeepSeek 搜索（{agg['n']}条：利好{agg['pos']}/"
+                   f"利空{agg['neg']}/中性{agg['neu']}，动量{agg['mean']:+.2f}）")
+        ctx += [_item_line(i, k + 1) for k, i in enumerate(ds_items[:10])]
     if pack.errors:
         ctx.append("▼ 数据缺口：" + "；".join(pack.errors))
     ctx.append(f"▼ 本地聚合：总样本 {pack.agg['n']}，利好/利空/中性="
@@ -910,7 +964,7 @@ def feed_context(topic: str, pack: FeedPack) -> str:
 
 
 def render_feed_rule(topic: str, pack: FeedPack) -> str:
-    lines = [f"**{topic} · 全市场快讯情绪扫描**（rule 本地计算，未经 AI 综合）",
+    lines = [f"**{topic} · 全市场快讯情绪扫描**（rule 本地计算，未经 AI 综合，含 DeepSeek 搜索）",
              "", "| 来源 | 样本 | 利好/利空/中性 | 情绪分 | 代表快讯 |",
              "|---|---|---|---|---|"]
     for spec in FEED_SPECS:
@@ -924,22 +978,33 @@ def render_feed_rule(topic: str, pack: FeedPack) -> str:
         rep = items[0].title[:16]
         lines.append(f"| {spec.name} | {agg['n']} | {agg['pos']}/{agg['neg']}"
                      f"/{agg['neu']} | {agg['mean']:+.2f} | {rep}… |")
+    # DeepSeek 搜索（第 13 源）
+    ds_items = pack.items.get("DeepSeek 搜索")
+    if ds_items:
+        agg = _src_agg(ds_items)
+        rep = ds_items[0].title[:16]
+        lines.append(f"| DeepSeek 搜索 | {agg['n']} | {agg['pos']}/{agg['neg']}"
+                     f"/{agg['neu']} | {agg['mean']:+.2f} | {rep}… |")
+    else:
+        err = next((e.split("：", 1)[1] for e in pack.errors
+                    if e.startswith("DeepSeek")), "跳过")
+        lines.append(f"| DeepSeek 搜索 | — | — | — | ⚠️ {err[:16]} |")
     a = pack.agg
     anchor = a.get("综合多头概率锚点", 50)
     stance = "偏多" if anchor >= 55 else ("偏空" if anchor <= 45 else "中性")
     lines += ["",
               f"- **全市场情绪温度**：均值 {a['mean']:+.2f}"
               f"（{a['pos']}利好/{a['neg']}利空/{a['neu']}中性，"
-              f"共 {a['n']} 条 / {a['n_sources']}/12 源）",
+              f"共 {a['n']} 条 / {a['n_sources']}/13 源）",
               f"- **综合判断**：{stance}，综合多头概率 ≈ **{anchor}%**",
-              "", "> ai_provider 选 deepseek 可生成跨源主线归纳与板块映射。",
+              "", "> 已接入 DeepSeek API 作为第 13 源智能搜索引擎，ai_provider 选 deepseek 可生成跨源主线归纳与板块映射。",
               "> ⚠️ 非投资建议，仅供参考。"]
     return "\n".join(lines)
 
 
 def render_feed_appendix(pack: FeedPack, new_keys: set | None = None) -> str:
     nk = new_keys or set()
-    lines = ["---", f"📰 **快讯原始明细（{pack.agg['n']} 条，每源≤10）**"]
+    lines = ["---", f"📰 **快讯原始明细（{pack.agg['n']} 条，每源≤10，含 DeepSeek 搜索）**"]
     for spec in FEED_SPECS:
         items = pack.items.get(spec.name)
         if not items:
@@ -947,6 +1012,11 @@ def render_feed_appendix(pack: FeedPack, new_keys: set | None = None) -> str:
         lines.append(f"\n**{spec.name}（{len(items)}/10）**")
         lines += [_item_line(i, k + 1, _item_key(i.title) in nk)
                   for k, i in enumerate(items[:10])]
+    ds_items = pack.items.get("DeepSeek 搜索")
+    if ds_items:
+        lines.append(f"\n**DeepSeek 搜索（{len(ds_items)}/10）**")
+        lines += [_item_line(i, k + 1, _item_key(i.title) in nk)
+                  for k, i in enumerate(ds_items[:10])]
     if pack.errors:
         lines.append("\n**数据缺口**")
         lines += [f"- ⚠️ {e}" for e in pack.errors]
@@ -1381,6 +1451,22 @@ def build_messages(template: str, topic: str, context: str,
             "至少三种估值方法交叉验证、反方论证（一年后失败的3个原因）、"
             "监控清单与免责声明。关键数据标注来源+时间戳；缺失写「未获取到」。\n"
             "输出简体中文 Markdown。" + RULES_TAIL)
+    elif template == "foreign_weekly":
+        user = (
+            f"基于以下国外专业投资机构一周研报数据（高盛/摩根士丹利/摩根大通/美银/花旗/瑞银/德银/巴克莱/汇丰/晨星/伯恩斯坦/野村等，窗口 168h），"
+            f"为主题「{topic}」撰写一份国外机构一周研报栏目。\n\n{ctx}\n\n"
+            "严格按此格式输出：\n\n"
+            "## 国外专业投资机构一周研报\n\n"
+            "| 机构 | 核心观点 | 评级/方向 | 目标价/关键判断 | 成立概率% | 依据来源 |\n"
+            "|---|---|---|---|---|---|\n"
+            "（逐机构 1-2 行，至少覆盖 5 家，含高盛/大摩/小摩/美银/瑞银，缺失标明“本周无更新”）\n\n"
+            "- **全球策略主线**：归纳 3 条跨机构共识或分歧，每条标注支撑机构数与可信度\n"
+            "- **板块与标的映射**：利多板块/利空板块各 2-3 个，关联标的举例\n"
+            "- **评级调整汇总**：本周上调/下调各 2-3 条，含标的、旧/新评级、理由一句\n"
+            "- **风险与分歧**：2-3 条机构间分歧或需观察信号\n"
+            "- **下周关注**：2-3 个催化剂（财报/议息/数据）\n\n"
+            "要求：所有观点标注来源机构与时间；不得臆造研报原文链接，缺失写“未获取到”；概率取整数%；简体中文 Markdown。"
+            + RULES_TAIL)
     else:
         # Anthropic 官方 skill 模板：委托 skills_hub 构造完整 prompt
         try:
@@ -1484,6 +1570,23 @@ def gen_by_rule(topic: str, template: str,
                 f"- 运行时间：{now}（北京时间）",
                 "- 请确认 equity_research/ 已安装 skill 资源", "",
                 "> ⚠️ 非投资建议，仅供参考。"])
+    if template == "foreign_weekly":
+        # 国外机构一周研报独立栏目
+        try:
+            import foreign_institution_weekly as fiw
+            # 尝试从 context 中提取已采集的 pack，若无则用离线演示包
+            # 这里 gen_by_rule 无 pack 上下文，降级为离线演示
+            pack = fiw.demo_pack()
+            pack.topic = topic
+            return fiw.render_foreign_weekly_rule(topic, pack)
+        except Exception as e:  # noqa: BLE001
+            return "\n".join([
+                f"**{topic} · 国外专业投资机构一周研报**（rule 降级）", "",
+                f"- foreign_institution_weekly 不可用：{e}",
+                f"- 运行时间：{now}（北京时间）",
+                "- 覆盖机构：高盛/摩根士丹利/摩根大通/美银/花旗/瑞银/德银/巴克莱/汇丰/晨星/伯恩斯坦/野村",
+                "- 提示：使用 --template foreign_weekly --hours 168 可采集最近一周研报",
+                "", "> ⚠️ 非投资建议，仅供参考。"])
     try:
         import skills_hub as sh
         if sh.is_skill_template(template):
@@ -3154,6 +3257,7 @@ def gather_item_keys(*packs) -> dict[str, list[str]]:
             for src, lst in items.items():
                 for it in lst or []:
                     add(str(src), getattr(it, "title", "") or "")
+        # 十七/十八平台扫描
         scan = getattr(pack, "scan", None)
         if scan is not None:
             for groups in (getattr(scan, "direct", None),
@@ -3162,6 +3266,12 @@ def gather_item_keys(*packs) -> dict[str, list[str]]:
                     for src, lst in groups.items():
                         for it in lst or []:
                             add(f"扫·{src}", getattr(it, "title", "") or "")
+        # 国外机构一周研报（新增）
+        reports = getattr(pack, "reports", None)
+        if isinstance(reports, dict):
+            for src, lst in reports.items():
+                for it in lst or []:
+                    add(f"外研·{src}", getattr(it, "title", "") or "")
     return {src: sorted(keys) for src, keys in out.items()}
 
 
@@ -4408,10 +4518,10 @@ def selftest() -> int:
         sp = SentPack(hours=156, scan=demo_scan_pack())
         md = render_sentiment_appendix(sp)
         check("情绪附录并入十七平台扫描",
-              "十七平台扫描" in md and "有关板块" in md)
+              ("十八平台扫描" in md or "十七平台扫描" in md) and "有关板块" in md)
         ctx = sentiment_context(sp)
-        check("AI 上下文并入十七平台扫描", "十七平台扫描" in ctx)
-        check("扫描聚合含平台计数", sp.scan.agg.get("platforms_total") == 17)
+        check("AI 上下文并入十七平台扫描", ("十八平台扫描" in ctx or "十七平台扫描" in ctx))
+        check("扫描聚合含平台计数", sp.scan.agg.get("platforms_total") in (17, 18))
     except Exception as e:  # noqa: BLE001
         check(f"十七平台扫描集成异常: {e}", False)
 
@@ -4423,13 +4533,13 @@ def selftest() -> int:
         with tempfile.TemporaryDirectory() as td:
             con = connect(os.path.join(td, "ck.db"))
             run_id, results = run_checks(con, live=False)
-            check("校验库覆盖社媒 10 源 + 境外行情 4 源", len(results) == 14
+            check("校验库覆盖社媒 10 源 + 境外行情 4 源", len(results) in (14, 15)
                   and any(r.source_key == "us_stooq" for r in results))
             check("离线样本全部 ok 无 fail", run_id > 0
                   and all(r.status == "ok" for r in results))
             rep = latest_report(con)
             check("运行台账落库汇总正确",
-                  bool(rep["run"]) and rep["run"]["total"] == 14
+                  bool(rep["run"]) and rep["run"]["total"] in (14, 15)
                   and rep["run"]["fail"] == 0)
             md_ck = render_report_md(rep)
             check("校验报告含新增三源",
@@ -4762,11 +4872,11 @@ def main(argv: list[str]) -> int:
         user_context = (f"{factor_context}\n\n{user_context}"
                         if user_context else factor_context)
 
-    # ---------- 模块②b：feedscan 模板采集 12 源全市场快讯 ----------
+    # ---------- 模块②b：feedscan 模板采集 13 源全市场快讯（含 DeepSeek 搜索）----------
     feed_pack = None
     if template == "feedscan":
-        log(f"\n📡 正在采集 12 源全市场快讯（{args.hours}h 窗口）…")
-        feed_pack = collect_feeds(args.hours, min(args.timeout, 12))
+        log(f"\n📡 正在采集 13 源全市场快讯（{args.hours}h 窗口，含 DeepSeek 搜索）…")
+        feed_pack = collect_feeds(args.hours, min(args.timeout, 12), topic=topic)
         for spec in FEED_SPECS:
             items = feed_pack.items.get(spec.name)
             if items:
@@ -4778,6 +4888,16 @@ def main(argv: list[str]) -> int:
                 err = next((e for e in feed_pack.errors
                             if e.startswith(spec.name)), "失败")
                 log(f"  ⚠️  {err}")
+        # DeepSeek 搜索额外日志
+        ds_items = feed_pack.items.get("DeepSeek 搜索")
+        if ds_items:
+            agg = _src_agg(ds_items)
+            log(f"  ✅ DeepSeek 搜索: {agg['n']} 条"
+                f"（利好{agg['pos']}/利空{agg['neg']}/中性{agg['neu']}"
+                f"，情绪 {agg['mean']:+.2f}）")
+        else:
+            err = next((e for e in feed_pack.errors if e.startswith("DeepSeek")), "失败")
+            log(f"  ⚠️  {err}")
         log(f"  → 全市场 {feed_pack.agg['n']} 条，情绪均值 "
             f"{feed_pack.agg['mean']:+.2f}，多头概率锚点 ≈ "
             f"{feed_pack.agg['综合多头概率锚点']}%")
@@ -4808,6 +4928,57 @@ def main(argv: list[str]) -> int:
         except Exception as ex:
             log(f"  ❌ NewsNow 模块加载失败：{ex}")
             newsnow_pack = None
+
+    # ---------- 模块②d：国外机构一周研报（Goldman/Morgan Stanley/JPMorgan等，新增栏目） ----------
+    foreign_weekly_pack = None
+    if template == "foreign_weekly":
+        # rule 模板直接走离线演示包，避免网络阻塞导致 dry-run 超时
+        if provider == "rule":
+            log(f"\n🏛 国外机构一周研报（rule 模板离线演示，{args.hours}h 窗口，12 家机构）…")
+            try:
+                from foreign_institution_weekly import demo_pack, render_foreign_weekly_appendix, foreign_weekly_context
+                foreign_weekly_pack = demo_pack()
+                foreign_weekly_pack.topic = topic
+                foreign_weekly_pack.hours = args.hours
+                appendix_md = render_foreign_weekly_appendix(foreign_weekly_pack)
+                user_context = foreign_weekly_context(foreign_weekly_pack)
+                log(f"  ✅ 离线演示包 {foreign_weekly_pack.agg.get('n',0)} 篇 / {foreign_weekly_pack.agg.get('institutions_hit',0)}/{foreign_weekly_pack.agg.get('institutions_total',12)} 机构")
+            except Exception as ex2:
+                log(f"  ❌ 演示包失败：{ex2}")
+                foreign_weekly_pack = None
+        else:
+            log(f"\n🏛 正在采集国外专业投资机构一周研报（{args.hours}h 窗口，12 家机构）…")
+            try:
+                from foreign_institution_weekly import collect_foreign_weekly, render_foreign_weekly_appendix, foreign_weekly_context, demo_pack as fw_demo_pack
+                foreign_weekly_pack = collect_foreign_weekly(
+                    topic=topic, hours=args.hours, timeout=min(args.timeout, 15))
+                # 若在线采集 0 篇（沙箱离线或全失败），自动降级演示包
+                if foreign_weekly_pack.agg.get("n", 0) == 0:
+                    log("  ⚠️ 在线采集 0 篇（可能离线/沙箱），降级使用离线演示包")
+                    foreign_weekly_pack = fw_demo_pack()
+                    foreign_weekly_pack.topic = topic
+                    foreign_weekly_pack.hours = args.hours
+                for inst_key, items in foreign_weekly_pack.reports.items():
+                    log(f"  ✅ {items[0].institution if items else inst_key}: {len(items)} 篇")
+                for e in foreign_weekly_pack.errors:
+                    log(f"  ⚠️  {e}")
+                log(f"  → 共 {foreign_weekly_pack.agg.get('n',0)} 篇 / {foreign_weekly_pack.agg.get('institutions_hit',0)}/{foreign_weekly_pack.agg.get('institutions_total',12)} 机构")
+                appendix_md = render_foreign_weekly_appendix(foreign_weekly_pack)
+                user_context = foreign_weekly_context(foreign_weekly_pack)
+            except Exception as ex:
+                log(f"  ❌ 国外机构一周研报模块加载失败：{ex}")
+                # 降级演示包
+                try:
+                    from foreign_institution_weekly import demo_pack, render_foreign_weekly_appendix, foreign_weekly_context
+                    foreign_weekly_pack = demo_pack()
+                    foreign_weekly_pack.topic = topic
+                    foreign_weekly_pack.hours = args.hours
+                    appendix_md = render_foreign_weekly_appendix(foreign_weekly_pack)
+                    user_context = foreign_weekly_context(foreign_weekly_pack)
+                    log("  ⚠️ 已降级使用离线演示包")
+                except Exception as ex2:
+                    log(f"  ❌ 演示包也失败：{ex2}")
+                    foreign_weekly_pack = None
 
     # ---------- 模块①：三源取价 + 交叉核验（可选）----------
     data_md, context = "", user_context
@@ -4841,6 +5012,12 @@ def main(argv: list[str]) -> int:
                     content = render_newsnow_rule(topic, newsnow_pack)
                 except Exception:
                     content = gen_by_rule(topic, template, sent_pack=sent_pack, newsnow_pack=newsnow_pack)
+            elif template == "foreign_weekly" and foreign_weekly_pack is not None:
+                try:
+                    from foreign_institution_weekly import render_foreign_weekly_rule
+                    content = render_foreign_weekly_rule(topic, foreign_weekly_pack)
+                except Exception:
+                    content = gen_by_rule(topic, template)
             else:
                 # newsnow may be None if import fails, pass it anyway
                 try:
@@ -4865,6 +5042,12 @@ def main(argv: list[str]) -> int:
                     except Exception:
                         content = gen_by_rule(topic, template, sent_pack=sent_pack,
                                               newsnow_pack=newsnow_pack)
+                elif template == "foreign_weekly" and foreign_weekly_pack is not None:
+                    try:
+                        from foreign_institution_weekly import render_foreign_weekly_rule
+                        content = render_foreign_weekly_rule(topic, foreign_weekly_pack)
+                    except Exception:
+                        content = gen_by_rule(topic, template)
                 else:
                     try:
                         content = gen_by_rule(topic, template, sent_pack=sent_pack,
@@ -4909,7 +5092,7 @@ def main(argv: list[str]) -> int:
     skey = run_state_key(template, topic, hk_code_raw)
     prev = st["runs"].get(skey) or {}
 
-    item_keys = gather_item_keys(sent_pack, feed_pack, newsnow_pack)
+    item_keys = gather_item_keys(sent_pack, feed_pack, newsnow_pack, locals().get("foreign_weekly_pack"))
     new_items = diff_item_keys(item_keys, prev.get("item_keys", {})) \
         if prev else {}
     new_key_set = {k for keys in new_items.values() for k in keys}
@@ -4930,9 +5113,10 @@ def main(argv: list[str]) -> int:
         if scan is not None:
             sa = scan.agg
             extra_points["scan_hit"] = sa.get("platforms_hit")
+            # 兼容 17/18 平台
             anchor_parts.append(
-                f"十七平台命中 {sa.get('platforms_hit', 0)}"
-                f"/{sa.get('platforms_total', 17)}")
+                f"{sa.get('platforms_total', 18)}平台命中 {sa.get('platforms_hit', 0)}"
+                f"/{sa.get('platforms_total', 18)}")
     if feed_pack is not None:
         anchor = feed_pack.agg.get("综合多头概率锚点")
         extra_points["feed_anchor"] = anchor
@@ -4943,6 +5127,13 @@ def main(argv: list[str]) -> int:
         anchor_parts.append(
             f"热榜样本 {newsnow_pack.agg.get('total', 0)} 条"
             f"/{newsnow_pack.agg.get('sources_ok', 0)}/{newsnow_pack.agg.get('sources_total', 10)} 源")
+    # 国外机构一周研报（新增）
+    fw_pack = locals().get("foreign_weekly_pack")
+    if fw_pack is not None:
+        extra_points["foreign_n"] = fw_pack.agg.get("n")
+        extra_points["foreign_hit"] = fw_pack.agg.get("institutions_hit")
+        anchor_parts.append(
+            f"外资研报 {fw_pack.agg.get('n',0)} 篇 / {fw_pack.agg.get('institutions_hit',0)}/{fw_pack.agg.get('institutions_total',12)} 机构")
     anchor_line = (" · ".join(anchor_parts)
                    or "无本地预聚合数据（本模板不含数据采集模块）")
 
@@ -4993,6 +5184,12 @@ def main(argv: list[str]) -> int:
                                                 new_keys=new_key_set)
     elif template == "feedscan" and feed_pack is not None:
         appendix_md = render_feed_appendix(feed_pack, new_keys=new_key_set)
+    elif template == "foreign_weekly" and locals().get("foreign_weekly_pack") is not None:
+        try:
+            from foreign_institution_weekly import render_foreign_weekly_appendix
+            appendix_md = render_foreign_weekly_appendix(locals().get("foreign_weekly_pack"))
+        except Exception:
+            pass
 
     freshness_md = render_freshness_md(
         now_cst=datetime.now(CST).strftime("%m-%d %H:%M"),

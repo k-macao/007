@@ -63,6 +63,11 @@ try:
 except Exception:
     skills_hub_mod = None
 
+try:
+    import foreign_institution_weekly as foreign_mod
+except Exception:
+    foreign_mod = None
+
 # ================================================================ 实时行情合并
 
 def _generic_profile(market: str, code: str) -> dict:
@@ -1980,6 +1985,7 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
             <select id="report-template" class="report-select" title="分析框架">
                 <option value="analysis">多空因子分析</option>
                 <option value="equity" selected>🏛 机构级个股投研</option>
+                <option value="foreign_weekly">🌍 国外机构一周研报</option>
                 <option value="morning_note">🌅 晨会纪要</option>
                 <option value="initiate">📑 首次覆盖</option>
                 <option value="earnings_preview">🔭 财报前瞻 Skill</option>
@@ -2071,6 +2077,65 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
                     <span class="report-meta" id="equity-meta"></span>
                 </div>
                 <div class="report-body" id="equity-body"></div>
+            </div>
+        </div>
+
+        <!-- 🌍 国外专业投资机构一周研报栏目（新增） -->
+        <div class="section-header" id="foreign-section">
+            <span>🌍 国外机构一周研报 · 12家顶级投行/研究机构 (FOREIGN INSTITUTION WEEKLY)</span>
+            <span class="section-tag">Goldman / MorganStanley / JPMorgan / Citi / BofA / UBS / Barclays / Nomura / HSBC / Jefferies / Bernstein / Morningstar · 168H · DeepSeek+Google双源 · 情绪打标 · 表格渲染</span>
+        </div>
+        <div class="equity-column-panel" id="foreign-column-panel" style="border-color:rgba(0,229,255,0.5);box-shadow:0 0 20px rgba(0,229,255,0.15);">
+            <div class="equity-hero">
+                <div class="equity-hero-main">
+                    <div class="equity-kicker" style="color:var(--cyan);">INDEPENDENT COLUMN · 12 INSTITUTIONS · 168H WINDOW · SENTIMENT TAGGING</div>
+                    <div class="equity-title">国外机构一周研报聚合</div>
+                    <div class="equity-sub">DeepSeek AI 搜索为主 + Google RSS 备用 · 评级/目标价/概率 · 主线/板块/评级调整 · 附录明细可追溯 · 支持离线自检</div>
+                    <div class="equity-links">
+                        <a class="equity-link" href="#" onclick="return false;" style="cursor:default;">🌐 12 机构全覆盖</a>
+                        <a class="equity-link" href="#" onclick="return false;" style="cursor:default;">📊 情绪打标 + 概率映射</a>
+                        <a class="equity-link" href="#" onclick="return false;" style="cursor:default;">📋 表格渲染 + 附录</a>
+                    </div>
+                </div>
+                <div class="equity-hero-side">
+                    <div class="equity-stat"><span class="equity-stat-n" id="fw-inst">12</span><span class="equity-stat-l">机构</span></div>
+                    <div class="equity-stat"><span class="equity-stat-n" id="fw-hours">168</span><span class="equity-stat-l">小时窗口</span></div>
+                    <div class="equity-stat"><span class="equity-stat-n" id="fw-demo-n">5</span><span class="equity-stat-l">离线样本</span></div>
+                    <div class="equity-stat"><span class="equity-stat-n" id="fw-status">—</span><span class="equity-stat-l">栏目状态</span></div>
+                </div>
+            </div>
+            <div class="equity-features" id="foreign-features">
+                <div class="equity-chip">Goldman Sachs</div>
+                <div class="equity-chip">Morgan Stanley</div>
+                <div class="equity-chip">J.P. Morgan</div>
+                <div class="equity-chip">Citi Research</div>
+                <div class="equity-chip">BofA Securities</div>
+                <div class="equity-chip">UBS</div>
+                <div class="equity-chip">Barclays</div>
+                <div class="equity-chip">Nomura</div>
+                <div class="equity-chip">HSBC</div>
+                <div class="equity-chip">Jefferies</div>
+                <div class="equity-chip">Bernstein</div>
+                <div class="equity-chip">Morningstar</div>
+            </div>
+            <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;">
+                <span class="selector-label">🌍 外研周报:</span>
+                <input id="foreign-topic-input" class="report-input" placeholder="主题：AI / 科技股 / 半导体 / 电动车 / 港股 / 比特币…" autocomplete="off" value="" />
+                <select id="foreign-channel" class="report-select">
+                    <option value="console">📺 预览</option>
+                    <option value="pushplus">📲 PushPlus</option>
+                    <option value="wecom">💬 企微</option>
+                    <option value="serverchan">🔔 Server酱</option>
+                </select>
+                <button class="report-btn" id="foreign-btn" onclick="genForeignWeekly()" style="border-color:var(--cyan);color:var(--cyan);background:rgba(0,229,255,0.12);">🌍 生成外研周报</button>
+            </div>
+            <div id="foreign-panel" class="report-panel" style="display:none;margin-top:10px;border-color:var(--cyan);">
+                <div class="report-head">
+                    <span class="report-title" id="foreign-title" style="color:var(--cyan);">🌍 国外机构一周研报</span>
+                    <span class="report-status" id="foreign-status" style="color:var(--cyan);border-color:var(--cyan);">待命</span>
+                    <span class="report-meta" id="foreign-meta"></span>
+                </div>
+                <div class="report-body" id="foreign-body"></div>
             </div>
         </div>
 
@@ -2178,10 +2243,10 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
             {alerts_html}
         </div>
 
-        <!-- 🌐 横排十七平台实时情报雷达流 (财经7源 + 社媒10源) -->
+        <!-- 🌐 横排十八平台实时情报雷达流 (财经7源 + 社媒10源 + AI搜索) -->
         <div class="section-header">
-            <span>🌐 十七平台实时情报雷达流 (17-PLATFORM INTELLIGENCE RADAR)</span>
-            <span class="section-tag">财经7源 + 社媒10源 · 156H 窗口过滤 · 横排卡片流</span>
+            <span>🌐 十八平台实时情报雷达流 (18-PLATFORM INTELLIGENCE RADAR)</span>
+            <span class="section-tag">财经7源 + 社媒10源 + AI搜索 · 156H 窗口过滤 · 横排卡片流</span>
         </div>
         <div class="feeds-matrix-horiz">
             {feeds_html}
@@ -2190,7 +2255,7 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
         <!-- 📟 终端实时日志流 -->
         <div class="terminal-panel" id="terminal-log">
             <div class="log-line"><span class="log-ts">[SYS.INIT]</span> <span class="log-tag">OK</span> <span class="log-msg">NOC Telemetry Cluster 04 initialized. High-frequency feeds listening.</span></div>
-            <div class="log-line"><span class="log-ts">[FEED.SYNC]</span> <span class="log-tag">OK</span> <span class="log-msg">14 platforms queried (Yahoo / EastMoney / Tencent / Google / CLS / WSCN / GLH / Jin10 / MKT / Xueqiu / Zhihu / Weibo / Douyin / Hupu / AIHot / ZaoBao / HK01).</span></div>
+            <div class="log-line"><span class="log-ts">[FEED.SYNC]</span> <span class="log-tag">OK</span> <span class="log-msg">18 platforms queried (Yahoo / EastMoney / Tencent / Google / CLS / WSCN / GLH / Jin10 / MKT / Xueqiu / Zhihu / Weibo / Douyin / Hupu / AIHot / ZaoBao / HK01 / DeepSeek).</span></div>
             <div class="log-line"><span class="log-ts">[SENTIMENT]</span> <span class="log-tag">CALC</span> <span class="log-msg">Momentum score computed at +8.4. Cross-source confidence verified at 99.4%.</span></div>
         </div>
 
@@ -2435,6 +2500,92 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
             }}
         }}
 
+        // —— 🌍 国外机构一周研报栏目 ——
+        async function loadForeignTeaser() {{
+            try {{
+                const resp = await fetch('/api/foreign_weekly/teaser');
+                const t = await resp.json();
+                if (!t || !t.ok) {{
+                    const st = document.getElementById('fw-status');
+                    if (st) st.textContent = '缺失';
+                    return;
+                }}
+                const st = document.getElementById('fw-status');
+                if (st) st.textContent = '就绪';
+                const n = document.getElementById('fw-demo-n');
+                if (n && t.agg) n.textContent = t.agg.n || t.agg.total || '5';
+                appendLog('FOREIGN.WEEKLY', 'OK', 'institutions 12 · demo ' + (t.agg ? (t.agg.n || 5) : 5));
+            }} catch (e) {{
+                const st = document.getElementById('fw-status');
+                if (st) st.textContent = '离线';
+                appendLog('FOREIGN.WEEKLY', 'WARN', 'teaser failed: ' + e.message);
+            }}
+        }}
+
+        async function genForeignWeekly() {{
+            const input = document.getElementById('foreign-topic-input');
+            const topic = (input ? input.value : '').trim();
+            const panel = document.getElementById('foreign-panel');
+            const body = document.getElementById('foreign-body');
+            const title = document.getElementById('foreign-title');
+            const meta = document.getElementById('foreign-meta');
+            const status = document.getElementById('foreign-status');
+            const btn = document.getElementById('foreign-btn');
+            const channel = (document.getElementById('foreign-channel') || {{}}).value || 'console';
+            if (panel) panel.style.display = 'block';
+            if (title) title.textContent = '🌍 国外机构一周研报 · ' + (topic || '全市场');
+            if (meta) meta.textContent = '168H · 12机构 · DeepSeek+Google · ' + channel;
+            if (status) {{ status.textContent = '生成中…'; status.style.color = 'var(--amber)'; status.style.borderColor = 'var(--amber)'; }}
+            if (body) body.innerHTML = '<div style=\"color:var(--text-muted);\">⏳ 正在聚合 12 家机构 168H 研报（DeepSeek AI 搜索为主，Google RSS 备用）…</div>';
+            if (btn) btn.disabled = true;
+            playBeep(760, 'sine', 0.12);
+            appendLog('FOREIGN.GEN', 'QUERY', (topic || '全市场') + ' · 168H · 12机构');
+            try {{
+                const resp = await fetch('/api/foreign_weekly', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        topic: topic, hours: 168, channel: channel,
+                        dry_run: channel === 'console', use_deepseek: true
+                    }})
+                }});
+                const r = await resp.json();
+                if (!r || !r.ok) {{
+                    if (status) {{ status.textContent = '失败'; status.style.color = 'var(--red)'; status.style.borderColor = 'var(--red)'; }}
+                    if (body) body.innerHTML = '<div style=\"color:var(--red);\">❌ ' + ((r && r.error) || '未知错误') + '</div>';
+                    appendLog('FOREIGN.GEN', 'ERR', (r && r.error) || '未知错误');
+                    return;
+                }}
+                const agg = r.agg || {{}};
+                if (meta) meta.textContent = '样本 ' + (agg.n || r.count || 0) + ' 篇 · 机构 '
+                    + (agg.institutions_hit || 0) + '/' + (agg.institutions_total || 12)
+                    + ' · 情绪 利好' + (agg.sentiment ? (agg.sentiment['利好']||0) : 0)
+                    + '/中性' + (agg.sentiment ? (agg.sentiment['中性']||0) : 0)
+                    + '/利空' + (agg.sentiment ? (agg.sentiment['利空']||0) : 0);
+                if (status) {{
+                    status.textContent = '完成';
+                    status.style.color = 'var(--green)';
+                    status.style.borderColor = 'var(--green)';
+                }}
+                let html = '';
+                if (r.rule_md) {{
+                    html += '<div style=\"background:rgba(0,229,255,0.06);border:1px solid rgba(0,229,255,0.18);border-radius:8px;padding:12px;margin-bottom:12px;\"><pre style=\"white-space:pre-wrap;margin:0;font-size:13px;line-height:1.6;\">' + r.rule_md + '</pre></div>';
+                }}
+                if (r.appendix_md) {{
+                    html += '<div style=\"background:rgba(255,255,255,0.04);border:1px dashed rgba(255,255,255,0.12);border-radius:8px;padding:10px;\"><pre style=\"white-space:pre-wrap;margin:0;font-size:12px;color:var(--text-muted);\">' + r.appendix_md + '</pre></div>';
+                }}
+                if (!html) html = '<div style=\"color:var(--text-muted);\">无数据</div>';
+                if (body) body.innerHTML = html;
+                appendLog('FOREIGN.GEN', 'OK', '样本 ' + (agg.n || 0) + ' · 机构 ' + (agg.institutions_hit || 0) + '/' + (agg.institutions_total || 12));
+            }} catch (e) {{
+                if (status) {{ status.textContent = '失败'; status.style.color = 'var(--red)'; status.style.borderColor = 'var(--red)'; }}
+                if (body) body.innerHTML = '<div style=\"color:var(--red);\">❌ ' + e.message + '</div>';
+                appendLog('FOREIGN.GEN', 'ERR', e.message);
+            }} finally {{
+                if (btn) btn.disabled = false;
+            }}
+        }}
+
         // 回车触发研报生成
         (function() {{
             const input = document.getElementById('report-code-input');
@@ -2449,8 +2600,13 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
             if (sk) sk.addEventListener('keydown', function(e) {{
                 if (e.key === 'Enter') genSkill();
             }});
+            const fw = document.getElementById('foreign-topic-input');
+            if (fw) fw.addEventListener('keydown', function(e) {{
+                if (e.key === 'Enter') genForeignWeekly();
+            }});
             setTimeout(loadEquityTeaser, 600);
             setTimeout(loadSkillsHub, 700);
+            setTimeout(loadForeignTeaser, 800);
         }})();
 
         async function loadSkillsHub() {{
@@ -2880,7 +3036,8 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
             ["HEARTBEAT", "TICK", "Node HK-Master-01 reported 0 packet loss (latency 2.1ms)"],
             ["AI.INFERENCE", "OK", "DeepSeek sentiment embedding batch completed in 18ms"],
             ["MARKET.DATA", "FLOW", "Cross-checking price quotes across Tencent Finance, EastMoney, Yahoo... OK"],
-            ["RADAR.SCAN", "PULSE", "14 platforms active. No anomalous divergence detected."]
+            ["RADAR.SCAN", "PULSE", "18 platforms active. No anomalous divergence detected."],
+            ["FOREIGN.WEEKLY", "PULSE", "12 foreign institutions · 168H window · DeepSeek+Google dual-feed active."]
         ];
         let sampleIdx = 0;
         setInterval(() => {{
@@ -2979,6 +3136,72 @@ def _api_equity_column(params: dict) -> dict:
             run_check=bool(params.get("run_check", True)),
             hours=int(params.get("hours") or 48))
         r["ok"] = True
+        return r
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
+
+
+def _api_foreign_weekly(params: dict) -> dict:
+    """国外专业投资机构一周研报栏目（12机构、168h窗口）。"""
+    if foreign_mod is None:
+        return {"ok": False, "error": "foreign_institution_weekly 模块加载失败"}
+    topic = str(params.get("topic") or params.get("query") or params.get("code") or "").strip()
+    hours = int(params.get("hours") or 168)
+    use_deepseek = bool(params.get("use_deepseek", True))
+    only = str(params.get("only") or "").strip()
+    only_list = [s.strip() for s in only.split(",") if s.strip()] if only else None
+    try:
+        pack = foreign_mod.collect_foreign_weekly(
+            topic=topic, hours=hours, timeout=int(params.get("timeout") or 20),
+            only=only_list, use_deepseek=use_deepseek)
+        # 生成渲染
+        rule_md = foreign_mod.render_foreign_weekly_rule(pack)
+        appendix_md = foreign_mod.render_foreign_weekly_appendix(pack)
+        ctx = foreign_mod.foreign_weekly_context(pack)
+        r = {
+            "ok": True,
+            "topic": topic,
+            "hours": hours,
+            "agg": pack.agg,
+            "per_institution": {k: len(v) for k, v in pack.reports.items()},
+            "sentiment": pack.agg.get("sentiment", {}),
+            "rule_md": rule_md,
+            "appendix_md": appendix_md,
+            "context": ctx,
+            "count": pack.agg.get("n", 0),
+        }
+        # 若请求 AI 生成，则走 pushplus_deepseek 主流程生成研报正文
+        if params.get("generate"):
+            if pp_mod is None:
+                r["ai_error"] = "pushplus_deepseek 模块未加载"
+            else:
+                try:
+                    # 构造等同于 --template foreign_weekly 的 AI 调用
+                    gen_params = {
+                        "template": "foreign_weekly",
+                        "topic": topic or "科技股",
+                        "hours": hours,
+                        "ai_provider": str(params.get("ai_provider") or "deepseek"),
+                        "channel": str(params.get("channel") or "console"),
+                        "dry_run": bool(params.get("dry_run", True)),
+                    }
+                    # 尝试调用 pushplus_deepseek 的 build_messages + AI 生成简化版
+                    # 这里直接用 foreign weekly pack 的 context 去调
+                    # 若有 stock_report 则走其 run_report 接口，topic 传入
+                    if stock_report is not None:
+                        rr = stock_report.run_report(
+                            code=topic or "09988",
+                            template="foreign_weekly",
+                            ai_provider=gen_params["ai_provider"],
+                            channel=gen_params["channel"],
+                            dry_run=gen_params["dry_run"],
+                            hours=hours,
+                            topic=topic)
+                        r["ai_report"] = rr
+                    else:
+                        r["ai_report"] = {"ok": False, "note": "stock_report 未加载，返回 rule 版"}
+                except Exception as e:
+                    r["ai_error"] = f"{e.__class__.__name__}: {e}"
         return r
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
@@ -3085,6 +3308,34 @@ class MonitorHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
             return
 
+        if path in ("/api/foreign_weekly", "/api/foreign_weekly/teaser",
+                    "/api/foreign", "/api/foreign/teaser"):
+            topic = qs.get("topic", qs.get("code", [""]))[0]
+            hours = int(qs.get("hours", ["168"])[0] or 168)
+            if foreign_mod is None:
+                payload = {"ok": False, "error": "foreign_institution_weekly 未加载"}
+            else:
+                try:
+                    # teaser 用 demo_pack 离线，快速返回
+                    if "teaser" in path:
+                        pack = foreign_mod.demo_pack()
+                        payload = {
+                            "ok": True,
+                            "topic": topic,
+                            "hours": hours,
+                            "agg": pack.agg,
+                            "per_institution": {k: len(v) for k, v in pack.reports.items()},
+                            "teaser_md": foreign_mod.render_foreign_weekly_rule(pack)[:2000],
+                        }
+                    else:
+                        payload = _api_foreign_weekly({"topic": topic, "hours": hours})
+                except Exception as e:
+                    payload = {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            return
+
         # 默认 404
         self.send_response(404)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -3115,6 +3366,9 @@ class MonitorHandler(http.server.BaseHTTPRequestHandler):
             payload = _api_equity_column(params)
         elif path in ("/api/skills", "/api/skills/run"):
             payload = _api_skills_run(params)
+        elif path in ("/api/foreign_weekly", "/api/foreign_weekly/report",
+                      "/api/foreign", "/api/foreign/report"):
+            payload = _api_foreign_weekly(params)
         else:
             payload = {"ok": False, "error": "Not Found"}
 

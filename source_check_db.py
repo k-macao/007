@@ -300,6 +300,35 @@ def run_checks(con: sqlite3.Connection, live: bool = False, timeout: int = 12,
         results.append(r)
         record_check(con, run_id, r)
 
+    # ---- AI 搜索 1 源（DeepSeek API 作为搜索引擎，新增）----
+    try:
+        import deepseek_search
+        key = "deepseek"
+        name = "DeepSeek 搜索"
+        if only and key not in only and "deepseek_search" not in only:
+            pass
+        else:
+            if live:
+                def _produce_ds():
+                    # 在线：真调用 DeepSeek，查询“阿里巴巴”
+                    return deepseek_search.fetch_deepseek_search("阿里巴巴 09988", timeout=timeout, hours=48)
+                r = check_one(key, name, "AI搜索", _produce_ds)
+            else:
+                # 离线：用样本 JSON 走解析器
+                def _produce_ds_offline():
+                    import json as _json
+                    content = _json.loads(deepseek_search.DEEPSEEK_SAMPLE_JSON)["choices"][0]["message"]["content"]
+                    return deepseek_search.parse_deepseek_response(content)
+                r = check_one(key, name, "AI搜索", _produce_ds_offline)
+            results.append(r)
+            record_check(con, run_id, r)
+    except ImportError as e:
+        r = CheckResult(source_key="deepseek", source_name="DeepSeek 搜索",
+                        group_name="AI搜索", status="fail",
+                        error=f"deepseek_search 不可导入：{e}")
+        results.append(r)
+        record_check(con, run_id, r)
+
     finish_run(con, run_id, results)
     return run_id, results
 
@@ -404,12 +433,13 @@ def selftest_checkdb() -> int:
           any("标题" in x for x in v) and any("非 http" in x for x in v)
           and any("缺失" in x for x in v))
 
-    # 2) 离线跑检 + 落库 + 报告
+    # 2) 离线跑检 + 落库 + 报告（10 社媒 + 4 境外 + 1 DeepSeek = 15）
     run_id, results = run_checks(con, live=False)
-    check("覆盖社媒热榜 10 源 + 境外行情 4 源", len(results) == 14
+    check("覆盖社媒热榜 10 源 + 境外行情 4 源 + DeepSeek 1 源", len(results) == 15
           and {r.source_key for r in results} >=
           {"zhihu", "toutiao", "baidu", "bilibili",
-           "us_tencent", "us_eastmoney", "us_yahoo", "us_stooq"})
+           "us_tencent", "us_eastmoney", "us_yahoo", "us_stooq",
+           "deepseek"})
     check("样本解析全部 ok 且有条目",
           all(r.status == "ok" and r.items_count >= 1 for r in results))
     n_rows = con.execute(
@@ -434,8 +464,8 @@ def selftest_checkdb() -> int:
 
     # 4) 报告与历史
     md = render_report_md(latest_report(con))
-    check("报告含全部新三源",
-          all(s in md for s in ("今日头条热榜", "百度实时热点", "B站热榜"))
+    check("报告含全部新三源 + DeepSeek",
+          all(s in md for s in ("今日头条热榜", "百度实时热点", "B站热榜", "DeepSeek"))
           and "run #" in md)
     hist = source_history(con, "toutiao")
     check("单源历史可查询",
