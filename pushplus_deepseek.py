@@ -5510,7 +5510,8 @@ def main(argv: list[str]) -> int:
         log(f"  → 全市场 {feed_pack.agg['n']} 条，情绪均值 "
             f"{feed_pack.agg['mean']:+.2f}，多头概率锚点 ≈ "
             f"{feed_pack.agg['综合多头概率锚点']}%")
-        appendix_md = render_feed_appendix(feed_pack)
+        # 快讯仅供分析使用，不在报告中展示原始明细。
+        appendix_md = ""
         user_context = feed_context(topic, feed_pack)
 
         # 每日全市场简报并入栏目（仅全市场主题；环境变量 BRIEF_COLUMNS=0
@@ -5894,10 +5895,8 @@ def main(argv: list[str]) -> int:
         appendix_md = render_sentiment_appendix(sent_pack,
                                                 new_keys=new_key_set)
     elif template == "feedscan" and feed_pack is not None:
-        appendix_md = render_feed_appendix(feed_pack, new_keys=new_key_set)
-        # 重算会覆盖采集段已拼好的内容，这里把并入简报的栏目附录再拼一次
-        if brief_columns_appendix_md:
-            appendix_md += "\n\n" + brief_columns_appendix_md
+        # 隐藏快讯原始明细，保留香港券商、国外投行等简报栏目附录。
+        appendix_md = brief_columns_appendix_md
     elif template == "foreign_weekly" and locals().get("foreign_weekly_pack") is not None:
         try:
             from foreign_institution_weekly import render_foreign_weekly_appendix
