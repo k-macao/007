@@ -69,7 +69,7 @@
 - **窗口**：默认 168h（一周），支持 `--hours 168` 自定义
 - **采集**：每机构短查询 `"{中文简称} 研报"`（无命中换 `"{中文简称} 评级 目标价"`），Google 新闻 RSS 主链路、Bing 备援，DeepSeek 生成式搜索仅末位兜底（需 `DEEPSEEK_API_KEY`）；RSS 行按窗口过滤且标题含别名优先；失败记缺口不中断（topic 不入检索式——全词 AND 会把召回压零，2026-10-19 线上探活教训）
 - **打标**：`_score_text` 按利好/利空关键词映射情绪（利好/中性/利空）与分数（-1..+1），`_mk_item` 提取评级关键词（增持/买入/中性/减持/卖出/上调/下调/overweight/underweight 等）
-- **渲染**：`render_foreign_weekly_rule` 表格（机构|评级|标题|来源|时间）+ 汇总（篇数/机构/情绪均值→偏多/偏空）+ 附录明细（标题+链接+摘要）；`foreign_weekly_context` 供 AI 模板上下文
+- **渲染**：`render_foreign_weekly_rule` 表格（机构|评级|标题|来源|时间）+ 汇总（篇数/机构/情绪均值→偏多/偏空）+ 附录明细（标题+摘要，隐藏链接）；`foreign_weekly_context` 供 AI 模板上下文
 - **自检**：`python foreign_institution_weekly.py --selftest` 7 项离线检查（机构清单/别名/样本/情绪/渲染/上下文/附录），`pushplus_deepseek.py --template foreign_weekly --ai-provider rule --dry-run` 可验证推送管线
 - **推送**：已注册到 `pushplus_deepseek.py` TEMPLATES（共 25 模板，含 `hk_brokers`），标题“国外机构一周研报”，`build_messages` 中 prompt 要求 12机构表格+主线+板块+评级调整+风险+下周关注，`gen_by_rule` 走 `demo_pack` 离线样本，AI 路径走 168h 上下文；独立运行入口为手动工作流 `broker-columns.yml`，每日定时简报以 72h 紧凑版并入；大屏 `server_dashboard.py` 新增 `/api/foreign_weekly` 与前端独立板块
 

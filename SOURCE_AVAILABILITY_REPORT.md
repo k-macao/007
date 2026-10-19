@@ -134,7 +134,7 @@ python stock_news_scan.py --code 09988 --hours 24
 - **机构清单**：12 家顶级投行/研究机构，`INSTITUTIONS` 常量含 key/name/aliases/focus/search_terms，支持 `only` 参数定点采集
 - **双链路**：DeepSeek AI 搜索主链路（`_fetch_via_deepseek`，需 Key，失败抛错）+ Google新闻 RSS 备用（`_fetch_via_google`，`when:7d` 窗口），每机构单查询+短超时（min 5s），无 Key 时前2家连续失败快速降级演示包，避免 12*15s 超时
 - **容错**：单机构失败只记 `pack.errors`，不中断整体；`collect_foreign_weekly` 返回空时上层 `pushplus_deepseek.py` 自动降级 `demo_pack`（5篇离线样本），rule 模板直接走离线演示包，保证 dry-run 1.8s 内完成
-- **打标与渲染**：`_score_text` 按关键词映射利好/利空/中性与分数，`_mk_item` 提取评级；`render_foreign_weekly_rule` 表格+汇总+覆盖机构，`render_foreign_weekly_appendix` 明细+链接，`foreign_weekly_context` 供 AI 上下文
+- **打标与渲染**：`_score_text` 按关键词映射利好/利空/中性与分数，`_mk_item` 提取评级；`render_foreign_weekly_rule` 表格+汇总+覆盖机构，`render_foreign_weekly_appendix` 明细（隐藏链接），`foreign_weekly_context` 供 AI 上下文
 - **推送与大屏**：`pushplus_deepseek.py` 新增模板 `foreign_weekly`（TEMPLATES 24 个，MAX_TOKENS 6000），`build_messages` 要求 12机构表格+主线+板块+评级调整+风险+下周关注；`server_dashboard.py` 新增 `/api/foreign_weekly`（GET teaser + POST report）与前端独立板块，支持主题搜索与附录渲染
 - **自检**：`--selftest` 7 项离线（机构清单/别名/样本/情绪/渲染/上下文/附录），已接入 `pushplus_deepseek.py --selftest` 全绿
 
@@ -245,7 +245,7 @@ python stock_news_scan.py --code 09988 --hours 24
 - **新模块** `foreign_institution_weekly.py`：12 家顶级投行/研究机构（Goldman/MorganStanley/JPMorgan/BofA/Citi/UBS/Barclays/Nomura/HSBC/Jefferies/Bernstein/Morningstar），168h 窗口，纯标准库，DeepSeek 主链路 + Google RSS 备用，支持主题搜索、情绪打标、评级提取、表格渲染、附录明细
 - **采集**：`collect_foreign_weekly(topic,hours,timeout,only,use_deepseek)`，每机构单查询 `"{别名} {topic} research report weekly rating target"`，短超时 5s，无 Key 时前2家连续失败快速降级 demo，避免 12*15s 超时；单机构失败记 `errors`，不中断整体
 - **打标**：`_score_text` 关键词映射利好/中性/利空与分数，`_mk_item` 提取评级（增持/买入/中性/减持/卖出/上调/下调/overweight/underweight 等）
-- **渲染**：`render_foreign_weekly_rule` 表格（机构|评级|标题|来源|时间）+ 汇总（篇数/机构/情绪均值→偏多/偏空）+ 覆盖机构；`render_foreign_weekly_appendix` 明细+链接+摘要；`foreign_weekly_context` 供 AI 上下文
+- **渲染**：`render_foreign_weekly_rule` 表格（机构|评级|标题|来源|时间）+ 汇总（篇数/机构/情绪均值→偏多/偏空）+ 覆盖机构；`render_foreign_weekly_appendix` 明细+摘要（隐藏链接）；`foreign_weekly_context` 供 AI 上下文
 - **推送主流程**：`pushplus_deepseek.py` 新增模板 `foreign_weekly`（TEMPLATES 23→24，TITLES/MAX_TOKENS 6000），`build_messages` 中 prompt 要求 12机构表格+主线+板块+评级调整+风险+下周关注，`gen_by_rule` 走 `demo_pack` 离线样本，`main` 新增 `foreign_weekly_pack` 采集分支（附录+上下文+日志），支持 `--hours 168 --topic "AI芯片" --dry-run`，rule 路径 1.8s 完成，AI 路径在线 0 篇时自动降级 demo
 - **指纹与看板**：`gather_item_keys` 新增 `外研·{机构}` 指纹，`extra_points` 新增 `foreign_n`/`foreign_hit`，新鲜度看板显示“外资研报 5 篇 / 5/12 机构”
 - **大屏**：`server_dashboard.py` 新增 `/api/foreign_weekly`（GET teaser 离线演示 + POST report 在线聚合）与前端独立板块（12机构芯片、主题输入、生成按钮、结果面板），`loadForeignTeaser`/`genForeignWeekly` JS，支持回车触发
