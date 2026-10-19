@@ -17,8 +17,8 @@ hk_brokers.py — 香港券商新闻与数据栏目
 
 用法：
     python hk_brokers.py --selftest
-    python hk_brokers.py --hours 48 --topic "港股市场"
-    python pushplus_deepseek.py --template hk_brokers --topic "香港券商动态" --hours 48 --dry-run
+    python hk_brokers.py --hours 96 --topic "港股市场"
+    python pushplus_deepseek.py --template hk_brokers --topic "香港券商动态" --hours 96 --dry-run
 
 模板名：hk_brokers（注册于 pushplus_deepseek.TEMPLATES）
 """
@@ -36,7 +36,7 @@ from typing import Dict, List
 
 UTC = timezone.utc
 CST = timezone(timedelta(hours=8), "CST")
-DEFAULT_HOURS = 48
+DEFAULT_HOURS = 96
 
 # ---------------- 香港券商清单（混合 12 家）----------------
 # listing_code 为抓股价用的代码；中信/华泰/招商的驻港子公司本身未单独上市，
@@ -545,8 +545,6 @@ def render_hk_brokers_appendix(pack: HkBrokersPack,
             ts = it.published.strftime("%Y-%m-%d") if it.published else "近期"
             lines.append(f"{idx}. [{it.sentiment} {it.score:+.2f}] {it.title}"
                          f" — {it.source} · {ts} {it.rating}".rstrip())
-            if it.url:
-                lines.append(f"   {it.url}")
             if it.summary:
                 lines.append(f"   > {it.summary[:80]}")
     if pack.errors:
@@ -575,6 +573,7 @@ def selftest() -> int:
     check("有股价代码的券商 10 家", len(listed) == 10)
 
     pack = demo_pack()
+    check("默认时效窗口 96h", DEFAULT_HOURS == 96 and pack.hours == 96)
     check("演示包 6 条/6 家", pack.agg["n"] == 6 and pack.agg["firms_hit"] == 6)
     check("情绪打标 利好/利空", pack.agg["pos"] >= 2 and pack.agg["neg"] >= 1)
     check("演示股价快照 2 家", pack.agg["quotes_hit"] == 2
@@ -586,10 +585,10 @@ def selftest() -> int:
     ctx = hk_brokers_context(pack)
     check("上下文含机构与情绪", "中金公司" in ctx and "利好" in ctx)
     appx = render_hk_brokers_appendix(pack)
-    check("附录含明细与链接", "https://example.com" in appx
-          and "香港券商新闻与数据" in appx)
+    check("附录含明细且隐藏链接", "https://example.com" not in appx
+          and "香港券商新闻与数据" in appx and "中金" in appx)
     appx2 = render_hk_brokers_appendix(pack, max_per_firm=1)
-    check("附录 max_per_firm 生效", appx2.count("https://example.com") <= 6)
+    check("附录 max_per_firm 生效", appx2.count("1. [") == 6 and "2. [" not in appx2)
 
     item = _mk_item("cicc", "中金维持跑赢大市并上调目标价", "", "看好", None)
     check("评级提取与利好", item.rating != "" and item.sentiment == "利好")
@@ -605,7 +604,7 @@ def selftest() -> int:
         {"title": "券商研报掘金汇总", "url": "u3",
          "ts": now - timedelta(hours=1)},
     ]
-    got = _rows_to_items(rows, "cicc", 48, now, "Google新闻")
+    got = _rows_to_items(rows, "cicc", 96, now, "Google新闻")
     check("RSS 行过滤过期+别名优先",
           len(got) == 1 and got[0].url == "u1"
           and got[0].source == "Google新闻")
