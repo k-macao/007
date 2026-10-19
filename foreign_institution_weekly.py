@@ -543,9 +543,7 @@ def render_foreign_weekly_appendix(pack: ForeignWeeklyPack,
         lines.append(f"\n**{INSTITUTION_MAP[inst_key]['name']}（{len(items)}篇）**")
         for idx, it in enumerate(show, 1):
             ts = it.published.strftime("%Y-%m-%d") if it.published else "本周"
-            lines.append(f"{idx}. [{it.sentiment} {it.score:+.2f}] {it.title} — {it.source} · {ts} {it.rating}")
-            if it.url:
-                lines.append(f"   {it.url}")
+            lines.append(f"{idx}. [{it.sentiment} {it.score:+.2f}] {it.title} — {it.source} · {ts} {it.rating}".rstrip())
             if it.summary:
                 lines.append(f"   > {it.summary[:80]}")
     if pack.errors:
@@ -579,7 +577,8 @@ def selftest() -> int:
     check("上下文含机构与情绪", "Goldman" in ctx and "利好" in ctx)
 
     appx = render_foreign_weekly_appendix(pack)
-    check("附录含明细与链接", "https://example.com" in appx and "一周研报明细" in appx)
+    check("附录含明细且隐藏链接", "https://example.com" not in appx
+          and "一周研报明细" in appx and "Goldman" in appx)
 
     # 评分映射
     item = _mk_item("goldman", "Goldman Sachs 上调评级至买入", "", "看好AI", None)
