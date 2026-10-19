@@ -205,16 +205,17 @@ result = deep_merge_dicts(base, incoming)
 
 ## 📲 GitHub Actions 工作流（定时全市场简报 + 手动个股研报）
 
-仓库内置两个工作流（`.github/workflows/`）：
+仓库内置三个工作流（`.github/workflows/`）：
 
 | Actions 名称 | 文件 | 入口脚本 | 用途 |
 |---|---|---|---|
-| **Scheduled Market Brief (DOS Monitor)** | `market-brief.yml` | `pushplus_deepseek.py` | 每日 UTC 09:00 / 17:00 推送 24h 全市场快讯与板块情报 |
+| **Scheduled Market Brief (DOS Monitor)** | `market-brief.yml` | `pushplus_deepseek.py` | 每日澳门/香港 09:00 / 17:00 推送 24h 全市场快讯与板块情报（含香港券商、国外投行两栏目） |
 | **Manual Run - Stock Report (HK/A-share/US)** | `stock-report.yml` | `stock_report.py` | 手动输入代码生成单标的研报；默认仅预览 |
+| **Manual Run - Broker Columns** | `broker-columns.yml` | `pushplus_deepseek.py` | 手动单独运行香港券商（`hk_brokers`）或国外投行研报（`foreign_weekly`）栏目；默认仅预览 |
 
-**定时推送只发全市场简报，不发个股页**：使用 `feedscan` 聚合 12 源快讯，不传股票代码、不调用 `stock_report.py` / `equity` 研报，也关闭个股走势图；AI 提示词仅允许市场与板块层面概览，并明确禁止个股评级、目标价与买卖点。定时任务固定使用 DOS CRT 复古终端主题。
+**定时推送只发全市场简报，不发个股页**：使用 `feedscan` 聚合 12 源快讯（金十数据单独取最新≤50 条，其余每源≤10 条），不传股票代码、不调用 `stock_report.py` / `equity` 研报，也关闭个股走势图；AI 提示词仅允许市场与板块层面概览，并明确禁止个股评级、目标价与买卖点。简报正文后自动并入 **🏦 香港券商新闻与数据（48h）** 与 **🏛 国外投行研报标题（72h）** 两节（环境变量 `BRIEF_COLUMNS=0` 可关闭）。定时任务固定使用 DOS CRT 复古终端主题。
 
-- 时间按**UTC（用户本地时区）**配置：cron `0 9 * * *` / `0 17 * * *` 分别对应 09:00 / 17:00 UTC；GitHub 定时任务偶尔会有启动延迟。
+- 时间按**澳门/香港时间（UTC+8）**配置：GitHub cron 用 UTC，故写为 `0 1 * * *`（本地 09:00 早报）与 `0 9 * * *`（本地 17:00 晚报）；GitHub 定时任务偶尔会有启动延迟。（2026-10 前为 UTC 09/17 点，实际对应澳门 17:00 与凌晨 01:00，已修正。）
 - 自动推送仅在工作流进入仓库**默认分支**后生效。`workflow_dispatch` 手动试跑默认为 dry-run；定时触发始终真实推送。
 - 手动个股研报工作流没有定时器，且 `dry_run=true` 为默认；只有手动将其改成 `false` 才会投递单标的报告。
 
@@ -234,11 +235,12 @@ result = deep_merge_dicts(base, incoming)
 
 ### 运行方式
 
-- **自动推送**：`market-brief.yml` 每日 UTC 09:00 / 17:00 运行全市场 `feedscan`，只发市场与板块信息；定时运行必须配置 `PUSHPLUS_TOKEN`。工作流进入默认分支后才会触发。
+- **自动推送**：`market-brief.yml` 每日澳门时间 09:00 / 17:00 运行全市场 `feedscan`（含香港券商、国外投行研报两节），只发市场与板块信息；定时运行必须配置 `PUSHPLUS_TOKEN`。工作流进入默认分支后才会触发。
 - **手动个股研报**：`stock-report.yml` 的 `dry_run` 默认 `true`（仅预览）；只有主动选 `false` 才会把指定股票报告真实推送。
+- **手动栏目**：`broker-columns.yml` 可单独运行香港券商栏目或国外投行研报栏目（窗口默认分别 48h / 168h），同样默认仅预览、选 `false` 才真推。
 - **AI 降级**：市场简报默认尝试 DeepSeek；未配置 `DEEPSEEK_API_KEY` 时自动使用本地规则汇总，不影响 PushPlus 投递。
 - **通道**：手动个股工作流可选 pushplus / wecom / serverchan / console / all；定时简报固定为 pushplus。
-- **模板**：定时简报固定 `feedscan`（12 源全市场快讯）。手动研报可选经典分析、`equity` 九章个股投研、NewsNow 与 Skills Hub 模板。
+- **模板**：定时简报固定 `feedscan`（12 源全市场快讯 + 双栏目）。手动研报可选经典分析、`equity` 九章个股投研、NewsNow 与 Skills Hub 模板。
 - `theme`：HTML 推送主题。Actions 工作流、CLI 与大屏推送页默认 **`dos`**：黑底磷光绿字、琥珀色光标、DOS 命令行状态栏、CRT 扫描线与等宽字体；内联样式适配 PushPlus/微信详情页。仍可选 `guizang`（电子杂志长页）、`monitor`（服务器大屏）、`game`（8-bit 像素游戏）、`noc`（零表格监视）、`klein`（复古纸面）、`pixel`（暗色监控）、`default`（普通 Markdown）。`pushplus_deepseek.py`、`stock_report.py`、`equity_research_column.py`、`skills_hub.py`、`server_dashboard.py` 接受同一组主题名。
 - **长报告不再丢样式**：单篇主题 HTML 超过微信软上限（≈48KB）时，PushPlus 通道自动按章节/表格行**切分为多篇（最多 8 篇，标题带 1/N 序号，表格续篇自动补表头）**依次推送，每篇都是完整主题 HTML（guizang 主题第 2 篇起使用紧凑续篇壳，省下巨幅 Hero 让每篇装更多正文）；超过 8 篇时优先裁掉尾部最可弃的附录块（带可见提示、品牌尾注保留），仅当单块实在无法切分时才退回纯 Markdown（旧行为是一超限就退回，推送页完全没有风格）
 - `hours`：量价舆情动量/十七平台扫描/全市场快讯的数据窗口，支持 24/48/72/**156** 小时（156h≈6.5 天，覆盖一个完整交易周）

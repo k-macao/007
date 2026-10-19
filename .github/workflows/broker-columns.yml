@@ -1,0 +1,177 @@
+# ============================================================================
+# 独立栏目手动运行：🏦 香港券商新闻与数据（hk_brokers）/
+# 🏛 国外投行一周研报（foreign_weekly）。
+# 这两个栏目走 pushplus_deepseek.py 的模板主流程（不是单一个股的
+# stock_report.py）；另外每天 UTC 01:00/09:00（澳门 09:00/17:00）的
+# 定时全市场简报会自动并入这两栏目的紧凑版章节。
+#
+# 使用：Actions → Manual Run - Broker Columns → Run workflow；
+# 默认 dry_run=true 仅预览，改成 false 才真实推送到微信。
+# ============================================================================
+name: Manual Run - Broker Columns (HK brokers / Foreign banks)
+
+on:
+  workflow_dispatch:
+    inputs:
+      template:
+        description: '栏目（hk_brokers=香港券商新闻与数据 / foreign_weekly=国外投行一周研报）'
+        required: true
+        default: 'hk_brokers'
+        type: choice
+        options:
+          - hk_brokers
+          - foreign_weekly
+      topic:
+        description: '关注主题（留空：香港券商默认「港股市场」，国外投行默认「全球市场」）'
+        required: false
+        default: ''
+        type: string
+      hours:
+        description: '数据窗口小时（留空：香港券商默认 48，国外投行默认 168 一周）'
+        required: false
+        default: ''
+        type: string
+      channel:
+        description: '推送通道（console=只打印到日志，不发微信）'
+        required: true
+        default: 'pushplus'
+        type: choice
+        options:
+          - pushplus
+          - wecom
+          - serverchan
+          - console
+          - all
+      ai_provider:
+        description: 'AI 提供方（rule=本地聚合，不调用 AI）'
+        required: true
+        default: 'deepseek'
+        type: choice
+        options:
+          - deepseek
+          - openai
+          - rule
+      theme:
+        description: '视觉主题'
+        required: true
+        default: 'dos'
+        type: choice
+        options:
+          - dos
+          - guizang
+          - monitor
+          - noc
+          - game
+          - klein
+          - pixel
+          - default
+      dry_run:
+        description: 'true=只预览（默认）；false=真实推送'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: broker-columns-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  columns:
+    name: Generate & Push Broker Column
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+      WECOM_KEY: ${{ secrets.WECOM_KEY }}
+      SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+      PUSH_STATE_PATH: output/columns_push_state.json
+      PYTHONUNBUFFERED: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Restore push state (新鲜度看板跨运行对比)
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: output/columns_push_state.json
+          key: columns-state-${{ github.run_id }}
+          restore-keys: |
+            columns-state-
+
+      - name: Resolve topic & hours defaults
+        id: cfg
+        shell: bash
+        env:
+          IN_TEMPLATE: ${{ inputs.template }}
+          IN_TOPIC: ${{ inputs.topic }}
+          IN_HOURS: ${{ inputs.hours }}
+        run: |
+          if [[ "$IN_TEMPLATE" == "foreign_weekly" ]]; then
+            echo "topic=${IN_TOPIC:-全球市场}" >> "$GITHUB_OUTPUT"
+            echo "hours=${IN_HOURS:-168}" >> "$GITHUB_OUTPUT"
+          else
+            echo "topic=${IN_TOPIC:-港股市场}" >> "$GITHUB_OUTPUT"
+            echo "hours=${IN_HOURS:-48}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Show run config (不打印任何 Secret)
+        run: |
+          echo "template=${{ inputs.template }} topic=${{ steps.cfg.outputs.topic }} hours=${{ steps.cfg.outputs.hours }}"
+          echo "channel=${{ inputs.channel }} ai_provider=${{ inputs.ai_provider }} theme=${{ inputs.theme }} dry_run=${{ inputs.dry_run }}"
+          python -V
+
+      - name: Offline selftest (离线自检 · 屏蔽 AI Key)
+        env:
+          DEEPSEEK_API_KEY: ''
+          OPENAI_API_KEY: ''
+        run: python pushplus_deepseek.py --selftest
+
+      - name: Dry run (只生成内容，不推送)
+        if: ${{ inputs.dry_run == 'true' }}
+        run: |
+          python pushplus_deepseek.py \
+            --template "${{ inputs.template }}" \
+            --topic "${{ steps.cfg.outputs.topic }}" \
+            --channel "${{ inputs.channel }}" \
+            --ai-provider "${{ inputs.ai_provider }}" \
+            --theme "${{ inputs.theme }}" \
+            --hours "${{ steps.cfg.outputs.hours }}" \
+            --no-chart \
+            --timeout 45 \
+            --dry-run
+
+      - name: Real push (真实推送)
+        if: ${{ inputs.dry_run == 'false' }}
+        run: |
+          python pushplus_deepseek.py \
+            --template "${{ inputs.template }}" \
+            --topic "${{ steps.cfg.outputs.topic }}" \
+            --channel "${{ inputs.channel }}" \
+            --ai-provider "${{ inputs.ai_provider }}" \
+            --theme "${{ inputs.theme }}" \
+            --hours "${{ steps.cfg.outputs.hours }}" \
+            --no-chart \
+            --timeout 45
+
+      - name: Save push state (供下次新鲜度对比)
+        if: ${{ success() && hashFiles('output/columns_push_state.json') != '' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: output/columns_push_state.json
+          key: columns-state-${{ github.run_id }}
