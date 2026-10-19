@@ -469,14 +469,16 @@ def foreign_weekly_context(pack: ForeignWeeklyPack) -> str:
         lines.append("▼ 数据缺口：" + "；".join(pack.errors[:5]))
     return "\n".join(lines)
 
-def render_foreign_weekly_appendix(pack: ForeignWeeklyPack) -> str:
+def render_foreign_weekly_appendix(pack: ForeignWeeklyPack,
+                                   max_per_inst: int | None = None) -> str:
     lines = ["---", f"🏛 **国外机构一周研报明细（{pack.agg.get('n',0)}篇，{pack.hours}h）**"]
     for inst_key in [it["key"] for it in INSTITUTIONS]:
         items = pack.reports.get(inst_key)
         if not items:
             continue
+        show = items[:max_per_inst] if max_per_inst else items
         lines.append(f"\n**{INSTITUTION_MAP[inst_key]['name']}（{len(items)}篇）**")
-        for idx, it in enumerate(items, 1):
+        for idx, it in enumerate(show, 1):
             ts = it.published.strftime("%Y-%m-%d") if it.published else "本周"
             lines.append(f"{idx}. [{it.sentiment} {it.score:+.2f}] {it.title} — {it.source} · {ts} {it.rating}")
             if it.url:

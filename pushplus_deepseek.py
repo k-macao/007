@@ -95,7 +95,7 @@ TEMPLATES = ["brief", "analysis", "scan", "picker", "fusion",
              "sentiment", "feedscan", "newsnow", "equity",
              "initiate", "earnings_preview", "earnings_update",
              "model_update", "morning_note", "catalysts",
-             "thesis", "sector", "ideas", "foreign_weekly"]
+             "thesis", "sector", "ideas", "foreign_weekly", "hk_brokers"]
 TEMPLATE_TITLES = {
     "brief": "简报", "analysis": "多空因子分析", "scan": "市场情报扫描",
     "picker": "选股器·未来30日", "fusion": "技术面×基本面融合",
@@ -114,6 +114,7 @@ TEMPLATE_TITLES = {
     "sector": "行业格局",
     "ideas": "选股/主题扫描",
     "foreign_weekly": "国外机构一周研报",
+    "hk_brokers": "香港券商新闻与数据",
 }
 TEMPLATE_MAX_TOKENS = {
     "brief": 2000, "analysis": 3000, "scan": 4000, "picker": 4000,
@@ -123,6 +124,7 @@ TEMPLATE_MAX_TOKENS = {
     "initiate": 6000, "earnings_preview": 3500, "earnings_update": 5000,
     "model_update": 3500, "morning_note": 2500, "catalysts": 3000,
     "thesis": 3000, "sector": 4500, "ideas": 4000, "foreign_weekly": 6000,
+    "hk_brokers": 6000,
 }
 
 # analysis 的第 7 项是新增因子。它与“消息面与情绪面”不同：这里使用
@@ -734,6 +736,8 @@ class FeedSpec:
     note: str = ""
     # kind="cls" 时的业务查询参数；值 "NOW_TS" 在请求时替换为当前 epoch 秒
     query: dict = field(default_factory=dict)
+    # 每源样本上限：默认 10；金十快讯密度大、单条短，单独放宽到 50
+    limit: int = 10
 
 
 # 财联社接口签名：参数按 key 排序后 sign = md5(sha1(query))。
@@ -799,10 +803,29 @@ FEED_SPECS: list[FeedSpec] = [
     ], kind="fb_news",
         headers={"Referer": "https://www.fastbull.com/cn/",
                  "Accept": "text/html"}),
+    # 金十：flash_newest.js 一次返回数十条，按口径取最新≤50 条
+    # （其中 channel=[5] 是同一快讯的英文重复版，抓取时过滤，避免重复计数）
     FeedSpec("金十数据", [
         "https://www.jin10.com/flash_newest.js",
-    ], kind="js", headers={"Referer": "https://www.jin10.com/", "x-app-id": "rU6QIu7JHe2gOUTe"}),
+    ], kind="js", limit=50,
+        headers={"Referer": "https://www.jin10.com/", "x-app-id": "rU6QIu7JHe2gOUTe"}),
 ]
+
+
+def _drop_jin10_english(payload):
+    """金十 flash 列表里 channel=[5] 是同一条快讯的英文版，与中文版重复计数，
+    抓取时剔除（对照 NewsNow jin10 源的口径）；其它结构原样返回。"""
+    rows = payload if isinstance(payload, list) else (
+        payload.get("data") if isinstance(payload, dict) else None)
+    if not isinstance(rows, list):
+        return payload
+    kept = [r for r in rows
+            if not (isinstance(r, dict) and r.get("channel") == [5])]
+    if isinstance(payload, list):
+        return kept
+    out = dict(payload)
+    out["data"] = kept
+    return out
 
 
 def fetch_feed_json(spec: FeedSpec, hours: int, timeout: int,
@@ -819,7 +842,7 @@ def fetch_feed_json(spec: FeedSpec, hours: int, timeout: int,
                 continue
             if spec.kind in ("fb_express", "fb_news"):  # 法布财经 HTML 列表页
                 items = parse_fastbull(body, spec.kind, spec.name,
-                                       10, hours, now)
+                                       spec.limit, hours, now)
                 if items:
                     return items
                 last_err = "解析成功但 48h 内无条目（结构可能已变）"
@@ -833,7 +856,10 @@ def fetch_feed_json(spec: FeedSpec, hours: int, timeout: int,
             except json.JSONDecodeError:
                 last_err = "非 JSON 返回（可能需要登录/被反爬）"
                 continue
-            items = extract_items_generic(payload, spec.name, 10, hours, now)
+            if spec.kind == "js":  # 金十：过滤英文重复版（channel=[5]）
+                payload = _drop_jin10_english(payload)
+            items = extract_items_generic(payload, spec.name, spec.limit,
+                                          hours, now)
             if items:
                 return items
             last_err = "解析成功但 48h 内无条目（结构可能已变）"
@@ -1138,7 +1164,7 @@ def feed_context(topic: str, pack: FeedPack) -> str:
         agg = _src_agg(items)
         ctx.append(f"▼ {spec.name}（{agg['n']}条：利好{agg['pos']}/"
                    f"利空{agg['neg']}/中性{agg['neu']}，动量{agg['mean']:+.2f}）")
-        ctx += [_item_line(i, k + 1) for k, i in enumerate(items[:10])]
+        ctx += [_item_line(i, k + 1) for k, i in enumerate(items[:spec.limit])]
     # DeepSeek 搜索（新增第 13 源）
     ds_items = pack.items.get("DeepSeek 搜索")
     if ds_items:
@@ -1196,14 +1222,14 @@ def render_feed_rule(topic: str, pack: FeedPack) -> str:
 
 def render_feed_appendix(pack: FeedPack, new_keys: set | None = None) -> str:
     nk = new_keys or set()
-    lines = ["---", f"📰 **快讯原始明细（{pack.agg['n']} 条，每源≤10，含 DeepSeek 搜索）**"]
+    lines = ["---", f"📰 **快讯原始明细（{pack.agg['n']} 条，金十≤50、其余每源≤10，含 DeepSeek 搜索）**"]
     for spec in FEED_SPECS:
         items = pack.items.get(spec.name)
         if not items:
             continue
-        lines.append(f"\n**{spec.name}（{len(items)}/10）**")
+        lines.append(f"\n**{spec.name}（{len(items)}/{spec.limit}）**")
         lines += [_item_line(i, k + 1, _item_key(i.title) in nk)
-                  for k, i in enumerate(items[:10])]
+                  for k, i in enumerate(items[:spec.limit])]
     ds_items = pack.items.get("DeepSeek 搜索")
     if ds_items:
         lines.append(f"\n**DeepSeek 搜索（{len(ds_items)}/10）**")
@@ -1461,6 +1487,16 @@ def build_messages(template: str, topic: str, context: str,
             + RULES_TAIL)
     elif template == "feedscan":
         if is_market_wide_topic(topic):
+            # 每日简报并入的栏目（数据段存在时才要求 AI 写对应小节）
+            columns_note = ""
+            if "【香港券商新闻与数据" in context:
+                columns_note += (
+                    "- **香港券商动态**：一小节概括香港券商最新研报/新闻标题要点，"
+                    "附上市券商股价表现（只引用下方同名数据段给定内容）\n")
+            if "【国外机构一周研报" in context:
+                columns_note += (
+                    "- **国外投行研报**：一小节逐家列出国外投行最新研报标题与"
+                    "评级要点（只引用下方同名数据段给定内容并注明机构）\n")
             user = (
                 "基于以下最近 24h 全市场快讯数据（已本地预打标，含各源情绪指标），"
                 "输出一份不针对单只股票的全市场市场情报简报。\n\n"
@@ -1472,7 +1508,8 @@ def build_messages(template: str, topic: str, context: str,
                 "- **三大市场主线**：跨源归纳，每条标注支撑来源与可信度\n"
                 "- **板块映射**：受益/承压板块各 2~3 个；没有足够证据时标明未知\n"
                 "- **风险与观察**：2~3 条市场级风险或接下来需要验证的信号\n"
-                "- **数据缺口**：注明失效/无返回来源，不补造数据\n\n"
+                + columns_note
+                + "- **数据缺口**：注明失效/无返回来源，不补造数据\n\n"
                 "重要约束：只做宏观、市场与板块层面的概览；禁止输出任何单只股票的研报、"
                 "评级、目标价、买卖点或个股投资建议。快讯即使提到公司，也只可作为新闻事实，"
                 "不得把正文写成个股页。不得臆造数据。"
@@ -1659,6 +1696,21 @@ def build_messages(template: str, topic: str, context: str,
             "- **下周关注**：2-3 个催化剂（财报/议息/数据）\n\n"
             "要求：所有观点标注来源机构与时间；不得臆造研报原文链接，缺失写“未获取到”；概率取整数%；简体中文 Markdown。"
             + RULES_TAIL)
+    elif template == "hk_brokers":
+        user = (
+            f"基于以下香港主要券商新闻与数据（中金/中信证券国际/华泰金控/国泰君安国际/招商证券国际/海通国际/交银国际/建银国际/中银国际/富途/老虎/耀才等，含研报动态与上市券商股价快照），"
+            f"为主题「{topic}」撰写一份香港券商栏目。\n\n{ctx}\n\n"
+            "严格按此格式输出：\n\n"
+            "## 香港券商新闻与数据\n\n"
+            "| 券商 | 最新动态（研报/新闻标题） | 评级/方向 | 依据来源 |\n"
+            "|---|---|---|---|\n"
+            "（逐家 1-2 行，窗口内无动态的机构标明“暂无更新”，不要编造）\n\n"
+            "- **上市券商股价**：引用数据中的股价快照，点评涨跌居前者（注明为抓取时点）\n"
+            "- **券商观点共识与分歧**：归纳 2-3 条（涉及板块/标的方向，标注支撑家数）\n"
+            "- **行业事件**：IPO/佣金/开户/政策等券商行业新闻 2-3 条\n"
+            "- **数据缺口**：注明未命中的机构，不补造数据\n\n"
+            "要求：标题与评级必须来自给定数据；不得编造目标价；不得给出买卖建议；简体中文 Markdown。"
+            + RULES_TAIL)
     else:
         # Anthropic 官方 skill 模板：委托 skills_hub 构造完整 prompt
         try:
@@ -1778,6 +1830,22 @@ def gen_by_rule(topic: str, template: str,
                 f"- 运行时间：{now}（北京时间）",
                 "- 覆盖机构：高盛/摩根士丹利/摩根大通/美银/花旗/瑞银/德银/巴克莱/汇丰/晨星/伯恩斯坦/野村",
                 "- 提示：使用 --template foreign_weekly --hours 168 可采集最近一周研报",
+                "", "> ⚠️ 非投资建议，仅供参考。"])
+    if template == "hk_brokers":
+        # 香港券商新闻与数据独立栏目（gen_by_rule 无 pack 时降级演示包；
+        # 主流程独立模板走 collect_hk_brokers 真实采集，不走这里）
+        try:
+            import hk_brokers as hb
+            pack = hb.demo_pack()
+            pack.topic = topic
+            return hb.render_hk_brokers_rule(topic, pack)
+        except Exception as e:  # noqa: BLE001
+            return "\n".join([
+                f"**{topic} · 香港券商新闻与数据**（rule 降级）", "",
+                f"- hk_brokers 不可用：{e}",
+                f"- 运行时间：{now}（北京时间）",
+                "- 覆盖券商：中金/中信证券国际/华泰金控/国泰君安国际/招商证券国际/海通国际/交银国际/建银国际/中银国际/富途/老虎/耀才",
+                "- 提示：使用 --template hk_brokers --hours 48 可采集最新券商动态",
                 "", "> ⚠️ 非投资建议，仅供参考。"])
     try:
         import skills_hub as sh
@@ -4451,7 +4519,23 @@ def selftest() -> int:
               "n_sources": 1, "综合多头概率锚点": 50 + 45 * min(1.0, 1.0 * 3)}
     md_rule = render_feed_rule("阿里巴巴", fp)
     check("feedscan:rule渲染含缺口行", "⚠️" in md_rule and "情绪温度" in md_rule)
-    check("feedscan:附录含来源明细", "金十数据（1/10）" in render_feed_appendix(fp))
+    check("feedscan:附录含来源明细", "金十数据（1/50）" in render_feed_appendix(fp))
+    jin10_spec = next(s for s in FEED_SPECS if s.name == "金十数据")
+    check("金十:样本上限=50(其余源默认10)",
+          jin10_spec.limit == 50
+          and all(s.limit == 10 for s in FEED_SPECS if s.name != "金十数据"))
+    j50_raw = [{"id": str(k), "time": "2026-08-04 11:00:00", "channel": [1],
+                "data": {"content": f"测试快讯样本第{k}条内容"}}
+               for k in range(60)]
+    j50_raw.append({"id": "en1", "time": "2026-08-04 11:00:00",
+                    "channel": [5],
+                    "data": {"content": "English duplicate flash item"}})
+    j50_kept = _drop_jin10_english(j50_raw)
+    check("金十:channel=[5]英文重复版被过滤", len(j50_kept) == 60
+          and all(r.get("channel") != [5] for r in j50_kept))
+    ij50 = extract_items_generic(j50_kept, "金十数据", jin10_spec.limit,
+                                 48, NOW)
+    check("金十:60条样本取满50条", len(ij50) == 50)
     market_topic = "全球市场早报"
     market_ctx = feed_context(market_topic, fp)
     market_prompt = build_messages("feedscan", market_topic, market_ctx)[1]["content"]
@@ -4802,6 +4886,32 @@ def selftest() -> int:
     except Exception as e:  # noqa: BLE001
         check(f"十七平台扫描集成异常: {e}", False)
 
+    log("③j2 香港券商栏目（独立模板 + 简报栏目提示词）")
+    try:
+        import hk_brokers as hb
+        check("hk_brokers 模板已注册",
+              "hk_brokers" in TEMPLATES
+              and TEMPLATE_TITLES.get("hk_brokers") == "香港券商新闻与数据"
+              and TEMPLATE_MAX_TOKENS.get("hk_brokers", 0) > 0)
+        check("香港券商子模块自检通过", hb.selftest() == 0)
+        _hk_prompt = build_messages(
+            "hk_brokers", "香港券商动态",
+            hb.hk_brokers_context(hb.demo_pack()))[1]["content"]
+        check("hk_brokers 提示词含栏目框架",
+              "香港券商新闻与数据" in _hk_prompt and "富途" in _hk_prompt)
+        _brief_prompt = build_messages(
+            "feedscan", "全球市场早报",
+            "【24h 全市场快讯数据】\n\n" + hb.hk_brokers_context(
+                hb.demo_pack(), max_per_firm=2))[1]["content"]
+        check("每日简报提示词在有栏目数据时要求香港券商小节",
+              "**香港券商动态**" in _brief_prompt)
+        _brief_plain = build_messages(
+            "feedscan", "全球市场早报", "【24h 全市场快讯数据】")[1]["content"]
+        check("无栏目数据时简报提示词不强求券商小节",
+              "**香港券商动态**" not in _brief_plain)
+    except Exception as e:  # noqa: BLE001
+        check(f"香港券商栏目集成异常: {e}", False)
+
     log("③k 数据源检查验证数据库（SQLite 落库）")
     try:
         import tempfile
@@ -5151,6 +5261,9 @@ def main(argv: list[str]) -> int:
 
     # ---------- 模块②b：feedscan 模板采集 13 源全市场快讯（含 DeepSeek 搜索）----------
     feed_pack = None
+    # 每日全市场简报并入的栏目附录（香港券商 + 国外投行研报），在下方填充；
+    # 最终附录重算处需再次拼接，先在这里初始化保证作用域内始终有值
+    brief_columns_appendix_md = ""
     if template == "feedscan":
         log(f"\n📡 正在采集 13 源全市场快讯（{args.hours}h 窗口，含 DeepSeek 搜索）…")
         feed_pack = collect_feeds(args.hours, min(args.timeout, 12), topic=topic)
@@ -5180,6 +5293,72 @@ def main(argv: list[str]) -> int:
             f"{feed_pack.agg['综合多头概率锚点']}%")
         appendix_md = render_feed_appendix(feed_pack)
         user_context = feed_context(topic, feed_pack)
+
+        # 每日全市场简报并入栏目（仅全市场主题；环境变量 BRIEF_COLUMNS=0
+        # 可关闭）：🏦 香港券商新闻与数据（48h）+ 🏛 国外投行研报标题（72h）。
+        # 采集失败/无命中只如实记缺口，绝不用演示数据填充正式推送。
+        if is_market_wide_topic(topic) and env("BRIEF_COLUMNS") != "0":
+            _col_ctx_parts: list[str] = []
+            _col_apx_parts: list[str] = []
+            try:
+                from hk_brokers import (collect_hk_brokers,
+                                        hk_brokers_context,
+                                        render_hk_brokers_appendix)
+                log("\n🏦 简报栏目：香港券商新闻与数据（48h，12 家）…")
+                _hk_pack = collect_hk_brokers(
+                    topic="港股市场", hours=48,
+                    timeout=min(args.timeout, 12))
+                log(f"  → {_hk_pack.agg.get('n', 0)} 条 / "
+                    f"{_hk_pack.agg.get('firms_hit', 0)}/12 家，"
+                    f"股价快照 {_hk_pack.agg.get('quotes_hit', 0)} 家")
+                for _e in _hk_pack.errors[:4]:
+                    log(f"  ⚠️  {_e}")
+                if _hk_pack.agg.get("n", 0):
+                    _col_ctx_parts.append(
+                        hk_brokers_context(_hk_pack, max_per_firm=2))
+                    _col_apx_parts.append(render_hk_brokers_appendix(
+                        _hk_pack, max_per_firm=2))
+                else:
+                    _col_apx_parts.append(
+                        "---\n🏦 **香港券商新闻与数据**\n\n- ⚠️ 本次未采集到（"
+                        + "；".join(_hk_pack.errors[:3]) + "）")
+            except Exception as ex:  # noqa: BLE001 —— 栏目失败不拖累简报
+                log(f"  ⚠️ 香港券商栏目采集失败：{ex}")
+                _col_apx_parts.append(
+                    "---\n🏦 **香港券商新闻与数据**\n\n"
+                    f"- ⚠️ 采集失败：{str(ex)[:120]}")
+            try:
+                from foreign_institution_weekly import (
+                    collect_foreign_weekly, foreign_weekly_context,
+                    render_foreign_weekly_appendix)
+                log("\n🏛 简报栏目：国外投行研报标题（72h，12 家）…")
+                _fw_pack = collect_foreign_weekly(
+                    topic="全球市场", hours=72,
+                    timeout=min(args.timeout, 12))
+                log(f"  → {_fw_pack.agg.get('n', 0)} 篇 / "
+                    f"{_fw_pack.agg.get('institutions_hit', 0)}/12 家")
+                for _e in _fw_pack.errors[:4]:
+                    log(f"  ⚠️  {_e}")
+                if _fw_pack.agg.get("n", 0):
+                    _col_ctx_parts.append(foreign_weekly_context(_fw_pack))
+                    _col_apx_parts.append(render_foreign_weekly_appendix(
+                        _fw_pack, max_per_inst=2))
+                else:
+                    _col_apx_parts.append(
+                        "---\n🏛 **国外投行研报标题**\n\n- ⚠️ 本次未采集到（"
+                        + "；".join(_fw_pack.errors[:3]) + "）")
+            except Exception as ex:  # noqa: BLE001
+                log(f"  ⚠️ 国外投行研报栏目采集失败：{ex}")
+                _col_apx_parts.append(
+                    "---\n🏛 **国外投行研报标题**\n\n"
+                    f"- ⚠️ 采集失败：{str(ex)[:120]}")
+            if _col_ctx_parts:
+                user_context = (f"{user_context}\n\n"
+                                + "\n\n".join(_col_ctx_parts))
+            if _col_apx_parts:
+                brief_columns_appendix_md = "\n\n".join(_col_apx_parts)
+                appendix_md = (f"{appendix_md}\n\n"
+                               f"{brief_columns_appendix_md}")
 
     # ---------- 模块②c：NewsNow 10源热榜聚合（知乎/抖音/微博/虎扑/AI hot/联合早报/香港01/今日头条/百度/B站） ----------
     newsnow_pack = None
@@ -5257,6 +5436,30 @@ def main(argv: list[str]) -> int:
                     log(f"  ❌ 演示包也失败：{ex2}")
                     foreign_weekly_pack = None
 
+    # ---------- 模块②e：香港券商新闻与数据（独立栏目）----------
+    hk_brokers_pack = None
+    if template == "hk_brokers":
+        log(f"\n🏦 正在采集香港券商新闻与数据（{args.hours}h 窗口，12 家券商）…")
+        try:
+            from hk_brokers import (collect_hk_brokers,
+                                    render_hk_brokers_appendix,
+                                    hk_brokers_context)
+            hk_brokers_pack = collect_hk_brokers(
+                topic=topic, hours=args.hours,
+                timeout=min(args.timeout, 15))
+            for _k, _items in hk_brokers_pack.reports.items():
+                log(f"  ✅ {_items[0].firm if _items else _k}: {len(_items)} 条")
+            for _e in hk_brokers_pack.errors:
+                log(f"  ⚠️  {_e}")
+            log(f"  → 共 {hk_brokers_pack.agg.get('n', 0)} 条 / "
+                f"{hk_brokers_pack.agg.get('firms_hit', 0)}/12 家，"
+                f"股价快照 {hk_brokers_pack.agg.get('quotes_hit', 0)} 家")
+            appendix_md = render_hk_brokers_appendix(hk_brokers_pack)
+            user_context = hk_brokers_context(hk_brokers_pack)
+        except Exception as ex:  # noqa: BLE001
+            log(f"  ❌ 香港券商栏目失败：{ex}（将降级为规则提示）")
+            hk_brokers_pack = None
+
     # ---------- 模块①：三源取价 + 交叉核验（可选）----------
     data_md, context = "", user_context
     quotes: list[Quote] = []
@@ -5295,6 +5498,12 @@ def main(argv: list[str]) -> int:
                     content = render_foreign_weekly_rule(topic, foreign_weekly_pack)
                 except Exception:
                     content = gen_by_rule(topic, template)
+            elif template == "hk_brokers" and hk_brokers_pack is not None:
+                try:
+                    from hk_brokers import render_hk_brokers_rule
+                    content = render_hk_brokers_rule(topic, hk_brokers_pack)
+                except Exception:
+                    content = gen_by_rule(topic, template)
             else:
                 # newsnow may be None if import fails, pass it anyway
                 try:
@@ -5323,6 +5532,12 @@ def main(argv: list[str]) -> int:
                     try:
                         from foreign_institution_weekly import render_foreign_weekly_rule
                         content = render_foreign_weekly_rule(topic, foreign_weekly_pack)
+                    except Exception:
+                        content = gen_by_rule(topic, template)
+                elif template == "hk_brokers" and hk_brokers_pack is not None:
+                    try:
+                        from hk_brokers import render_hk_brokers_rule
+                        content = render_hk_brokers_rule(topic, hk_brokers_pack)
                     except Exception:
                         content = gen_by_rule(topic, template)
                 else:
@@ -5461,6 +5676,9 @@ def main(argv: list[str]) -> int:
                                                 new_keys=new_key_set)
     elif template == "feedscan" and feed_pack is not None:
         appendix_md = render_feed_appendix(feed_pack, new_keys=new_key_set)
+        # 重算会覆盖采集段已拼好的内容，这里把并入简报的栏目附录再拼一次
+        if brief_columns_appendix_md:
+            appendix_md += "\n\n" + brief_columns_appendix_md
     elif template == "foreign_weekly" and locals().get("foreign_weekly_pack") is not None:
         try:
             from foreign_institution_weekly import render_foreign_weekly_appendix

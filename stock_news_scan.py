@@ -568,7 +568,13 @@ def fetch_jin10(timeout: int) -> list[dict]:
         headers={"Referer": "https://www.jin10.com/", "x-app-id": "rU6QIu7JHe2gOUTe"})
     if status != 200:
         raise ScanError(f"金十 HTTP {status}")
-    rows = extract_flash_rows(json.loads(strip_js_shell(body)))
+    payload = json.loads(strip_js_shell(body))
+    # channel=[5] 是同一条快讯的英文重复版，过滤后取最新≤50 条
+    # （与 pushplus_deepseek._drop_jin10_english 口径一致）
+    if isinstance(payload, list):
+        payload = [r for r in payload
+                   if not (isinstance(r, dict) and r.get("channel") == [5])]
+    rows = extract_flash_rows(payload, limit=50)
     if not rows:
         raise ScanError("金十解析空")
     return rows
