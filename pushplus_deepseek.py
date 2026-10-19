@@ -828,6 +828,60 @@ def _drop_jin10_english(payload):
     return out
 
 
+_JIN10_FLASH_API = "https://flash-api.jin10.com/get_flash_list"
+
+
+def _jin10_fill_pages(payload, limit: int, timeout: int):
+    """flash_newest.js 单页常只有约 25~40 条中文快讯；不足 limit 时用官方
+    flash-api 按最末条时间 max_time 继续翻页（对照 RSSHub jin10 路由的
+    x-app-id/x-version 头），去重后补满。任何失败都静默回退已有条目。"""
+    rows = payload if isinstance(payload, list) else None
+    if not rows or len(rows) >= limit:
+        return payload
+    seen = {r.get("id") for r in rows if isinstance(r, dict)}
+    headers = {"Referer": "https://www.jin10.com/",
+               "x-app-id": "bVBF4FyRTn5NJF5n", "x-version": "1.0.0"}
+    for _ in range(3):  # 最多再翻 3 页（每页数十条，足够补满 50）
+        last = rows[-1] if isinstance(rows[-1], dict) else {}
+        max_time = str(last.get("time") or "").strip()
+        if not max_time:
+            break
+        url = (_JIN10_FLASH_API + "?channel=-8200&vip=1"
+               f"&t={int(time.time())}"
+               f"&max_time={urllib.parse.quote(max_time)}")
+        try:
+            status, body = http_request(url, headers=headers, timeout=timeout)
+            if status != 200:
+                break
+            page = json.loads(body)
+        except Exception:  # noqa: BLE001 —— 分页失败不影响首页结果
+            break
+        page_rows = _drop_jin10_english(page)
+        if isinstance(page_rows, dict):
+            page_rows = page_rows.get("data")
+        if not isinstance(page_rows, list) or not page_rows:
+            break
+        added = 0
+        for r in page_rows:
+            if not isinstance(r, dict):
+                continue
+            rid = r.get("id")
+            if rid is not None and rid in seen:
+                continue
+            data = r.get("data") if isinstance(r.get("data"), dict) else {}
+            text = str(data.get("title") or data.get("content") or "")
+            if not re.search(r"[一-鿿]", text):
+                continue  # flash-api 无 channel 字段：无汉字视为英文版剔除
+            seen.add(rid)
+            rows.append(r)
+            added += 1
+            if len(rows) >= limit:
+                break
+        if added == 0 or len(rows) >= limit:
+            break
+    return rows
+
+
 def fetch_feed_json(spec: FeedSpec, hours: int, timeout: int,
                     now: datetime) -> list[SentItem]:
     last_err = "无可用端点"
@@ -856,8 +910,9 @@ def fetch_feed_json(spec: FeedSpec, hours: int, timeout: int,
             except json.JSONDecodeError:
                 last_err = "非 JSON 返回（可能需要登录/被反爬）"
                 continue
-            if spec.kind == "js":  # 金十：过滤英文重复版（channel=[5]）
+            if spec.kind == "js":  # 金十：过滤英文重复版 + 不足 50 翻页补满
                 payload = _drop_jin10_english(payload)
+                payload = _jin10_fill_pages(payload, spec.limit, timeout)
             items = extract_items_generic(payload, spec.name, spec.limit,
                                           hours, now)
             if items:
@@ -4536,6 +4591,31 @@ def selftest() -> int:
     ij50 = extract_items_generic(j50_kept, "金十数据", jin10_spec.limit,
                                  48, NOW)
     check("金十:60条样本取满50条", len(ij50) == 50)
+    _orig_http = http_request
+    try:
+        def _fake_flash(url, headers=None, timeout=10, **kw):
+            page = [{"id": i, "time": "2026-10-19 08:00:00",
+                     "data": {"title": f"金十快讯样本{i}央行动态",
+                              "content": "正文"}} for i in range(100, 140)]
+            page[0] = {"id": 1, "time": "2026-10-19 08:30:00",
+                       "data": {"title": "与首页重复的条目", "content": "x"}}
+            page[1] = {"id": 999, "time": "2026-10-19 08:29:00",
+                       "data": {"title": "Fed seen cutting rates",
+                                "content": "english only"}}
+            return 200, json.dumps({"data": page}, ensure_ascii=False)
+        globals()["http_request"] = _fake_flash
+        home_rows = [{"id": i, "time": "2026-10-19 09:00:00",
+                      "data": {"title": f"首页快讯{i}", "content": "正文"}}
+                     for i in range(1, 13)]
+        filled = _jin10_fill_pages(list(home_rows), 50, 5)
+        check("金十:flash-api 翻页补满 50（去重+剔英文）",
+              len(filled) == 50
+              and len({r["id"] for r in filled}) == 50
+              and all(r["id"] != 999 for r in filled))
+        check("金十:已满 50 不再翻页",
+              len(_jin10_fill_pages(list(filled), 50, 5)) == 50)
+    finally:
+        globals()["http_request"] = _orig_http
     market_topic = "全球市场早报"
     market_ctx = feed_context(market_topic, fp)
     market_prompt = build_messages("feedscan", market_topic, market_ctx)[1]["content"]

@@ -8,9 +8,10 @@ Deutsche Bank / Barclays / HSBC / Morningstar / Bernstein 等国外顶级投行/
 在最近一周（默认 168h）的研报、观点、评级调整与策略周报。
 
 设计：
-- 纯标准库 + 复用 deepseek_search / stock_news_scan / Google新闻
+- 纯标准库 + Google News RSS（主）/ Bing News RSS（备）真实新闻检索，
+  deepseek_search 生成式搜索仅末位兜底（stock_news_scan 提供 RSS 解析）
 - 任何单机构失败只记数据缺口，不中断整体
-- 支持离线样本自检（不触网）与在线真抓取（需 DEEPSEEK_API_KEY 可选）
+- 支持离线样本自检（不触网）与在线真抓取（真实检索无需 API Key）
 - 产出 Markdown 栏目内容，供 pushplus_deepseek / server_dashboard / stock_report 调用
 
 用法：
@@ -316,30 +317,88 @@ def _fetch_via_deepseek(query: str, inst_key: str, hours: int, timeout: int) -> 
             break
     return items
 
-def _fetch_via_google(query: str, inst_key: str, hours: int, timeout: int, now: datetime) -> List[ReportItem]:
+def _inst_queries(inst_key: str) -> List[str]:
+    """短查询：机构中文简称 + 1~3 个关键词。切忌把整句 topic 与英文长串
+    混塞进查询——Google News 全词 AND 匹配会把召回压到 0（2026-10
+    线上实测：'Goldman Sachs 全球市场 research report weekly rating
+    target' 0 命中，'高盛 评级 目标价' 34 条）。topic 只作栏目口径。"""
+    inst = INSTITUTION_MAP.get(inst_key, {})
+    zh = (inst.get("name") or inst_key).split()[0]
+    return [f"{zh} 研报", f"{zh} 评级 目标价"]
+
+
+def _rows_to_items(rows, inst_key: str, hours: int, now: datetime,
+                   source: str) -> List[ReportItem]:
+    """RSS 行 -> ReportItem：时效过滤 + 标题含机构别名者优先
+    （全无别名命中时按查询相关性顺序兜底接受）。"""
+    cutoff = now - timedelta(hours=hours)
+    inst = INSTITUTION_MAP.get(inst_key, {})
+    aliases = [a.lower() for a in inst.get("aliases", [])]
+    zh = (inst.get("name") or "").split()
+    if zh:
+        aliases.append(zh[0].lower())  # 如「摩根士丹利」未列入别名也要认
+    fresh = []
+    for r in rows:
+        ts = r.get("ts")
+        if ts and ts < cutoff:
+            continue
+        title = (r.get("title") or "").strip()
+        if len(title) < 6:
+            continue
+        fresh.append((title, r.get("url", ""), ts))
+    hit = [t for t in fresh if any(a in t[0].lower() for a in aliases)]
+    picked = (hit or fresh)[:5]
+    return [_mk_item(inst_key, t, u, "", ts, source) for t, u, ts in picked]
+
+
+def _fetch_via_google(inst_key: str, hours: int, timeout: int, now: datetime) -> List[ReportItem]:
+    """Google News RSS（真实新闻检索，主链路）。"""
     try:
         from stock_news_scan import parse_google_rss, http_request, GOOGLE_RSS
         import urllib.parse
-        q = urllib.parse.quote_plus(f"{query} when:7d")
-        status, body = http_request(GOOGLE_RSS.format(q=q), timeout=timeout)
-        if status != 200:
-            raise RuntimeError(f"Google HTTP {status}")
-        rows = parse_google_rss(body)
-        items: List[ReportItem] = []
-        cutoff = now - timedelta(hours=hours)
-        for r in rows:
-            ts = r.get("ts")
-            if ts and ts < cutoff:
-                continue
-            title = r.get("title","")
-            if len(title) < 6:
-                continue
-            items.append(_mk_item(inst_key, title, r.get("url",""), "", ts, "Google新闻"))
-            if len(items) >= 5:
-                break
-        return items
+        for query in _inst_queries(inst_key):
+            q = urllib.parse.quote_plus(f"{query} when:7d")
+            status, body = http_request(GOOGLE_RSS.format(q=q), timeout=timeout)
+            if status != 200:
+                raise RuntimeError(f"Google HTTP {status}")
+            items = _rows_to_items(parse_google_rss(body), inst_key, hours,
+                                   now, "Google新闻")
+            if items:
+                return items
+        return []
     except Exception as e:
         raise RuntimeError(f"Google 搜索失败: {e}") from e
+
+
+def _fetch_via_bing(inst_key: str, hours: int, timeout: int, now: datetime) -> List[ReportItem]:
+    """Bing News RSS（备援真实新闻检索）。"""
+    try:
+        from stock_news_scan import http_request
+        import urllib.parse
+        import xml.etree.ElementTree as ET
+        from email.utils import parsedate_to_datetime
+        zh = (INSTITUTION_MAP.get(inst_key, {}).get("name")
+              or inst_key).split()[0]
+        q = urllib.parse.quote_plus(f"{zh} 研报")
+        url = f"https://www.bing.com/news/search?q={q}&format=rss"
+        status, body = http_request(url, timeout=timeout)
+        if status != 200:
+            raise RuntimeError(f"Bing HTTP {status}")
+        try:
+            root = ET.fromstring(body)
+        except ET.ParseError:
+            root = ET.fromstring(body.encode("utf-8", "replace"))
+        rows = []
+        for it in root.iter("item"):
+            try:
+                ts = parsedate_to_datetime(it.findtext("pubDate", "") or "")
+            except (TypeError, ValueError):
+                ts = None
+            rows.append({"title": it.findtext("title", "") or "",
+                         "url": it.findtext("link", "") or "", "ts": ts})
+        return _rows_to_items(rows, inst_key, hours, now, "Bing资讯")
+    except Exception as e:
+        raise RuntimeError(f"Bing 搜索失败: {e}") from e
 
 def collect_foreign_weekly(topic: str = "全球市场", hours: int = DEFAULT_HOURS,
                            timeout: int = 12, only: List[str] | None = None,
@@ -349,40 +408,41 @@ def collect_foreign_weekly(topic: str = "全球市场", hours: int = DEFAULT_HOU
     - topic: 关注主题，如 "AI 算力"、"港股互联网"、"全球市场"
     - hours: 默认 168h 一周
     - only: 仅采集指定机构 key，如 ["goldman","morgan_stanley"]
-    - use_deepseek: 是否使用 DeepSeek 搜索（需 Key），否则仅 Google
+    - use_deepseek: 是否允许 DeepSeek 生成式搜索作末位兜底（需 Key）；
+      主链路为 Google/Bing 真实新闻检索，不受此开关影响
     """
     now = _now()
     pack = ForeignWeeklyPack(hours=hours, topic=topic)
 
     target_keys = only or [it["key"] for it in INSTITUTIONS]
     has_ds_key_global = bool(os.environ.get("DEEPSEEK_API_KEY", "").strip())
-    if use_deepseek and not has_ds_key_global:
-        pack.errors.append("DeepSeek：缺少 DEEPSEEK_API_KEY，已跳过主链路，仅尝试 Google 备用")
+    # 主链路为真实新闻检索（Google News RSS -> Bing RSS 短查询）；
+    # DeepSeek 生成式搜索仅作末位兜底（结果为模型生成、无真实检索）。
+    rss_timeout = min(timeout, 10)
 
+    dead_streak = 0
     for inst_key in target_keys:
         if inst_key not in INSTITUTION_MAP:
             pack.errors.append(f"{inst_key}：未知机构")
             continue
         inst = INSTITUTION_MAP[inst_key]
-        # 单查询+短超时，避免 12*15s
-        eff_timeout = min(timeout, 5)
-        q = f"{inst['aliases'][0]} {topic} research report weekly rating target"
         items: List[ReportItem] = []
-        last_err = ""
-        if use_deepseek and has_ds_key_global:
+        errs: List[str] = []
+        transport_dead = True  # 两路 RSS 都抛错才算网络源不可达
+        for fetcher in (_fetch_via_google, _fetch_via_bing):
             try:
-                ds_items = _fetch_via_deepseek(q, inst_key, hours, eff_timeout)
-                if ds_items:
-                    items.extend(ds_items)
+                items = fetcher(inst_key, hours, rss_timeout, now)
+                transport_dead = False
+                if items:
+                    break
             except Exception as e:
-                last_err = str(e)[:120]
-        if not items:
+                errs.append(str(e)[:80])
+        if not items and use_deepseek and has_ds_key_global:
             try:
-                g_items = _fetch_via_google(q, inst_key, hours, eff_timeout, now)
-                if g_items:
-                    items.extend(g_items)
+                q = f"{inst['name']} 研报 评级 目标价"
+                items = _fetch_via_deepseek(q, inst_key, hours, timeout)
             except Exception as e:
-                last_err = (last_err + " | " if last_err else "") + str(e)[:120]
+                errs.append(str(e)[:80])
 
         if items:
             seen = set()
@@ -392,12 +452,15 @@ def collect_foreign_weekly(topic: str = "全球市场", hours: int = DEFAULT_HOU
                     uniq.append(it)
                     seen.add(it.title)
             pack.reports[inst_key] = uniq[:5]
+            dead_streak = 0
         else:
-            pack.errors.append(f"{inst['name']}：{last_err or '一周内无命中'}")
-            if not has_ds_key_global and not pack.reports:
-                fail_count = len([e for e in pack.errors if "：" in e])
-                if fail_count >= 2:
-                    break
+            detail = "；".join(errs) if errs else "一周内无命中"
+            pack.errors.append(f"{inst['name']}：{detail}")
+            # 开局连续 3 家两路 RSS 全抛错：判定网络源不可达，快速止损
+            dead_streak = dead_streak + 1 if transport_dead else 0
+            if transport_dead and not pack.reports and dead_streak >= 3:
+                pack.errors.append("新闻检索源连续不可达，已快速止损")
+                break
 
     all_items = [i for v in pack.reports.values() for i in v]
     pos = sum(1 for i in all_items if i.sentiment == "利好")
@@ -521,6 +584,22 @@ def selftest() -> int:
     # 评分映射
     item = _mk_item("goldman", "Goldman Sachs 上调评级至买入", "", "看好AI", None)
     check("评级提取与利好", item.rating != "" and item.sentiment == "利好")
+
+    check("检索式为短查询（中文简称+关键词，不含 topic）",
+          _inst_queries("goldman") == ["高盛 研报", "高盛 评级 目标价"])
+    now = _now()
+    rows = [
+        {"title": "高盛：维持港交所买入评级", "url": "u1",
+         "ts": now - timedelta(hours=3)},
+        {"title": "高盛：一周前的旧研报", "url": "u2",
+         "ts": now - timedelta(days=9)},
+        {"title": "外资大行观点汇总", "url": "u3",
+         "ts": now - timedelta(hours=1)},
+    ]
+    got = _rows_to_items(rows, "goldman", 168, now, "Google新闻")
+    check("RSS 行过滤过期+别名优先",
+          len(got) == 1 and got[0].url == "u1"
+          and got[0].source == "Google新闻")
 
     print(f"\n{'✅ 国外机构一周研报自检通过' if fails == 0 else f'❌ {fails} 项失败'}")
     return 1 if fails else 0

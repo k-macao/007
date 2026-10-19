@@ -8,8 +8,9 @@ hk_brokers.py — 香港券商新闻与数据栏目
 上市券商的股价快照数据。
 
 设计（与 foreign_institution_weekly 同一模式）：
-- 纯标准库 + 复用 deepseek_search（主）/ Google 新闻 RSS（备）逐机构检索；
-  股价快照复用 hk_quote.fetch_quote（港股/美股统一入口，失败只缺该项）
+- 纯标准库 + Google News RSS（主）/ Bing News RSS（备）真实新闻检索，
+  deepseek_search 生成式搜索仅末位兜底；股价快照复用
+  hk_quote.fetch_quote（港股/美股统一入口，失败只缺该项）
 - 任何单家失败只记数据缺口，不中断整体；采集不到就如实报缺口，
   不用演示数据冒充真实推送（演示包仅用于离线自检 / HK_BROKERS_OFFLINE=1）
 - 产出 Markdown 栏目内容，供 pushplus_deepseek 模板与每日简报章节调用
@@ -282,32 +283,86 @@ def _fetch_via_deepseek(query: str, firm_key: str, hours: int,
     return items
 
 
-def _fetch_via_google(query: str, firm_key: str, hours: int,
+def _firm_queries(firm_key: str) -> List[str]:
+    """短查询：券商全名 + 1~3 个财经关键词。切忌把整句 topic 塞进查询——
+    Google News 按全词 AND 匹配，词越多召回越趋近于 0（2026-10 线上
+    实测教训：'中金 港股市场 研报 评级 目标价 新闻' 0 命中，
+    '中金公司 研报' 28 条）。topic 只作栏目口径，不入检索式。"""
+    name = FIRM_MAP.get(firm_key, {}).get("name", firm_key)
+    return [f"{name} 研报", f"{name} 评级 目标价"]
+
+
+def _rows_to_items(rows, firm_key: str, hours: int, now: datetime,
+                   source: str) -> List[BrokerItem]:
+    """RSS 行 -> BrokerItem：时效过滤 + 标题含券商别名者优先
+    （全无别名命中时按查询相关性顺序兜底接受）。"""
+    cutoff = now - timedelta(hours=hours)
+    aliases = [a.lower()
+               for a in FIRM_MAP.get(firm_key, {}).get("aliases", [])]
+    fresh = []
+    for r in rows:
+        ts = r.get("ts")
+        if ts and ts < cutoff:
+            continue
+        title = (r.get("title") or "").strip()
+        if len(title) < 6:
+            continue
+        fresh.append((title, r.get("url", ""), ts))
+    hit = [t for t in fresh if any(a in t[0].lower() for a in aliases)]
+    picked = (hit or fresh)[:5]
+    return [_mk_item(firm_key, t, u, "", ts, source) for t, u, ts in picked]
+
+
+def _fetch_via_google(firm_key: str, hours: int,
                       timeout: int, now: datetime) -> List[BrokerItem]:
+    """Google News RSS（真实新闻检索，主链路）。"""
     try:
         from stock_news_scan import parse_google_rss, http_request, GOOGLE_RSS
         import urllib.parse
-        q = urllib.parse.quote_plus(f"{query} when:7d")
-        status, body = http_request(GOOGLE_RSS.format(q=q), timeout=timeout)
-        if status != 200:
-            raise RuntimeError(f"Google HTTP {status}")
-        rows = parse_google_rss(body)
-        cutoff = now - timedelta(hours=hours)
-        items: List[BrokerItem] = []
-        for r in rows:
-            ts = r.get("ts")
-            if ts and ts < cutoff:
-                continue
-            title = r.get("title", "")
-            if len(title) < 6:
-                continue
-            items.append(_mk_item(firm_key, title, r.get("url", ""), "",
-                                  ts, "Google新闻"))
-            if len(items) >= 5:
-                break
-        return items
+        for query in _firm_queries(firm_key):
+            q = urllib.parse.quote_plus(f"{query} when:7d")
+            status, body = http_request(GOOGLE_RSS.format(q=q),
+                                         timeout=timeout)
+            if status != 200:
+                raise RuntimeError(f"Google HTTP {status}")
+            items = _rows_to_items(parse_google_rss(body), firm_key, hours,
+                                   now, "Google新闻")
+            if items:
+                return items
+        return []
     except Exception as e:
         raise RuntimeError(f"Google 搜索失败: {e}") from e
+
+
+def _fetch_via_bing(firm_key: str, hours: int,
+                    timeout: int, now: datetime) -> List[BrokerItem]:
+    """Bing News RSS（备援真实新闻检索）。"""
+    try:
+        from stock_news_scan import http_request
+        import urllib.parse
+        import xml.etree.ElementTree as ET
+        from email.utils import parsedate_to_datetime
+        name = FIRM_MAP.get(firm_key, {}).get("name", firm_key)
+        q = urllib.parse.quote_plus(f"{name} 研报")
+        url = f"https://www.bing.com/news/search?q={q}&format=rss"
+        status, body = http_request(url, timeout=timeout)
+        if status != 200:
+            raise RuntimeError(f"Bing HTTP {status}")
+        try:
+            root = ET.fromstring(body)
+        except ET.ParseError:
+            root = ET.fromstring(body.encode("utf-8", "replace"))
+        rows = []
+        for it in root.iter("item"):
+            try:
+                ts = parsedate_to_datetime(it.findtext("pubDate", "") or "")
+            except (TypeError, ValueError):
+                ts = None
+            rows.append({"title": it.findtext("title", "") or "",
+                         "url": it.findtext("link", "") or "", "ts": ts})
+        return _rows_to_items(rows, firm_key, hours, now, "Bing资讯")
+    except Exception as e:
+        raise RuntimeError(f"Bing 搜索失败: {e}") from e
 
 
 def _collect_quotes(target_keys: List[str]) -> Dict[str, Dict]:
@@ -342,29 +397,33 @@ def collect_hk_brokers(topic: str = "港股市场", hours: int = DEFAULT_HOURS,
     pack = HkBrokersPack(hours=hours, topic=topic)
     target_keys = only or [f["key"] for f in FIRMS]
     has_ds = bool(os.environ.get("DEEPSEEK_API_KEY", "").strip())
-    if use_deepseek and not has_ds:
-        pack.errors.append("DeepSeek：缺少 DEEPSEEK_API_KEY，已跳过主链路，仅尝试 Google 备用")
+    # 主链路为真实新闻检索（Google News RSS -> Bing RSS 短查询）；
+    # DeepSeek 生成式搜索仅作末位兜底（其结果为模型生成、无真实检索）。
+    rss_timeout = min(timeout, 10)  # RSS 单次 1~3s，12 家逐家限时防拖长
 
-    no_hit_streak = 0
+    dead_streak = 0
     for key in target_keys:
         firm = FIRM_MAP.get(key)
         if not firm:
             pack.errors.append(f"{key}：未知券商")
             continue
-        eff_timeout = min(timeout, 5)  # 12 家逐家限时，防整体拖长
-        q = f"{firm['aliases'][0]} {topic} 研报 评级 目标价 新闻"
         items: List[BrokerItem] = []
-        last_err = ""
-        if use_deepseek and has_ds:
+        errs: List[str] = []
+        transport_dead = True  # 两路 RSS 都抛错才算网络源不可达
+        for fetcher in (_fetch_via_google, _fetch_via_bing):
             try:
-                items = _fetch_via_deepseek(q, key, hours, eff_timeout)
+                items = fetcher(key, hours, rss_timeout, now)
+                transport_dead = False
+                if items:
+                    break
             except Exception as e:  # noqa: BLE001
-                last_err = str(e)[:120]
-        if not items:
+                errs.append(str(e)[:80])
+        if not items and use_deepseek and has_ds:
             try:
-                items = _fetch_via_google(q, key, hours, eff_timeout, now)
+                items = _fetch_via_deepseek(
+                    f"{firm['name']} 研报 评级 目标价", key, hours, timeout)
             except Exception as e:  # noqa: BLE001
-                last_err = (last_err + " | " if last_err else "") + str(e)[:120]
+                errs.append(str(e)[:80])
         if items:
             seen, uniq = set(), []
             for it in items:
@@ -372,12 +431,14 @@ def collect_hk_brokers(topic: str = "港股市场", hours: int = DEFAULT_HOURS,
                     uniq.append(it)
                     seen.add(it.title)
             pack.reports[key] = uniq[:5]
-            no_hit_streak = 0
+            dead_streak = 0
         else:
-            pack.errors.append(f"{firm['name']}：{last_err or f'{hours}h 内无命中'}")
-            no_hit_streak += 1
-            # 无 DeepSeek Key 且开头连续 2 家全失败：大概率网络不可达，快速止损
-            if not has_ds and not pack.reports and no_hit_streak >= 2:
+            detail = "；".join(errs) if errs else f"{hours}h 内无命中"
+            pack.errors.append(f"{firm['name']}：{detail}")
+            # 开局连续 3 家两路 RSS 全抛错：判定网络源不可达，快速止损
+            dead_streak = dead_streak + 1 if transport_dead else 0
+            if transport_dead and not pack.reports and dead_streak >= 3:
+                pack.errors.append("新闻检索源连续不可达，已快速止损")
                 break
 
     if with_quotes:
@@ -532,6 +593,22 @@ def selftest() -> int:
 
     item = _mk_item("cicc", "中金维持跑赢大市并上调目标价", "", "看好", None)
     check("评级提取与利好", item.rating != "" and item.sentiment == "利好")
+
+    check("检索式为短查询（全名+关键词，不含 topic）",
+          _firm_queries("cicc") == ["中金公司 研报", "中金公司 评级 目标价"])
+    now = _now()
+    rows = [
+        {"title": "中金公司：维持跑赢行业评级", "url": "u1",
+         "ts": now - timedelta(hours=2)},
+        {"title": "中金公司：一个月前的旧闻", "url": "u2",
+         "ts": now - timedelta(days=30)},
+        {"title": "券商研报掘金汇总", "url": "u3",
+         "ts": now - timedelta(hours=1)},
+    ]
+    got = _rows_to_items(rows, "cicc", 48, now, "Google新闻")
+    check("RSS 行过滤过期+别名优先",
+          len(got) == 1 and got[0].url == "u1"
+          and got[0].source == "Google新闻")
 
     print(f"\n{'✅ 香港券商栏目自检通过' if fails == 0 else f'❌ {fails} 项失败'}")
     return 1 if fails else 0
