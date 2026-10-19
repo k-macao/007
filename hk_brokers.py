@@ -63,7 +63,7 @@ FIRMS: List[Dict[str, any]] = [
      "focus": ["港股研究", "机构业务"]},
     {"key": "haitong", "name": "海通国际",
      "aliases": ["海通国际", "海通证券", "Haitong"],
-     "listing_code": "00665", "listing_label": "665.HK 海通国际",
+     "listing_code": "06837", "listing_label": "6837.HK 海通证券（母公司；665.HK 已退市）",
      "focus": ["投行", "海外研究"]},
     {"key": "bocom", "name": "交银国际",
      "aliases": ["交银国际", "BOCOM International"],

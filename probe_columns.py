@@ -65,6 +65,76 @@ except Exception as e:  # noqa: BLE001
     results["foreign_weekly_72h"] = {"ok": False, "error": str(e)[:300]}
     print(f"FAIL foreign(72h): {e}")
 
+# 4) 搜索源横评：Google/Bing/Yahoo RSS + GDELT + DeepSeek 原始返回
+try:
+    import urllib.parse
+    import urllib.request
+    import xml.etree.ElementTree as ET
+
+    def probe_get(url, ua="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"):
+        req = urllib.request.Request(url, headers={"User-Agent": ua})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return resp.status, resp.read().decode("utf-8", "replace")
+
+    def rss_items(xml_text):
+        root = ET.fromstring(xml_text)
+        out = []
+        for it in root.iter("item"):
+            t = (it.findtext("title") or "").strip()
+            d = (it.findtext("pubDate") or "").strip()
+            if t:
+                out.append(f"{d[:22]} | {t[:60]}")
+        return out
+
+    from stock_news_scan import GOOGLE_RSS as G_TPL
+    engines = {}
+    QUERIES = ["中金公司 研报", "高盛 评级 目标价"]
+    for query in QUERIES:
+        q = urllib.parse.quote_plus(query)
+        tests = {
+            "google_when7d": G_TPL.format(q=urllib.parse.quote_plus(query + " when:7d")),
+            "google_plain": G_TPL.format(q=q),
+            "bing_rss": f"https://www.bing.com/news/search?q={q}&format=rss",
+            "yahoo_rss": f"https://news.search.yahoo.com/rss?p={q}",
+            "gdelt": ("https://api.gdeltproject.org/api/v2/doc/doc"
+                      f"?query={q}&mode=artlist&maxrecords=10&format=json&timespan=3d"),
+        }
+        for name, url in tests.items():
+            key = f"{name}|{query}"
+            try:
+                st, body = probe_get(url)
+                if name == "gdelt":
+                    arts = (json.loads(body).get("articles") or [])
+                    engines[key] = {"status": st, "count": len(arts),
+                                    "samples": [f"{a.get('seendate','')[:12]} | "
+                                                f"{(a.get('title') or '')[:60]} | "
+                                                f"{a.get('domain','')}"
+                                                for a in arts[:3]]}
+                else:
+                    items = rss_items(body)
+                    engines[key] = {"status": st, "count": len(items),
+                                    "samples": items[:3]}
+            except Exception as e:  # noqa: BLE001
+                engines[key] = {"error": str(e)[:160]}
+    # DeepSeek 原始（huge window 看返回的日期真面目）
+    try:
+        import deepseek_search
+        rows = deepseek_search.fetch_deepseek_search(
+            "中金公司 研报 目标价", timeout=30, hours=24 * 3650)
+        engines["deepseek_raw"] = {"count": len(rows),
+                                   "samples": [f"{r.get('ts')} | "
+                                               f"{(r.get('title') or '')[:55]} | "
+                                               f"{r.get('url','')[:60]}"
+                                               for r in rows[:5]]}
+    except Exception as e:  # noqa: BLE001
+        engines["deepseek_raw"] = {"error": str(e)[:200]}
+    results["search_engines"] = engines
+    print("OK engines:", {k: v.get("count", v.get("error", "?")[:30])
+                          for k, v in engines.items()})
+except Exception as e:  # noqa: BLE001
+    results["search_engines"] = {"error": str(e)[:200]}
+    print(f"FAIL engines: {e}")
+
 with open(f"{OUT}/results.json", "w", encoding="utf-8") as f:
     json.dump(results, f, ensure_ascii=False, indent=2, default=str)
 print("DONE")

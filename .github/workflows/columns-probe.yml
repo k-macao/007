@@ -44,10 +44,11 @@ jobs:
             --no-chart --no-ai-compress --timeout 45 --dry-run > probe_out/e2e_full.txt 2>&1
           code=$?
           echo "{\"exit_code\": $code, \"elapsed_s\": $((SECONDS - start))}" > probe_out/e2e_meta.txt
-          grep -o "金十数据（来源：金十数据JS feed）：[^\"]*" probe_out/e2e_full.txt | head -c 300 > probe_out/e2e_jin10_head.txt || true
+          grep -o "金十数据（[0-9]*／*5*0*）*[^ ]*" probe_out/e2e_full.txt | head -c 300 > probe_out/e2e_jin10_head.txt || true
+          grep -o "金十数据[^（]*（[0-9]*/[0-9]*）" probe_out/e2e_full.txt | head -3 >> probe_out/e2e_jin10_head.txt || true
           grep -c "flash.jin10" probe_out/e2e_full.txt > probe_out/e2e_jin10_links.txt || true
-          grep -c "香港证券公司新闻与数据" probe_out/e2e_full.txt > probe_out/e2e_hk_marks.txt || true
-          grep -c "国外投行研报与新闻" probe_out/e2e_full.txt > probe_out/e2e_fw_marks.txt || true
+          grep -c "香港券商新闻与数据\|香港证券公司新闻与数据" probe_out/e2e_full.txt > probe_out/e2e_hk_marks.txt || true
+          grep -c "国外投行研报" probe_out/e2e_full.txt > probe_out/e2e_fw_marks.txt || true
           tail -n 120 probe_out/e2e_full.txt > probe_out/e2e_tail.txt
           wc -c probe_out/e2e_full.txt > probe_out/e2e_size.txt
           rm -f probe_out/e2e_full.txt
