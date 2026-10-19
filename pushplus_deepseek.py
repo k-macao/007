@@ -3337,6 +3337,10 @@ def themed_html(title: str, content_md: str, theme_name: str = "game",
     if theme_name == "dos":
         # DOS CRT 终端：仿命令行窗口、磷光绿文字、琥珀光标与扫描线。
         stamp = datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")
+        # 分篇推送时在标题栏右侧标出「PART n/m」：DOS 主题正文不渲染标题，
+        # 没有这个标记读者看到第 2/3 篇时不知道是续篇。
+        right_tag = (f"PART {part_no}/{part_count}" if part_count > 1
+                     else "● SYSTEM READY")
         return (
             f'<div style="background:{theme["bg"]};padding:12px 8px;'
             f'font-size:{theme["size"]};line-height:{theme["line"]};'
@@ -3355,7 +3359,7 @@ def themed_html(title: str, content_md: str, theme_name: str = "game",
             f'<span style="color:{theme["accent"]};background:{FLU_BLACK_BG};padding:0 3px;">C:\&gt;</span> '
             f'DOS MARKET MONITOR'
             f'<span style="float:right;color:{theme["up"]};background:{FLU_BLACK_BG};'
-            f'padding:0 3px;font-size:9px;">● SYSTEM READY</span></div>'
+            f'padding:0 3px;font-size:9px;">{right_tag}</span></div>'
             f'<div style="border-bottom:1px dashed {theme["border"]};'
             f'padding:4px 8px;color:{theme["muted"]};font-size:9px;'
             f'letter-spacing:.3px;font-family:{theme["font"]};">'
@@ -3763,14 +3767,21 @@ def fit_for_channel(channel: str, content: str,
     return trimmed, f"已按 {limit} 字节截断"
 
 
-# 微信订阅号/服务通知对单条 HTML 很敏感：超过约 48KB 常出现
+# 微信订阅号/服务通知对单条 HTML 很敏感：实测超过约 48KB 常出现
 # PushPlus 接口 code=200，但微信端不投递或进不了会话。
-WECHAT_HTML_SOFT_LIMIT = 48_000
+#
+# 历史故障（2026-10-19）：每日市场简报并入金十 50 条 + 双栏目后，HTML 涨到
+# ~68KB，按 48KB 切分后「第 1 篇」正好卡在临界点上被微信静默丢弃，读者只收到
+# 后半段，表现为「快讯明细不显示」——正文里的快讯原始明细整体看不见。
+# 因此单篇目标下调到 32KB（约为失效临界点的 2/3），留出安全余量：
+# 宁可多推两篇，也保证每一篇都真的送达。
+WECHAT_HTML_SOFT_LIMIT = 32_000
 
 # 单篇 HTML 超软上限时的最大分篇数；超过该篇数才退回 markdown。
 # （研报越长 style 内联膨胀越厉害，九章级长报告常见 3-6 篇；guizang 续篇壳
-#   可显著压缩每篇开销，8 篇可覆盖绝大多数真实报告；上限继续防止极端刷屏）
-WECHAT_HTML_MAX_PARTS = 8
+#   可显著压缩每篇开销。单篇目标从 48KB 降到 32KB 后同样内容篇数变多，
+#   上限相应提到 12 篇：总容量 12×32KB=384KB，与此前 8×48KB 持平）
+WECHAT_HTML_MAX_PARTS = 12
 
 
 def _md_blocks(md: str) -> list[str]:
@@ -3872,12 +3883,39 @@ def _greedy_split_parts(title: str, md: str, theme_name: str,
     return parts
 
 
+def _appendix_block_indexes(blocks: list[str], marker: str,
+                            stop_marker: str = "作者：") -> set[int]:
+    """返回某个附录段（如「快讯原始明细」）所占的块下标集合。
+
+    附录在 markdown 里是「起始行 + 若干空行分隔的子块」结构，起点是含
+    marker 的那一块，终点是下一个以 ``---`` 开头的新章节块（或品牌尾注）。
+    裁尾时用它在这些块上做保护，避免把「快讯明细」这类正文级附录当成
+    可弃内容裁掉。
+    """
+    idxs: set[int] = set()
+    start = None
+    for i, b in enumerate(blocks):
+        if marker in b:
+            start = i
+            break
+    if start is None:
+        return idxs
+    for i in range(start, len(blocks)):
+        if i > start and (blocks[i].lstrip().startswith("---")
+                          or (stop_marker and stop_marker in blocks[i])):
+            break
+        idxs.add(i)
+    return idxs
+
+
 def _trim_tail_to_fit(title: str, md: str, theme_name: str, limit: int,
                       max_parts: int) -> list[str] | None:
     """max_parts 装不下时的最后手段：从尾部裁掉最可弃的块，保住主题风格。
 
     优先裁掉品牌尾注之后的块（如一致性检查器输出），仍不够再从尾注前
     的尾部逐块裁（平台附录等），并插入一行可见提示；品牌尾注始终保留。
+    「快讯原始明细」等正文级附录受保护：宁可裁前面的 AI 正文分节，也
+    不裁掉快讯明细（否则读者会看到「快讯明细不显示」）。
     真正无法干净裁剪时返回 None（由调用方退回 markdown）。
     """
     blocks = _md_blocks(md)
@@ -3888,8 +3926,9 @@ def _trim_tail_to_fit(title: str, md: str, theme_name: str, limit: int,
         if "作者：" in blocks[i]:
             footer_idx = i
             break
+    protected = _appendix_block_indexes(blocks, "快讯原始明细")
     note = ("\n\n> ⚠️ 篇幅超限：微信投递有单篇长度上限，"
-            "部分尾部附录已省略；完整报告见 GitHub Actions 运行日志。")
+            "部分内容已省略；完整报告见 GitHub Actions 运行日志。")
     if footer_idx is None:
         # 无品牌尾注：直接从尾部逐块裁，任何块都允许裁掉
         for cut in range(1, len(blocks)):
@@ -3900,14 +3939,47 @@ def _trim_tail_to_fit(title: str, md: str, theme_name: str, limit: int,
         return None
     if footer_idx == 0:
         return None
-    kept = blocks[: footer_idx + 1]  # 尾注之后的块（检查器等）全部裁掉
+    kept = list(range(footer_idx + 1))  # 尾注之后的块（检查器等）全部裁掉
     while len(kept) > 2:
-        trial = "\n\n".join(kept) + note
+        trial = "\n\n".join(blocks[i] for i in kept) + note
         out = _greedy_split_parts(title, trial, theme_name, limit)
         if out is not None and 1 <= len(out) <= max_parts:
             return out
-        kept.pop(len(kept) - 2)  # 裁掉尾注之前的最后一块
+        # 裁掉尾注之前的最后一块；「快讯原始明细」等受保护块跳过不裁
+        cut_at = None
+        for pos in range(len(kept) - 2, 0, -1):
+            if kept[pos] not in protected:
+                cut_at = pos
+                break
+        if cut_at is None:
+            return None
+        del kept[cut_at]
     return None
+
+
+def _mark_appendix_continuation(title: str, parts: list[str], theme_name: str,
+                                limit: int) -> list[str]:
+    """给「快讯原始明细」被切开的续篇加一行「（续上篇）」提示。
+
+    明细动辄上百条，分篇后第二篇往往直接从明细中间开始，读者会以为
+    简报断掉了；加一行提示让它知道这是上一段的续篇。提示行会占一点
+    体积，装不下时宁可不加。
+    """
+    marker = "📰 **快讯原始明细（续上篇）**"
+    out: list[str] = []
+    seen = False
+    for p in parts:
+        if "快讯原始明细" in p:
+            seen = True
+            out.append(p)
+            continue
+        if seen:
+            cand = f"{marker}\n\n{p}"
+            if _html_fits(title, cand, theme_name, limit):
+                out.append(cand)
+                continue
+        out.append(p)
+    return out
 
 
 def split_md_for_html(title: str, md: str, theme_name: str,
@@ -3918,8 +3990,8 @@ def split_md_for_html(title: str, md: str, theme_name: str,
     超微信软上限时不再整篇退回纯 markdown（推送页会完全丢掉主题风格），
     而是按块（必要时按行）切成多篇带样式的 HTML 依次推送。
     围栏代码块不可切分时返回 None；超过 max_parts 时先尝试裁掉尾部
-    最可弃的附录块（带可见提示），仍不行才返回 None 由调用方退回
-    markdown 投递（与旧行为一致）。
+    最可弃的附录块（带可见提示，「快讯原始明细」受保护不裁），
+    仍不行才返回 None 由调用方退回 markdown 投递（与旧行为一致）。
     """
     parts = _greedy_split_parts(title, md, theme_name, limit)
     if parts is None:
@@ -3927,8 +3999,11 @@ def split_md_for_html(title: str, md: str, theme_name: str,
     if len(parts) == 1:
         return parts  # 整篇一页即可装下（含裁尾后只剩单篇的情形）
     if len(parts) <= max_parts:
-        return parts
-    return _trim_tail_to_fit(title, md, theme_name, limit, max_parts)
+        return _mark_appendix_continuation(title, parts, theme_name, limit)
+    trimmed = _trim_tail_to_fit(title, md, theme_name, limit, max_parts)
+    if trimmed is None:
+        return None
+    return _mark_appendix_continuation(title, trimmed, theme_name, limit)
 
 
 def push_pushplus(title: str, content: str, timeout: int,
@@ -3976,6 +4051,7 @@ def push_pushplus(title: str, content: str, timeout: int,
         log(f"  📦 PushPlus markdown {_utf8_len(content)} 字节")
 
     sent = 0
+    failures: list[str] = []
     for i, (ptitle, pcontent, ptemplate) in enumerate(sends):
         if i:
             time.sleep(1)  # 多篇串行 + 间隔 1s，避开 PushPlus 频率限制
@@ -3995,10 +4071,15 @@ def push_pushplus(title: str, content: str, timeout: int,
         if status == 200 and code == 200:
             sent += 1
             continue
+        # 单篇失败不中断后续分篇：正文是分篇装的，前面某篇失败不能让
+        # 后面承载「快讯明细」的篇章一起丢掉（全部发完再统一报错）。
         which = f"第 {i + 1}/{len(sends)} 篇" if len(sends) > 1 else ""
-        done = f"（已送达 {sent} 篇）" if sent else ""
+        failures.append(f"{which or '正文'}：HTTP {status} {body[:200]}")
+        log(f"  ⚠️ PushPlus 该篇失败（继续发送后续分篇）：{which or '正文'}")
+    if failures:
         raise PushError(
-            f"PushPlus 返回异常{which}（HTTP {status}）{done}：{body[:400]}")
+            f"PushPlus 有 {len(failures)}/{len(sends)} 篇返回异常"
+            f"（已送达 {sent} 篇）：" + "；".join(failures)[:400])
     extra = "；".join(n for n in notes if n)
     ok = "发送成功" if len(sends) == 1 else f"发送成功（共 {len(sends)} 篇）"
     return ok + (f"（{extra}）" if extra else "")
@@ -4680,6 +4761,45 @@ def selftest() -> int:
               <= WECHAT_HTML_SOFT_LIMIT
               for i, p in enumerate(parts or [])))
 
+    log("③e2-0 每日市场简报分篇（2026-10-19 故障回归：快讯明细必须送达）")
+    feed_item = ("1. [中性 +0.00] 国家统计局：9月份一二三线城市新建商品住宅"
+                 "销售价格环比继续上涨，同比降幅均收窄 — 财联社 深度 · 2h前")
+    feed_sec = lambda name, n: (f"**{name}（{n}/10）**\n"
+                                + "\n".join(feed_item for _ in range(n)))
+    brief_md = ("## 全市场快讯情绪扫描\n\n"
+                "- **市场情绪温度**：偏暖，综合情绪锚点 51%\n\n"
+                "---\n📰 **快讯原始明细（178 条，金十≤50、其余每源≤10，"
+                "含 DeepSeek 搜索）**\n\n"
+                + "\n\n".join(feed_sec(s, 10) for s in
+                              ("MKTNews 快讯", "华尔街见闻 快讯", "华尔街见闻 最新",
+                               "华尔街见闻 最热", "财联社 电报", "财联社 深度",
+                               "财联社 热门", "雪球 热门股票", "格隆汇 事件",
+                               "法布财经 快讯", "法布财经 头条"))
+                + "\n\n**金十数据（50/50）**\n" + "\n".join(feed_item for _ in range(50)))
+    brief_html = themed_html("章鱼 AI 全景分析", brief_md, theme_name="dos")
+    check("市场简报正文超过单篇上限（必须分篇才不会被微信静默丢弃）",
+          _utf8_len(brief_html) > WECHAT_HTML_SOFT_LIMIT)
+    brief_parts = split_md_for_html("章鱼 AI 全景分析", brief_md, "dos")
+    check("市场简报自动分篇且每篇都在安全线内",
+          brief_parts is not None and 2 <= len(brief_parts) <= WECHAT_HTML_MAX_PARTS
+          and all(_utf8_len(themed_html("章鱼 AI 全景分析", p, theme_name="dos",
+                                        continuation=(i > 0), part_no=i + 1,
+                                        part_count=len(brief_parts)))
+                  <= WECHAT_HTML_SOFT_LIMIT
+                  for i, p in enumerate(brief_parts or [])))
+    check("分篇后快讯明细完整保留",
+          brief_parts is not None
+          and "快讯原始明细" in "\n".join(brief_parts)
+          and "金十数据（50/50）" in "\n".join(brief_parts))
+    check("明细被切开时续篇带「（续上篇）」提示",
+          brief_parts is not None and len(brief_parts) > 1
+          and any("快讯原始明细（续上篇）" in p for p in brief_parts))
+    check("DOS 分篇标题栏标出 PART n/m（读者知道这是续篇）",
+          brief_parts is not None and len(brief_parts) > 1
+          and "PART 2/" in themed_html("章鱼 AI 全景分析", brief_parts[1],
+                                       theme_name="dos", continuation=True,
+                                       part_no=2, part_count=len(brief_parts)))
+
     log("③e2-1 guizang 表格长报告带样式分篇（不再整篇退回 markdown）")
     gz_sec = lambda i: (f"## 第{i}章\n\n本章要点：数据与判断相互印证，避免只给结论。\n\n"
                         "| 指标 | 数值 | 趋势 | 判断 |\n|---|---|---|---|\n"
@@ -4725,6 +4845,25 @@ def selftest() -> int:
     check("分篇覆盖全部正文",
           parts is not None and "第3节" in "\n".join(parts or [])
           and "第0节" in "\n".join(parts or []))
+    log("③e2-3 裁尾不裁掉快讯明细（读者必须看得到明细）")
+    trim_with_feed = (trim_md.split("\n\n**作者：章鱼 ai**")[0]
+                      + "\n\n---\n📰 **快讯原始明细（178 条，金十≤50、"
+                      "其余每源≤10，含 DeepSeek 搜索）**\n\n"
+                      + feed_sec("财联社 深度", 10)
+                      + "\n\n**金十数据（50/50）**\n" + "\n".join(feed_item for _ in range(50))
+                      + "\n\n**作者：章鱼 ai**\n\n```\n" + ("检查行\n" * 600) + "```")
+    trim_feed_parts = split_md_for_html("t", trim_with_feed, "guizang")
+    check("超长简报裁尾后快讯明细仍在（不出现「快讯明细不显示」）",
+          trim_feed_parts is not None
+          and "快讯原始明细" in "\n".join(trim_feed_parts)
+          and "金十数据（50/50）" in "\n".join(trim_feed_parts))
+    check("裁尾后每篇仍低于软上限（含快讯明细的长简报）",
+          trim_feed_parts is not None and all(
+              _utf8_len(themed_html("t", p, theme_name="guizang",
+                                    continuation=(i > 0),
+                                    part_no=i + 1, part_count=len(trim_feed_parts)))
+              <= WECHAT_HTML_SOFT_LIMIT
+              for i, p in enumerate(trim_feed_parts or [])))
     tbl_rows = "\n".join(f"| 因子{i} | {40 + i % 55}% |" for i in range(2000))
     tbl_parts = _split_block_lines("t", f"| 因子 | 概率 |\n|---|---|\n{tbl_rows}",
                                    "monitor", 12_000)
