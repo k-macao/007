@@ -1,11 +1,15 @@
 # 每日全市场快讯简报：仅推送市场/板块扫描，不调用个股研报或个股行情页。
-# GitHub Actions cron 使用 UTC；按用户本地时区每天 09:00 和 17:00 推送。
+# GitHub Actions cron 使用 UTC；澳门/香港为 UTC+8，故 cron 01:00=本地 09:00
+# （盘前早报）、09:00=本地 17:00（收市晚报）。（2026-10 起按澳门时间 09/17 点；
+# 此前 UTC 09/17 实际是澳门 17:00 与次日凌晨 01:00，标注有误，一并修正。）
+# 简报正文后自动并入「香港券商新闻与数据」+「国外投行研报标题」两节
+# （pushplus_deepseek feedscan 的市场简报栏目，BRIEF_COLUMNS=0 可关闭）。
 name: Scheduled Market Brief (DOS Monitor)
 
 on:
   schedule:
-    - cron: '0 9 * * *' # 每日 UTC 09:00（早报）
-    - cron: '0 17 * * *' # 每日 UTC 17:00（晚报）
+    - cron: '0 1 * * *' # 每日 UTC 01:00 = 澳门/香港 09:00（早报）
+    - cron: '0 9 * * *' # 每日 UTC 09:00 = 澳门/香港 17:00（晚报）
   workflow_dispatch:
     inputs:
       dry_run:
@@ -25,7 +29,8 @@ jobs:
   market-brief:
     name: Generate & Push Market-wide Brief
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 简报含香港券商+国外投行两栏目的逐家检索，较此前留足余量
+    timeout-minutes: 25
 
     env:
       PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
@@ -57,8 +62,8 @@ jobs:
           SCHEDULE_CRON: ${{ github.event.schedule }}
         run: |
           case "$SCHEDULE_CRON" in
-            '0 9 * * *') echo 'topic=全球市场早报' >> "$GITHUB_OUTPUT" ;;
-            '0 17 * * *') echo 'topic=全球市场晚报' >> "$GITHUB_OUTPUT" ;;
+            '0 1 * * *') echo 'topic=全球市场早报' >> "$GITHUB_OUTPUT" ;; # 澳门 09:00
+            '0 9 * * *') echo 'topic=全球市场晚报' >> "$GITHUB_OUTPUT" ;; # 澳门 17:00
             *) echo 'topic=全球市场简报' >> "$GITHUB_OUTPUT" ;;
           esac
 

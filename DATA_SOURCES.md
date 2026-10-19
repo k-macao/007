@@ -1,8 +1,8 @@
 # 数据源配置说明
 
-> 最后更新：2026-10-19　·　覆盖 **18 个舆情数据源**（财经快讯 8 源 = 原 7 + DeepSeek AI 搜索 1，2026-10-19 新增 + 社媒热榜 10 源，2026-08-13 由 7 源扩充至 10 源：新增今日头条 / 百度 / B 站）+ **境外（美股）行情 4 源**（2026-08-14 新增，带交叉验证）+ **AI 搜索 1 源**（DeepSeek，2026-10-19 新增，可作为搜索引擎独立使用）+ **国外机构一周研报 12 家**（2026-10-19 新增，168h 窗口，DeepSeek 主 + Google 备，独立栏目 `foreign_weekly`）。
+> 最后更新：2026-10-19　·　覆盖 **18 个舆情数据源**（财经快讯 8 源 = 原 7 + DeepSeek AI 搜索 1，2026-10-19 新增 + 社媒热榜 10 源，2026-08-13 由 7 源扩充至 10 源：新增今日头条 / 百度 / B 站）+ **境外（美股）行情 4 源**（2026-08-14 新增，带交叉验证）+ **AI 搜索 1 源**（DeepSeek，2026-10-19 新增，可作为搜索引擎独立使用）+ **国外机构一周研报 12 家**（2026-10-19 新增，168h 窗口，Google/Bing 真实新闻检索，独立栏目 `foreign_weekly`）。
 
-> 行情链路另计：港股/A股走 `hk_quote.py`（腾讯主→东财备→Yahoo 核验）；美股走 `us_quote.py`（腾讯美股/东财美股/Yahoo/Stooq 四源交叉验证，详见本文 二、3）；国外机构研报走 `foreign_institution_weekly.py`（DeepSeek AI 搜索主链路 + Google新闻 RSS 备用）。
+> 行情链路另计：港股/A股走 `hk_quote.py`（腾讯主→东财备→Yahoo 核验）；美股走 `us_quote.py`（腾讯美股/东财美股/Yahoo/Stooq 四源交叉验证，详见本文 二、3）；国外机构研报走 `foreign_institution_weekly.py`（Google 新闻 RSS 主链路 + Bing 备援，DeepSeek 生成式搜索仅末位兜底）。
 
 本项目全部采集器仅依赖 Python 标准库，任何单源失败只记入「数据缺口」，不中断整体流程。
 
@@ -30,10 +30,10 @@
 | 源 | 协议 | 说明 |
 |---|---|---|
 | Google 新闻 | RSS 检索 | 以股票关键词检索，窗口内条目计直接相关 |
-| 财联社电报 | JSON | 秒级时间戳，严格窗口过滤 |
-| 华尔街见闻快讯 | JSON（JS 壳剥离） | 同上 |
-| 格隆汇事件 | HTML/JSON | 同上 |
-| 金十数据 | JSON（JS 壳剥离） | 同上 |
+| 财联社电报 | JSON（签名参数 `sign=md5(sha1(排序 query))`，2026-10 改版） | 秒级时间戳，严格窗口过滤 |
+| 华尔街见闻快讯 | JSON（2026-10 改 `api-one.wallstcn.com`） | 同上 |
+| 格隆汇事件 | JSON（2026-10 改 `lives/v4`） | 同上 |
+| 金十数据 | JSON（JS 壳剥离） | feedscan/扫描取最新≤50 条（2026-10 由 10 放宽，并过滤 `channel=[5]` 英文重复版） |
 | MKTNews 快讯 | JSON | 同上 |
 | 雪球热门股票 | JSON | Cookie 预热（`xueqiu.com/hq`）；实时热榜，标记「实时」不过滤 |
 | DeepSeek 搜索 🆕 | Chat Completions JSON | **AI 搜索引擎**：`deepseek-chat` 按关键词检索，返回 JSON 数组，带指数退避重试；无 Key 时记缺口不中断 |
@@ -53,25 +53,49 @@
 
 | 键名 | 机构名 | 别名 | 角色 | 搜索链路 |
 |---|---|---|---|---|
-| `goldman` | 高盛 Goldman Sachs | Goldman Sachs / 高盛 | 主流投行 | DeepSeek 主 + Google RSS 备 |
-| `morgan_stanley` | 摩根士丹利 | Morgan Stanley / 大摩 | 全球策略 | DeepSeek 主 + Google RSS 备 |
-| `jpmorgan` | 摩根大通 | JPMorgan / 小摩 | 宏观/新兴 | DeepSeek 主 + Google RSS 备 |
-| `bofa` | 美银 BofA Securities | BofA / 美银 | 资金流/量化 | DeepSeek 主 + Google RSS 备 |
-| `citi` | 花旗 Citi Research | Citi / 花旗 | 全球宏观 | DeepSeek 主 + Google RSS 备 |
-| `ubs` | 瑞银 UBS | UBS / 瑞银 | 全球配置 | DeepSeek 主 + Google RSS 备 |
-| `deutsche` | 德银 Deutsche Bank | Deutsche Bank | 欧股/信用 | DeepSeek 主 + Google RSS 备 |
-| `barclays` | 巴克莱 Barclays | Barclays / 巴克莱 | 英股/策略 | DeepSeek 主 + Google RSS 备 |
-| `hsbc` | 汇丰 HSBC | HSBC / 汇丰 | 亚洲/利率 | DeepSeek 主 + Google RSS 备 |
-| `morningstar` | 晨星 Morningstar | Morningstar | 估值/ETF | DeepSeek 主 + Google RSS 备 |
-| `bernstein` | 伯恩斯坦 Bernstein | Bernstein | 科技/中概 | DeepSeek 主 + Google RSS 备 |
-| `nomura` | 野村 Nomura | Nomura / 野村 | 日本/亚洲 | DeepSeek 主 + Google RSS 备 |
+| `goldman` | 高盛 Goldman Sachs | Goldman Sachs / 高盛 | 主流投行 | Google 新闻 RSS（Bing 备援） |
+| `morgan_stanley` | 摩根士丹利 | Morgan Stanley / 大摩 | 全球策略 | Google 新闻 RSS（Bing 备援） |
+| `jpmorgan` | 摩根大通 | JPMorgan / 小摩 | 宏观/新兴 | Google 新闻 RSS（Bing 备援） |
+| `bofa` | 美银 BofA Securities | BofA / 美银 | 资金流/量化 | Google 新闻 RSS（Bing 备援） |
+| `citi` | 花旗 Citi Research | Citi / 花旗 | 全球宏观 | Google 新闻 RSS（Bing 备援） |
+| `ubs` | 瑞银 UBS | UBS / 瑞银 | 全球配置 | Google 新闻 RSS（Bing 备援） |
+| `deutsche` | 德银 Deutsche Bank | Deutsche Bank | 欧股/信用 | Google 新闻 RSS（Bing 备援） |
+| `barclays` | 巴克莱 Barclays | Barclays / 巴克莱 | 英股/策略 | Google 新闻 RSS（Bing 备援） |
+| `hsbc` | 汇丰 HSBC | HSBC / 汇丰 | 亚洲/利率 | Google 新闻 RSS（Bing 备援） |
+| `morningstar` | 晨星 Morningstar | Morningstar | 估值/ETF | Google 新闻 RSS（Bing 备援） |
+| `bernstein` | 伯恩斯坦 Bernstein | Bernstein | 科技/中概 | Google 新闻 RSS（Bing 备援） |
+| `nomura` | 野村 Nomura | Nomura / 野村 | 日本/亚洲 | Google 新闻 RSS（Bing 备援） |
 
 - **窗口**：默认 168h（一周），支持 `--hours 168` 自定义
-- **采集**：每机构单查询 `"{机构别名} {topic} research report weekly rating target"`，DeepSeek 优先（需 `DEEPSEEK_API_KEY`），Google RSS 备用，失败记缺口不中断；无 Key 时前 2 家连续失败快速降级演示包
+- **采集**：每机构短查询 `"{中文简称} 研报"`（无命中换 `"{中文简称} 评级 目标价"`），Google 新闻 RSS 主链路、Bing 备援，DeepSeek 生成式搜索仅末位兜底（需 `DEEPSEEK_API_KEY`）；RSS 行按窗口过滤且标题含别名优先；失败记缺口不中断（topic 不入检索式——全词 AND 会把召回压零，2026-10-19 线上探活教训）
 - **打标**：`_score_text` 按利好/利空关键词映射情绪（利好/中性/利空）与分数（-1..+1），`_mk_item` 提取评级关键词（增持/买入/中性/减持/卖出/上调/下调/overweight/underweight 等）
 - **渲染**：`render_foreign_weekly_rule` 表格（机构|评级|标题|来源|时间）+ 汇总（篇数/机构/情绪均值→偏多/偏空）+ 附录明细（标题+链接+摘要）；`foreign_weekly_context` 供 AI 模板上下文
 - **自检**：`python foreign_institution_weekly.py --selftest` 7 项离线检查（机构清单/别名/样本/情绪/渲染/上下文/附录），`pushplus_deepseek.py --template foreign_weekly --ai-provider rule --dry-run` 可验证推送管线
-- **推送**：已注册到 `pushplus_deepseek.py` TEMPLATES（共 24 模板），标题“国外机构一周研报”，`build_messages` 中 prompt 要求 12机构表格+主线+板块+评级调整+风险+下周关注，`gen_by_rule` 走 `demo_pack` 离线样本，AI 路径走 168h 上下文；大屏 `server_dashboard.py` 新增 `/api/foreign_weekly` 与前端独立板块
+- **推送**：已注册到 `pushplus_deepseek.py` TEMPLATES（共 25 模板，含 `hk_brokers`），标题“国外机构一周研报”，`build_messages` 中 prompt 要求 12机构表格+主线+板块+评级调整+风险+下周关注，`gen_by_rule` 走 `demo_pack` 离线样本，AI 路径走 168h 上下文；独立运行入口为手动工作流 `broker-columns.yml`，每日定时简报以 72h 紧凑版并入；大屏 `server_dashboard.py` 新增 `/api/foreign_weekly` 与前端独立板块
+
+### 香港券商新闻与数据 12 家（`hk_brokers.py`，2026-10 新增，独立栏目 `hk_brokers`，并入每日简报）
+
+| 键名 | 券商 | 上市代码（股价快照） | 搜索链路 |
+|---|---|---|---|
+| `cicc` | 中金公司 | 3908.HK | Google 新闻 RSS（Bing 备援） |
+| `citic` | 中信证券国际 | 6030.HK（母公司中信证券） | 同上 |
+| `huatai` | 华泰金控 | 6886.HK（母公司华泰证券） | 同上 |
+| `gtja` | 国泰君安国际 | 1788.HK | 同上 |
+| `cms` | 招商证券国际 | 6099.HK（母公司招商证券） | 同上 |
+| `haitong` | 海通国际 | 6837.HK 海通证券（母公司；665.HK 已退市） | 同上 |
+| `bocom` | 交银国际 | 3329.HK | 同上 |
+| `ccbi` | 建银国际 | 非上市（建行子公司） | 同上 |
+| `boci` | 中银国际 | 非上市（中行子公司） | 同上 |
+| `futu` | 富途证券 | FUTU (NASDAQ) | 同上 |
+| `tiger` | 老虎证券 | TIGR (NASDAQ) | 同上 |
+| `bright` | 耀才证券 | 1428.HK | 同上 |
+
+- **窗口**：默认 48h，支持 `--hours` 自定义；每日简报中固定 48h（国外投行节为 72h）
+- **采集**：每家短查询 `"{券商全名} 研报"`（无命中换 `"{券商全名} 评级 目标价"`），Google 新闻 RSS 主链路、Bing 备援、DeepSeek 生成式搜索末位兜底，逐家限时、失败只记缺口，**采集不到不用演示数据填充**
+- **股价快照**：10 家有代码的券商经 `hk_quote.fetch_quote`（港股/美股统一入口）取抓取时点价与涨跌幅，拼成一条快照行
+- **渲染**：表格（券商|方向/评级|动态|时间）+ 股价条 + 汇总；附录含标题/链接/摘要
+- **接入**：`pushplus_deepseek.py` 模板 `hk_brokers`（手动工作流 `broker-columns.yml`，与 `foreign_weekly` 并列可选）；每日澳门 09:00/17:00 定时简报自动并入紧凑版章节（每家≤2 条）
+- **自检**：`python hk_brokers.py --selftest`
 
 ### 境外（美股）行情 4 源（`us_quote.py`，2026-08-14 新增）
 

@@ -47,6 +47,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 from statistics import median
 # newsnow 10源（前 7 源用户指定，2026-08-13 追加 3 源：头条/百度/B站）
 try:
@@ -94,7 +95,7 @@ TEMPLATES = ["brief", "analysis", "scan", "picker", "fusion",
              "sentiment", "feedscan", "newsnow", "equity",
              "initiate", "earnings_preview", "earnings_update",
              "model_update", "morning_note", "catalysts",
-             "thesis", "sector", "ideas", "foreign_weekly"]
+             "thesis", "sector", "ideas", "foreign_weekly", "hk_brokers"]
 TEMPLATE_TITLES = {
     "brief": "简报", "analysis": "多空因子分析", "scan": "市场情报扫描",
     "picker": "选股器·未来30日", "fusion": "技术面×基本面融合",
@@ -113,6 +114,7 @@ TEMPLATE_TITLES = {
     "sector": "行业格局",
     "ideas": "选股/主题扫描",
     "foreign_weekly": "国外机构一周研报",
+    "hk_brokers": "香港券商新闻与数据",
 }
 TEMPLATE_MAX_TOKENS = {
     "brief": 2000, "analysis": 3000, "scan": 4000, "picker": 4000,
@@ -122,6 +124,7 @@ TEMPLATE_MAX_TOKENS = {
     "initiate": 6000, "earnings_preview": 3500, "earnings_update": 5000,
     "model_update": 3500, "morning_note": 2500, "catalysts": 3000,
     "thesis": 3000, "sector": 4500, "ideas": 4000, "foreign_weekly": 6000,
+    "hk_brokers": 6000,
 }
 
 # analysis 的第 7 项是新增因子。它与“消息面与情绪面”不同：这里使用
@@ -616,13 +619,20 @@ def fetch_youtube(handle: str, hours: int, limit: int,
 # 设计：各家快讯 API 返回结构差异大且无官方文档，这里用「通用 JSON 探测 +
 # 键名试探 + 时间格式自适应」做防御式解析。任何单源失败只记入缺口，不中断。
 
-TITLE_KEYS = ["title", "content", "digest", "summary", "brief", "name",
-              "description", "news_title", "sub_title", "text"]
+# content_text/content_short 必须排在 content 前：华尔街见闻快讯的 content 是
+# 带 <p> 标签的 HTML 正文，优先取纯文本版；createTimestamp 是格隆汇时间键；
+# roll_data/depth_list/day_items 分别是财联社电报/深度、华尔街见闻最热的列表键，
+# 必须显式列出，否则会被财联社深度返回里的 banner 等干扰列表抢占。
+TITLE_KEYS = ["title", "content_text", "content_short", "content",
+              "digest", "summary", "brief", "name", "description",
+              "news_title", "sub_title", "text"]
 TIME_KEYS = ["ctime", "created_at", "display_time", "show_time", "time",
              "pubDate", "publish_time", "update_time", "timestamp",
-             "created", "date", "release_time"]
+             "created", "date", "release_time", "createTimestamp",
+             "create_time"]
 LIST_KEYS = ["data", "list", "items", "result", "newest", "news", "lives",
-             "telegraphs", "articles", "messages", "rows", "records"]
+             "telegraphs", "articles", "messages", "rows", "records",
+             "roll_data", "depth_list", "top_article", "day_items"]
 
 
 def _json_find_list(obj, depth: int = 0):
@@ -679,21 +689,27 @@ def extract_items_generic(payload, source: str, limit: int, hours: int,
     rows = _json_find_list(payload) or []
     items = []
     for row in rows:
+        if not isinstance(row, dict):
+            continue
+        # 广告/专题位不计入舆情样本（财联社 is_ad、华尔街见闻信息流
+        # resource_type=ad/theme）
+        if row.get("is_ad") or row.get("resource_type") in ("ad", "theme"):
+            continue
+        # 嵌套作用域：金十双层 data、华尔街见闻信息流 resource 包裹
+        nested = [row[k] for k in ("data", "resource")
+                  if isinstance(row.get(k), dict)]
         title, ts = "", None
-        for k in TITLE_KEYS:
-            v = row.get(k)
-            if isinstance(v, str) and len(v.strip()) >= 4:
-                title = v.strip()
-                break
-        if not title and isinstance(row.get("data"), dict):  # jin10 双层 data
+        for scope in (row, *nested):
             for k in TITLE_KEYS:
-                v = row["data"].get(k)
+                v = scope.get(k)
                 if isinstance(v, str) and len(v.strip()) >= 4:
                     title = v.strip()
                     break
+            if title:
+                break
         if not title:
             continue
-        for scope in (row, row.get("data") if isinstance(row.get("data"), dict) else {}):
+        for scope in (row, *nested):
             for k in TIME_KEYS:
                 if k in scope:
                     ts = _parse_any_time(scope[k])
@@ -715,9 +731,29 @@ def extract_items_generic(payload, source: str, limit: int, hours: int,
 class FeedSpec:
     name: str
     urls: list[str]                # 依次尝试
-    kind: str = "json"             # json | js | html
+    kind: str = "json"             # json | js | cls(签名JSON) | fb_express | fb_news
     headers: dict = field(default_factory=dict)
     note: str = ""
+    # kind="cls" 时的业务查询参数；值 "NOW_TS" 在请求时替换为当前 epoch 秒
+    query: dict = field(default_factory=dict)
+    # 每源样本上限：默认 10；金十快讯密度大、单条短，单独放宽到 50
+    limit: int = 10
+
+
+# 财联社接口签名：参数按 key 排序后 sign = md5(sha1(query))。
+# 端点与签名算法对照 RSSHub / NewsNow 的 cls 路由（2026-10 实测可用）。
+CLS_BASE_PARAMS = {"appName": "CailianpressWeb", "os": "web", "sv": "8.7.9"}
+
+
+def cls_signed_url(base: str, query: dict, now: datetime) -> str:
+    params = dict(CLS_BASE_PARAMS)
+    for k, v in (query or {}).items():
+        params[k] = str(int(now.timestamp())) if v == "NOW_TS" else str(v)
+    qs = urllib.parse.urlencode(sorted(params.items()))
+    sign = hashlib.md5(
+        hashlib.sha1(qs.encode("utf-8")).hexdigest().encode("utf-8")
+    ).hexdigest()
+    return f"{base}?{qs}&sign={sign}"
 
 
 FEED_HEADERS = {"Referer": "https://wallstreetcn.com/", "Accept": "application/json"}
@@ -726,39 +762,124 @@ FEED_SPECS: list[FeedSpec] = [
         "https://api.mktnews.net/api/flash?limit=10",
         "https://mktnews.net/api/flash?limit=10",
     ]),
+    # 华尔街见闻：旧域名 api-ddc-wscn.awtmt.com 已整体 71404 下线，
+    # 现行域名 api-one.wallstcn.com（api-one-wscn.awtmt.com 为其别名备援）。
     FeedSpec("华尔街见闻 快讯", [
-        "https://api-ddc-wscn.awtmt.com/market/lives?channel=global-channel&limit=10",
-        "https://api-ddc-wscn.awtmt.com/apiv1/content/lives?channel=global-channel&limit=10",
+        "https://api-one.wallstcn.com/apiv1/content/lives?channel=global-channel&limit=10",
+        "https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=global-channel&limit=10",
     ], headers=FEED_HEADERS),
     FeedSpec("华尔街见闻 最新", [
-        "https://api-ddc-wscn.awtmt.com/apiv1/content/articles?limit=10&plat=pc",
+        "https://api-one.wallstcn.com/apiv1/content/information-flow?channel=global-channel&accept=article&limit=10",
+        "https://api-one-wscn.awtmt.com/apiv1/content/information-flow?channel=global-channel&accept=article&limit=10",
     ], headers=FEED_HEADERS),
     FeedSpec("华尔街见闻 最热", [
-        "https://api-ddc-wscn.awtmt.com/apiv1/content/articles/hot?limit=10&plat=pc",
-        "https://api-ddc-wscn.awtmt.com/apiv1/content/articles?limit=10&sort=hot&plat=pc",
+        "https://api-one.wallstcn.com/apiv1/content/articles/hot?period=all",
+        "https://api-one-wscn.awtmt.com/apiv1/content/articles/hot?period=all",
     ], headers=FEED_HEADERS),
+    # 财联社：旧 nodeapi/telegraphList 已 404；现行端点需签名（cls_signed_url）。
     FeedSpec("财联社 电报", [
-        "https://www.cls.cn/nodeapi/telegraphList?app=CailianpressWeb&os=web&sv=8.4.6&rn=10",
-    ], headers={"Referer": "https://www.cls.cn/telegraph"}),
+        "https://www.cls.cn/v1/roll/get_roll_list",
+    ], kind="cls", headers={"Referer": "https://www.cls.cn/telegraph"},
+        query={"last_time": "NOW_TS", "refresh_type": 1, "rn": 20}),
     FeedSpec("财联社 深度", [
-        "https://www.cls.cn/api/depth/home/assembled/1000?app=CailianpressWeb&os=web&sv=8.4.6&rn=10",
-        "https://www.cls.cn/v1/depth/home/articles?app=CailianpressWeb&os=web&sv=8.4.6&rn=10",
-    ], headers={"Referer": "https://www.cls.cn/depth"}),
+        "https://www.cls.cn/v3/depth/home/assembled/1000",
+    ], kind="cls", headers={"Referer": "https://www.cls.cn/depth"}),
     FeedSpec("财联社 热门", [
-        "https://www.cls.cn/v1/articles/hot?app=CailianpressWeb&os=web&sv=8.4.6&rn=10",
-        "https://www.cls.cn/api/articles/hot?app=CailianpressWeb&os=web&sv=8.4.6&rn=10",
-    ], headers={"Referer": "https://www.cls.cn/hot"}),
+        "https://www.cls.cn/v2/article/hot/list",
+    ], kind="cls", headers={"Referer": "https://www.cls.cn/"}),
     FeedSpec("雪球 热门股票", [], kind="xueqiu"),  # 专用流程（Cookie 预热）
+    # 格隆汇：旧 fastnews/v2 已 404；现行快讯聚合接口 lives/v4。
     FeedSpec("格隆汇 事件", [
-        "https://www.gelonghui.com/api/fastnews/v2/getFastNewsList?limit=10",
-        "https://www.gelonghui.com/api/article/v2/getArticleList?type=fastnews&page=1&limit=10",
+        "https://www.gelonghui.com/api/live-channels/all/lives/v4",
     ], headers={"Referer": "https://www.gelonghui.com/live"}),
-    FeedSpec("法布财经 快讯", [], note="公开端点未确认，需提供快讯页地址后接入"),
-    FeedSpec("法布财经 头条", [], note="公开端点未确认，需提供头条页地址后接入"),
+    # 法布财经（FastBull）：无公开 JSON 端点，解析服务端渲染的列表页 HTML。
+    FeedSpec("法布财经 快讯", [
+        "https://www.fastbull.com/cn/express-news",
+    ], kind="fb_express",
+        headers={"Referer": "https://www.fastbull.com/cn/",
+                 "Accept": "text/html"}),
+    FeedSpec("法布财经 头条", [
+        "https://www.fastbull.com/cn/news",
+    ], kind="fb_news",
+        headers={"Referer": "https://www.fastbull.com/cn/",
+                 "Accept": "text/html"}),
+    # 金十：flash_newest.js 一次返回数十条，按口径取最新≤50 条
+    # （其中 channel=[5] 是同一快讯的英文重复版，抓取时过滤，避免重复计数）
     FeedSpec("金十数据", [
         "https://www.jin10.com/flash_newest.js",
-    ], kind="js", headers={"Referer": "https://www.jin10.com/", "x-app-id": "rU6QIu7JHe2gOUTe"}),
+    ], kind="js", limit=50,
+        headers={"Referer": "https://www.jin10.com/", "x-app-id": "rU6QIu7JHe2gOUTe"}),
 ]
+
+
+def _drop_jin10_english(payload):
+    """金十 flash 列表里 channel=[5] 是同一条快讯的英文版，与中文版重复计数，
+    抓取时剔除（对照 NewsNow jin10 源的口径）；其它结构原样返回。"""
+    rows = payload if isinstance(payload, list) else (
+        payload.get("data") if isinstance(payload, dict) else None)
+    if not isinstance(rows, list):
+        return payload
+    kept = [r for r in rows
+            if not (isinstance(r, dict) and r.get("channel") == [5])]
+    if isinstance(payload, list):
+        return kept
+    out = dict(payload)
+    out["data"] = kept
+    return out
+
+
+_JIN10_FLASH_API = "https://flash-api.jin10.com/get_flash_list"
+
+
+def _jin10_fill_pages(payload, limit: int, timeout: int):
+    """flash_newest.js 单页常只有约 25~40 条中文快讯；不足 limit 时用官方
+    flash-api 按最末条时间 max_time 继续翻页（对照 RSSHub jin10 路由的
+    x-app-id/x-version 头），去重后补满。任何失败都静默回退已有条目。"""
+    rows = payload if isinstance(payload, list) else None
+    if not rows or len(rows) >= limit:
+        return payload
+    seen = {r.get("id") for r in rows if isinstance(r, dict)}
+    headers = {"Referer": "https://www.jin10.com/",
+               "x-app-id": "bVBF4FyRTn5NJF5n", "x-version": "1.0.0"}
+    for _ in range(3):  # 最多再翻 3 页（每页数十条，足够补满 50）
+        last = rows[-1] if isinstance(rows[-1], dict) else {}
+        max_time = str(last.get("time") or "").strip()
+        if not max_time:
+            break
+        url = (_JIN10_FLASH_API + "?channel=-8200&vip=1"
+               f"&t={int(time.time())}"
+               f"&max_time={urllib.parse.quote(max_time)}")
+        try:
+            status, body = http_request(url, headers=headers, timeout=timeout)
+            if status != 200:
+                break
+            page = json.loads(body)
+        except Exception:  # noqa: BLE001 —— 分页失败不影响首页结果
+            break
+        page_rows = _drop_jin10_english(page)
+        if isinstance(page_rows, dict):
+            page_rows = page_rows.get("data")
+        if not isinstance(page_rows, list) or not page_rows:
+            break
+        added = 0
+        for r in page_rows:
+            if not isinstance(r, dict):
+                continue
+            rid = r.get("id")
+            if rid is not None and rid in seen:
+                continue
+            data = r.get("data") if isinstance(r.get("data"), dict) else {}
+            text = str(data.get("title") or data.get("content") or "")
+            if not re.search(r"[一-鿿]", text):
+                continue  # flash-api 无 channel 字段：无汉字视为英文版剔除
+            seen.add(rid)
+            rows.append(r)
+            added += 1
+            if len(rows) >= limit:
+                break
+        if added == 0 or len(rows) >= limit:
+            break
+    return rows
 
 
 def fetch_feed_json(spec: FeedSpec, hours: int, timeout: int,
@@ -766,10 +887,19 @@ def fetch_feed_json(spec: FeedSpec, hours: int, timeout: int,
     last_err = "无可用端点"
     for url in spec.urls:
         try:
+            if spec.kind == "cls":  # 财联社：每次请求现算签名
+                url = cls_signed_url(url, spec.query, now)
             status, body = http_request(url, headers=spec.headers or None,
                                         timeout=timeout)
             if status != 200:
                 last_err = f"HTTP {status}"
+                continue
+            if spec.kind in ("fb_express", "fb_news"):  # 法布财经 HTML 列表页
+                items = parse_fastbull(body, spec.kind, spec.name,
+                                       spec.limit, hours, now)
+                if items:
+                    return items
+                last_err = "解析成功但 48h 内无条目（结构可能已变）"
                 continue
             if spec.kind == "js":  # 金十 flash_newest.js：剥 JS 壳
                 m = re.search(r"[{\[]", body)
@@ -780,13 +910,156 @@ def fetch_feed_json(spec: FeedSpec, hours: int, timeout: int,
             except json.JSONDecodeError:
                 last_err = "非 JSON 返回（可能需要登录/被反爬）"
                 continue
-            items = extract_items_generic(payload, spec.name, 10, hours, now)
+            if spec.kind == "js":  # 金十：过滤英文重复版 + 不足 50 翻页补满
+                payload = _drop_jin10_english(payload)
+                payload = _jin10_fill_pages(payload, spec.limit, timeout)
+            items = extract_items_generic(payload, spec.name, spec.limit,
+                                          hours, now)
             if items:
                 return items
             last_err = "解析成功但 48h 内无条目（结构可能已变）"
         except PushError as e:
             last_err = str(e)[:80]
     raise PushError(last_err)
+
+
+# ---- 法布财经（FastBull）：无公开 JSON，解析服务端渲染列表页 ----
+# DOM 结构对照 RSSHub / NewsNow 的 fastbull 路由：
+#   快讯 /cn/express-news：.news-list[data-date=ms]，标题在 .title_name
+#     （形如【标题】正文…），链接在子元素 [data-href] / [data-id]；
+#   头条 /cn/news：a.trending_type[href]，标题在 .title，
+#     时间在子元素 [data-date]（.new_time）。
+# 仓库坚持零第三方依赖，这里用标准库 html.parser 搭一棵迷你 DOM。
+
+
+class _MiniNode:
+    __slots__ = ("tag", "attrs", "children", "texts")
+
+    def __init__(self, tag: str, attrs: dict):
+        self.tag = tag
+        self.attrs = attrs
+        self.children: list[_MiniNode] = []
+        self.texts: list[str] = []
+
+
+class _MiniDomParser(HTMLParser):
+    _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+             "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = _MiniNode("#root", {})
+        self._stack = [self.root]
+
+    def handle_starttag(self, tag, attrs):
+        node = _MiniNode(tag, dict(attrs))
+        self._stack[-1].children.append(node)
+        if tag not in self._VOID:
+            self._stack.append(node)
+
+    def handle_startendtag(self, tag, attrs):
+        self._stack[-1].children.append(_MiniNode(tag, dict(attrs)))
+
+    def handle_endtag(self, tag):
+        # 容错：弹到最近匹配的开标签（页面常有未闭合标签）
+        for i in range(len(self._stack) - 1, 0, -1):
+            if self._stack[i].tag == tag:
+                del self._stack[i:]
+                return
+
+    def handle_data(self, data):
+        if data.strip():
+            self._stack[-1].texts.append(data)
+
+
+def _node_classes(node: _MiniNode) -> set:
+    return set((node.attrs.get("class") or "").split())
+
+
+def _node_text(node: _MiniNode) -> str:
+    parts = list(node.texts)
+    for ch in node.children:
+        parts.append(_node_text(ch))
+    return re.sub(r"\s+", " ", " ".join(parts)).strip()
+
+
+def _find_descendants(node: _MiniNode, pred, out: list | None = None,
+                      include_self: bool = False) -> list:
+    if out is None:
+        out = []
+    if include_self and pred(node):
+        out.append(node)
+    for ch in node.children:
+        if pred(ch):
+            out.append(ch)
+        _find_descendants(ch, pred, out)
+    return out
+
+
+def parse_fastbull(body: str, kind: str, source: str, limit: int,
+                   hours: int, now: datetime) -> list[SentItem]:
+    """解析 FastBull 列表页 HTML → SentItem（去重、按时间倒序、窗口过滤）。"""
+    parser = _MiniDomParser()
+    try:
+        parser.feed(body)
+    except Exception:  # noqa: BLE001 —— 页面结构异常按无条目处理，由上层记缺口
+        return []
+    root = parser.root
+    base = "https://www.fastbull.com"
+    rows: list[tuple[str, str, datetime | None]] = []  # (title, url, ts)
+
+    if kind == "fb_express":
+        blocks = _find_descendants(root, lambda n: "news-list" in _node_classes(n))
+        for b in blocks:
+            cand = _find_descendants(b, lambda n: "title_name" in _node_classes(n))
+            if not cand:
+                continue
+            text = _node_text(cand[0])
+            m = re.match(r"【(.+?)】", text, re.S)
+            title = m.group(1).strip() if m and len(m.group(1).strip()) >= 4 else text
+            link_node = _find_descendants(
+                b, lambda n: bool(n.attrs.get("data-href")), include_self=True)
+            href = link_node[0].attrs["data-href"] if link_node else ""
+            if not href:
+                id_node = _find_descendants(
+                    b, lambda n: bool(n.attrs.get("data-id")), include_self=True)
+                if id_node:
+                    href = f"/cn/fastshort/{id_node[0].attrs['data-id']}"
+            ts = _parse_any_time(b.attrs.get("data-date"))
+            rows.append((title, href, ts))
+    else:  # fb_news
+        blocks = _find_descendants(root,
+                                   lambda n: "trending_type" in _node_classes(n))
+        for b in blocks:
+            cand = _find_descendants(b, lambda n: "title" in _node_classes(n))
+            if not cand:
+                continue
+            title = _node_text(cand[0])
+            dated = _find_descendants(
+                b, lambda n: "new_time" in _node_classes(n)
+                and bool(n.attrs.get("data-date")))
+            if not dated:
+                dated = _find_descendants(
+                    b, lambda n: bool(n.attrs.get("data-date")), include_self=True)
+            ts = _parse_any_time(dated[0].attrs.get("data-date")) if dated else None
+            rows.append((title, b.attrs.get("href") or "", ts))
+
+    seen: set = set()
+    uniq: list[tuple[str, str, datetime | None]] = []
+    for title, href, ts in rows:
+        key = href or title
+        title = re.sub(r"<[^>]+>", "", title).strip()
+        if len(title) < 4 or key in seen:
+            continue
+        seen.add(key)
+        if ts and not _in_window(ts, hours, now):
+            continue
+        uniq.append((title,
+                     urllib.parse.urljoin(base, href) if href else "",
+                     ts))
+    uniq.sort(key=lambda r: r[2] or datetime.min.replace(tzinfo=UTC),
+              reverse=True)
+    return [_mk_item(source, t, u, ts, now) for t, u, ts in uniq[:limit]]
 
 
 XUEQIU_HOT_URL = ("https://stock.xueqiu.com/v5/stock/hot_stock/list.json"
@@ -946,7 +1219,7 @@ def feed_context(topic: str, pack: FeedPack) -> str:
         agg = _src_agg(items)
         ctx.append(f"▼ {spec.name}（{agg['n']}条：利好{agg['pos']}/"
                    f"利空{agg['neg']}/中性{agg['neu']}，动量{agg['mean']:+.2f}）")
-        ctx += [_item_line(i, k + 1) for k, i in enumerate(items[:10])]
+        ctx += [_item_line(i, k + 1) for k, i in enumerate(items[:spec.limit])]
     # DeepSeek 搜索（新增第 13 源）
     ds_items = pack.items.get("DeepSeek 搜索")
     if ds_items:
@@ -1004,14 +1277,14 @@ def render_feed_rule(topic: str, pack: FeedPack) -> str:
 
 def render_feed_appendix(pack: FeedPack, new_keys: set | None = None) -> str:
     nk = new_keys or set()
-    lines = ["---", f"📰 **快讯原始明细（{pack.agg['n']} 条，每源≤10，含 DeepSeek 搜索）**"]
+    lines = ["---", f"📰 **快讯原始明细（{pack.agg['n']} 条，金十≤50、其余每源≤10，含 DeepSeek 搜索）**"]
     for spec in FEED_SPECS:
         items = pack.items.get(spec.name)
         if not items:
             continue
-        lines.append(f"\n**{spec.name}（{len(items)}/10）**")
+        lines.append(f"\n**{spec.name}（{len(items)}/{spec.limit}）**")
         lines += [_item_line(i, k + 1, _item_key(i.title) in nk)
-                  for k, i in enumerate(items[:10])]
+                  for k, i in enumerate(items[:spec.limit])]
     ds_items = pack.items.get("DeepSeek 搜索")
     if ds_items:
         lines.append(f"\n**DeepSeek 搜索（{len(ds_items)}/10）**")
@@ -1269,6 +1542,16 @@ def build_messages(template: str, topic: str, context: str,
             + RULES_TAIL)
     elif template == "feedscan":
         if is_market_wide_topic(topic):
+            # 每日简报并入的栏目（数据段存在时才要求 AI 写对应小节）
+            columns_note = ""
+            if "【香港券商新闻与数据" in context:
+                columns_note += (
+                    "- **香港券商动态**：一小节概括香港券商最新研报/新闻标题要点，"
+                    "附上市券商股价表现（只引用下方同名数据段给定内容）\n")
+            if "【国外机构一周研报" in context:
+                columns_note += (
+                    "- **国外投行研报**：一小节逐家列出国外投行最新研报标题与"
+                    "评级要点（只引用下方同名数据段给定内容并注明机构）\n")
             user = (
                 "基于以下最近 24h 全市场快讯数据（已本地预打标，含各源情绪指标），"
                 "输出一份不针对单只股票的全市场市场情报简报。\n\n"
@@ -1280,7 +1563,8 @@ def build_messages(template: str, topic: str, context: str,
                 "- **三大市场主线**：跨源归纳，每条标注支撑来源与可信度\n"
                 "- **板块映射**：受益/承压板块各 2~3 个；没有足够证据时标明未知\n"
                 "- **风险与观察**：2~3 条市场级风险或接下来需要验证的信号\n"
-                "- **数据缺口**：注明失效/无返回来源，不补造数据\n\n"
+                + columns_note
+                + "- **数据缺口**：注明失效/无返回来源，不补造数据\n\n"
                 "重要约束：只做宏观、市场与板块层面的概览；禁止输出任何单只股票的研报、"
                 "评级、目标价、买卖点或个股投资建议。快讯即使提到公司，也只可作为新闻事实，"
                 "不得把正文写成个股页。不得臆造数据。"
@@ -1467,6 +1751,21 @@ def build_messages(template: str, topic: str, context: str,
             "- **下周关注**：2-3 个催化剂（财报/议息/数据）\n\n"
             "要求：所有观点标注来源机构与时间；不得臆造研报原文链接，缺失写“未获取到”；概率取整数%；简体中文 Markdown。"
             + RULES_TAIL)
+    elif template == "hk_brokers":
+        user = (
+            f"基于以下香港主要券商新闻与数据（中金/中信证券国际/华泰金控/国泰君安国际/招商证券国际/海通国际/交银国际/建银国际/中银国际/富途/老虎/耀才等，含研报动态与上市券商股价快照），"
+            f"为主题「{topic}」撰写一份香港券商栏目。\n\n{ctx}\n\n"
+            "严格按此格式输出：\n\n"
+            "## 香港券商新闻与数据\n\n"
+            "| 券商 | 最新动态（研报/新闻标题） | 评级/方向 | 依据来源 |\n"
+            "|---|---|---|---|\n"
+            "（逐家 1-2 行，窗口内无动态的机构标明“暂无更新”，不要编造）\n\n"
+            "- **上市券商股价**：引用数据中的股价快照，点评涨跌居前者（注明为抓取时点）\n"
+            "- **券商观点共识与分歧**：归纳 2-3 条（涉及板块/标的方向，标注支撑家数）\n"
+            "- **行业事件**：IPO/佣金/开户/政策等券商行业新闻 2-3 条\n"
+            "- **数据缺口**：注明未命中的机构，不补造数据\n\n"
+            "要求：标题与评级必须来自给定数据；不得编造目标价；不得给出买卖建议；简体中文 Markdown。"
+            + RULES_TAIL)
     else:
         # Anthropic 官方 skill 模板：委托 skills_hub 构造完整 prompt
         try:
@@ -1586,6 +1885,22 @@ def gen_by_rule(topic: str, template: str,
                 f"- 运行时间：{now}（北京时间）",
                 "- 覆盖机构：高盛/摩根士丹利/摩根大通/美银/花旗/瑞银/德银/巴克莱/汇丰/晨星/伯恩斯坦/野村",
                 "- 提示：使用 --template foreign_weekly --hours 168 可采集最近一周研报",
+                "", "> ⚠️ 非投资建议，仅供参考。"])
+    if template == "hk_brokers":
+        # 香港券商新闻与数据独立栏目（gen_by_rule 无 pack 时降级演示包；
+        # 主流程独立模板走 collect_hk_brokers 真实采集，不走这里）
+        try:
+            import hk_brokers as hb
+            pack = hb.demo_pack()
+            pack.topic = topic
+            return hb.render_hk_brokers_rule(topic, pack)
+        except Exception as e:  # noqa: BLE001
+            return "\n".join([
+                f"**{topic} · 香港券商新闻与数据**（rule 降级）", "",
+                f"- hk_brokers 不可用：{e}",
+                f"- 运行时间：{now}（北京时间）",
+                "- 覆盖券商：中金/中信证券国际/华泰金控/国泰君安国际/招商证券国际/海通国际/交银国际/建银国际/中银国际/富途/老虎/耀才",
+                "- 提示：使用 --template hk_brokers --hours 48 可采集最新券商动态",
                 "", "> ⚠️ 非投资建议，仅供参考。"])
     try:
         import skills_hub as sh
@@ -4167,14 +4482,140 @@ def selftest() -> int:
     jj = json.loads(jin10_sample[m.start():].rstrip(";\n "))
     ij = extract_items_generic(jj, "金十数据", 10, 48, NOW)
     check("金十:JS壳+双层data", len(ij) == 1 and ij[0].label == "利好")
+
+    log("③c2 修复源回归（2026-10 接口换代：华尔街/财联社/格隆汇/法布）")
+    wscn_live = {"code": 20000, "data": {"items": [
+        {"title": "", "content": "<p>HTML正文不应被选</p>",
+         "content_text": "央行开展逆回购操作维护流动性", "display_time": ts_8am},
+        {"title": "两市融资余额减少", "content_text": "长正文",
+         "display_time": ts_8am}]}}
+    iw = extract_items_generic(wscn_live, "华尔街见闻 快讯", 10, 48, NOW)
+    check("华尔街快讯:空title回退content_text且不取HTML content",
+          len(iw) == 2 and iw[0].title.startswith("央行开展逆回购")
+          and "HTML正文" not in iw[0].title
+          and iw[1].title == "两市融资余额减少")
+    wscn_flow = {"data": {"items": [
+        {"resource_type": "article",
+         "resource": {"title": "信息流最新文章标题", "display_time": ts_8am}},
+        {"resource_type": "ad",
+         "resource": {"title": "广告位不应入选", "display_time": ts_8am}}]}}
+    iw2 = extract_items_generic(wscn_flow, "华尔街见闻 最新", 10, 48, NOW)
+    check("华尔街最新:resource嵌套提取+广告剔除",
+          len(iw2) == 1 and iw2[0].title == "信息流最新文章标题")
+    wscn_hot = {"data": {"week_items": [
+                    {"title": "周榜旧文", "display_time": ts_8am - 6 * 86400}],
+                         "day_items": [
+                    {"title": "日榜最热文章", "display_time": ts_8am}],
+                         "offline_ids": [1, 2]}}
+    iw3 = extract_items_generic(wscn_hot, "华尔街见闻 最热", 10, 48, NOW)
+    check("华尔街最热:优先day_items且窗口过滤",
+          len(iw3) == 1 and iw3[0].title == "日榜最热文章")
+    cls_roll = {"errno": 0, "data": {"roll_data": [
+        {"title": "", "brief": "财联社电，指数午后拉升", "ctime": ts_8am,
+         "is_ad": 0},
+        {"title": "广告电报不应入选", "brief": "x", "ctime": ts_8am,
+         "is_ad": 1}]}}
+    ic1 = extract_items_generic(cls_roll, "财联社 电报", 10, 48, NOW)
+    check("财联社电报:roll_data定位+is_ad剔除",
+          len(ic1) == 1 and ic1[0].title.startswith("财联社电"))
+    cls_depth = {"data": {"roll_bar": {},
+                          "banner": [{"id": 1, "title": ""}],
+                          "top_article": [
+                              {"title": "置顶文章", "ctime": ts_8am}],
+                          "depth_list": [
+                              {"title": "深度列表文章一", "ctime": ts_8am},
+                              {"title": "深度列表文章二", "ctime": ts_8am}]}}
+    ic2 = extract_items_generic(cls_depth, "财联社 深度", 10, 48, NOW)
+    check("财联社深度:depth_list不被banner干扰",
+          len(ic2) == 2 and ic2[0].title == "深度列表文章一")
+    check("财联社签名:md5(sha1(排序query))向量",
+          cls_signed_url("https://www.cls.cn/v2/article/hot/list", {}, NOW)
+          .endswith("sign=10bdc2da403ad7415bb639aa22dc6cd3"))
+    check("财联社签名:NOW_TS替换为epoch秒",
+          f"last_time={int(NOW.timestamp())}" in cls_signed_url(
+              "https://www.cls.cn/v1/roll/get_roll_list",
+              {"last_time": "NOW_TS", "refresh_type": 1, "rn": 20}, NOW))
+    glh = {"statusCode": 200, "result": [
+        {"title": "格隆汇快讯标题", "createTimestamp": int(ts_8am)},
+        {"title": "", "content": "格隆汇电，无标题回退正文",
+         "createTimestamp": int(ts_8am)}]}
+    ig = extract_items_generic(glh, "格隆汇 事件", 10, 48, NOW)
+    check("格隆汇:result+createTimestamp",
+          len(ig) == 2 and ig[1].title.startswith("格隆汇电"))
+    fb_now_ms = int(ts_8am) * 1000
+    fb_express = (
+        f'<div class="content-list news-list" data-date="{fb_now_ms}">'
+        '<div data-href="/cn/fastshort/123">'
+        '<div class="title_name">【黄金突破历史新高】现货黄金大涨。</div>'
+        "</div></div>"
+        f'<div class="content-list news-list" data-date="{fb_now_ms}">'
+        '<div data-href="/cn/fastshort/123">'
+        '<div class="title_name">【黄金突破历史新高】重复条目应去重。</div>'
+        "</div></div>")
+    ifb = parse_fastbull(fb_express, "fb_express", "法布财经 快讯",
+                         10, 48, NOW)
+    check("法布快讯:news-list解析+【】标题+去重",
+          len(ifb) == 1 and ifb[0].title == "黄金突破历史新高"
+          and ifb[0].url.endswith("/cn/fastshort/123")
+          and ifb[0].age_h is not None)
+    fb_news = (
+        '<a class="trending_type" href="/cn/news/789">'
+        '<div class="title">全球市场头条新闻标题</div>'
+        f'<span class="new_time" data-date="{fb_now_ms}">x</span></a>')
+    ifb2 = parse_fastbull(fb_news, "fb_news", "法布财经 头条", 10, 48, NOW)
+    check("法布头条:trending_type解析",
+          len(ifb2) == 1 and ifb2[0].title == "全球市场头条新闻标题"
+          and ifb2[0].url.endswith("/cn/news/789"))
+
     fp = FeedPack(hours=48)
     fp.items["金十数据"] = ij
-    fp.errors.append("法布财经 快讯：公开端点未确认，需提供快讯页地址后接入")
+    fp.errors.append("MKTNews 快讯：HTTP 502")
     fp.agg = {"n": 1, "pos": 1, "neg": 0, "neu": 0, "mean": 1.0,
               "n_sources": 1, "综合多头概率锚点": 50 + 45 * min(1.0, 1.0 * 3)}
     md_rule = render_feed_rule("阿里巴巴", fp)
     check("feedscan:rule渲染含缺口行", "⚠️" in md_rule and "情绪温度" in md_rule)
-    check("feedscan:附录含来源明细", "金十数据（1/10）" in render_feed_appendix(fp))
+    check("feedscan:附录含来源明细", "金十数据（1/50）" in render_feed_appendix(fp))
+    jin10_spec = next(s for s in FEED_SPECS if s.name == "金十数据")
+    check("金十:样本上限=50(其余源默认10)",
+          jin10_spec.limit == 50
+          and all(s.limit == 10 for s in FEED_SPECS if s.name != "金十数据"))
+    j50_raw = [{"id": str(k), "time": "2026-08-04 11:00:00", "channel": [1],
+                "data": {"content": f"测试快讯样本第{k}条内容"}}
+               for k in range(60)]
+    j50_raw.append({"id": "en1", "time": "2026-08-04 11:00:00",
+                    "channel": [5],
+                    "data": {"content": "English duplicate flash item"}})
+    j50_kept = _drop_jin10_english(j50_raw)
+    check("金十:channel=[5]英文重复版被过滤", len(j50_kept) == 60
+          and all(r.get("channel") != [5] for r in j50_kept))
+    ij50 = extract_items_generic(j50_kept, "金十数据", jin10_spec.limit,
+                                 48, NOW)
+    check("金十:60条样本取满50条", len(ij50) == 50)
+    _orig_http = http_request
+    try:
+        def _fake_flash(url, headers=None, timeout=10, **kw):
+            page = [{"id": i, "time": "2026-10-19 08:00:00",
+                     "data": {"title": f"金十快讯样本{i}央行动态",
+                              "content": "正文"}} for i in range(100, 140)]
+            page[0] = {"id": 1, "time": "2026-10-19 08:30:00",
+                       "data": {"title": "与首页重复的条目", "content": "x"}}
+            page[1] = {"id": 999, "time": "2026-10-19 08:29:00",
+                       "data": {"title": "Fed seen cutting rates",
+                                "content": "english only"}}
+            return 200, json.dumps({"data": page}, ensure_ascii=False)
+        globals()["http_request"] = _fake_flash
+        home_rows = [{"id": i, "time": "2026-10-19 09:00:00",
+                      "data": {"title": f"首页快讯{i}", "content": "正文"}}
+                     for i in range(1, 13)]
+        filled = _jin10_fill_pages(list(home_rows), 50, 5)
+        check("金十:flash-api 翻页补满 50（去重+剔英文）",
+              len(filled) == 50
+              and len({r["id"] for r in filled}) == 50
+              and all(r["id"] != 999 for r in filled))
+        check("金十:已满 50 不再翻页",
+              len(_jin10_fill_pages(list(filled), 50, 5)) == 50)
+    finally:
+        globals()["http_request"] = _orig_http
     market_topic = "全球市场早报"
     market_ctx = feed_context(market_topic, fp)
     market_prompt = build_messages("feedscan", market_topic, market_ctx)[1]["content"]
@@ -4525,6 +4966,32 @@ def selftest() -> int:
     except Exception as e:  # noqa: BLE001
         check(f"十七平台扫描集成异常: {e}", False)
 
+    log("③j2 香港券商栏目（独立模板 + 简报栏目提示词）")
+    try:
+        import hk_brokers as hb
+        check("hk_brokers 模板已注册",
+              "hk_brokers" in TEMPLATES
+              and TEMPLATE_TITLES.get("hk_brokers") == "香港券商新闻与数据"
+              and TEMPLATE_MAX_TOKENS.get("hk_brokers", 0) > 0)
+        check("香港券商子模块自检通过", hb.selftest() == 0)
+        _hk_prompt = build_messages(
+            "hk_brokers", "香港券商动态",
+            hb.hk_brokers_context(hb.demo_pack()))[1]["content"]
+        check("hk_brokers 提示词含栏目框架",
+              "香港券商新闻与数据" in _hk_prompt and "富途" in _hk_prompt)
+        _brief_prompt = build_messages(
+            "feedscan", "全球市场早报",
+            "【24h 全市场快讯数据】\n\n" + hb.hk_brokers_context(
+                hb.demo_pack(), max_per_firm=2))[1]["content"]
+        check("每日简报提示词在有栏目数据时要求香港券商小节",
+              "**香港券商动态**" in _brief_prompt)
+        _brief_plain = build_messages(
+            "feedscan", "全球市场早报", "【24h 全市场快讯数据】")[1]["content"]
+        check("无栏目数据时简报提示词不强求券商小节",
+              "**香港券商动态**" not in _brief_plain)
+    except Exception as e:  # noqa: BLE001
+        check(f"香港券商栏目集成异常: {e}", False)
+
     log("③k 数据源检查验证数据库（SQLite 落库）")
     try:
         import tempfile
@@ -4874,6 +5341,9 @@ def main(argv: list[str]) -> int:
 
     # ---------- 模块②b：feedscan 模板采集 13 源全市场快讯（含 DeepSeek 搜索）----------
     feed_pack = None
+    # 每日全市场简报并入的栏目附录（香港券商 + 国外投行研报），在下方填充；
+    # 最终附录重算处需再次拼接，先在这里初始化保证作用域内始终有值
+    brief_columns_appendix_md = ""
     if template == "feedscan":
         log(f"\n📡 正在采集 13 源全市场快讯（{args.hours}h 窗口，含 DeepSeek 搜索）…")
         feed_pack = collect_feeds(args.hours, min(args.timeout, 12), topic=topic)
@@ -4903,6 +5373,72 @@ def main(argv: list[str]) -> int:
             f"{feed_pack.agg['综合多头概率锚点']}%")
         appendix_md = render_feed_appendix(feed_pack)
         user_context = feed_context(topic, feed_pack)
+
+        # 每日全市场简报并入栏目（仅全市场主题；环境变量 BRIEF_COLUMNS=0
+        # 可关闭）：🏦 香港券商新闻与数据（48h）+ 🏛 国外投行研报标题（72h）。
+        # 采集失败/无命中只如实记缺口，绝不用演示数据填充正式推送。
+        if is_market_wide_topic(topic) and env("BRIEF_COLUMNS") != "0":
+            _col_ctx_parts: list[str] = []
+            _col_apx_parts: list[str] = []
+            try:
+                from hk_brokers import (collect_hk_brokers,
+                                        hk_brokers_context,
+                                        render_hk_brokers_appendix)
+                log("\n🏦 简报栏目：香港券商新闻与数据（48h，12 家）…")
+                _hk_pack = collect_hk_brokers(
+                    topic="港股市场", hours=48,
+                    timeout=min(args.timeout, 12))
+                log(f"  → {_hk_pack.agg.get('n', 0)} 条 / "
+                    f"{_hk_pack.agg.get('firms_hit', 0)}/12 家，"
+                    f"股价快照 {_hk_pack.agg.get('quotes_hit', 0)} 家")
+                for _e in _hk_pack.errors[:4]:
+                    log(f"  ⚠️  {_e}")
+                if _hk_pack.agg.get("n", 0):
+                    _col_ctx_parts.append(
+                        hk_brokers_context(_hk_pack, max_per_firm=2))
+                    _col_apx_parts.append(render_hk_brokers_appendix(
+                        _hk_pack, max_per_firm=2))
+                else:
+                    _col_apx_parts.append(
+                        "---\n🏦 **香港券商新闻与数据**\n\n- ⚠️ 本次未采集到（"
+                        + "；".join(_hk_pack.errors[:3]) + "）")
+            except Exception as ex:  # noqa: BLE001 —— 栏目失败不拖累简报
+                log(f"  ⚠️ 香港券商栏目采集失败：{ex}")
+                _col_apx_parts.append(
+                    "---\n🏦 **香港券商新闻与数据**\n\n"
+                    f"- ⚠️ 采集失败：{str(ex)[:120]}")
+            try:
+                from foreign_institution_weekly import (
+                    collect_foreign_weekly, foreign_weekly_context,
+                    render_foreign_weekly_appendix)
+                log("\n🏛 简报栏目：国外投行研报标题（72h，12 家）…")
+                _fw_pack = collect_foreign_weekly(
+                    topic="全球市场", hours=72,
+                    timeout=min(args.timeout, 12))
+                log(f"  → {_fw_pack.agg.get('n', 0)} 篇 / "
+                    f"{_fw_pack.agg.get('institutions_hit', 0)}/12 家")
+                for _e in _fw_pack.errors[:4]:
+                    log(f"  ⚠️  {_e}")
+                if _fw_pack.agg.get("n", 0):
+                    _col_ctx_parts.append(foreign_weekly_context(_fw_pack))
+                    _col_apx_parts.append(render_foreign_weekly_appendix(
+                        _fw_pack, max_per_inst=2))
+                else:
+                    _col_apx_parts.append(
+                        "---\n🏛 **国外投行研报标题**\n\n- ⚠️ 本次未采集到（"
+                        + "；".join(_fw_pack.errors[:3]) + "）")
+            except Exception as ex:  # noqa: BLE001
+                log(f"  ⚠️ 国外投行研报栏目采集失败：{ex}")
+                _col_apx_parts.append(
+                    "---\n🏛 **国外投行研报标题**\n\n"
+                    f"- ⚠️ 采集失败：{str(ex)[:120]}")
+            if _col_ctx_parts:
+                user_context = (f"{user_context}\n\n"
+                                + "\n\n".join(_col_ctx_parts))
+            if _col_apx_parts:
+                brief_columns_appendix_md = "\n\n".join(_col_apx_parts)
+                appendix_md = (f"{appendix_md}\n\n"
+                               f"{brief_columns_appendix_md}")
 
     # ---------- 模块②c：NewsNow 10源热榜聚合（知乎/抖音/微博/虎扑/AI hot/联合早报/香港01/今日头条/百度/B站） ----------
     newsnow_pack = None
@@ -4980,6 +5516,30 @@ def main(argv: list[str]) -> int:
                     log(f"  ❌ 演示包也失败：{ex2}")
                     foreign_weekly_pack = None
 
+    # ---------- 模块②e：香港券商新闻与数据（独立栏目）----------
+    hk_brokers_pack = None
+    if template == "hk_brokers":
+        log(f"\n🏦 正在采集香港券商新闻与数据（{args.hours}h 窗口，12 家券商）…")
+        try:
+            from hk_brokers import (collect_hk_brokers,
+                                    render_hk_brokers_appendix,
+                                    hk_brokers_context)
+            hk_brokers_pack = collect_hk_brokers(
+                topic=topic, hours=args.hours,
+                timeout=min(args.timeout, 15))
+            for _k, _items in hk_brokers_pack.reports.items():
+                log(f"  ✅ {_items[0].firm if _items else _k}: {len(_items)} 条")
+            for _e in hk_brokers_pack.errors:
+                log(f"  ⚠️  {_e}")
+            log(f"  → 共 {hk_brokers_pack.agg.get('n', 0)} 条 / "
+                f"{hk_brokers_pack.agg.get('firms_hit', 0)}/12 家，"
+                f"股价快照 {hk_brokers_pack.agg.get('quotes_hit', 0)} 家")
+            appendix_md = render_hk_brokers_appendix(hk_brokers_pack)
+            user_context = hk_brokers_context(hk_brokers_pack)
+        except Exception as ex:  # noqa: BLE001
+            log(f"  ❌ 香港券商栏目失败：{ex}（将降级为规则提示）")
+            hk_brokers_pack = None
+
     # ---------- 模块①：三源取价 + 交叉核验（可选）----------
     data_md, context = "", user_context
     quotes: list[Quote] = []
@@ -5018,6 +5578,12 @@ def main(argv: list[str]) -> int:
                     content = render_foreign_weekly_rule(topic, foreign_weekly_pack)
                 except Exception:
                     content = gen_by_rule(topic, template)
+            elif template == "hk_brokers" and hk_brokers_pack is not None:
+                try:
+                    from hk_brokers import render_hk_brokers_rule
+                    content = render_hk_brokers_rule(topic, hk_brokers_pack)
+                except Exception:
+                    content = gen_by_rule(topic, template)
             else:
                 # newsnow may be None if import fails, pass it anyway
                 try:
@@ -5046,6 +5612,12 @@ def main(argv: list[str]) -> int:
                     try:
                         from foreign_institution_weekly import render_foreign_weekly_rule
                         content = render_foreign_weekly_rule(topic, foreign_weekly_pack)
+                    except Exception:
+                        content = gen_by_rule(topic, template)
+                elif template == "hk_brokers" and hk_brokers_pack is not None:
+                    try:
+                        from hk_brokers import render_hk_brokers_rule
+                        content = render_hk_brokers_rule(topic, hk_brokers_pack)
                     except Exception:
                         content = gen_by_rule(topic, template)
                 else:
@@ -5184,6 +5756,9 @@ def main(argv: list[str]) -> int:
                                                 new_keys=new_key_set)
     elif template == "feedscan" and feed_pack is not None:
         appendix_md = render_feed_appendix(feed_pack, new_keys=new_key_set)
+        # 重算会覆盖采集段已拼好的内容，这里把并入简报的栏目附录再拼一次
+        if brief_columns_appendix_md:
+            appendix_md += "\n\n" + brief_columns_appendix_md
     elif template == "foreign_weekly" and locals().get("foreign_weekly_pack") is not None:
         try:
             from foreign_institution_weekly import render_foreign_weekly_appendix
