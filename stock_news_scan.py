@@ -31,8 +31,10 @@ stock_news_scan.py — 量价舆情动量 · 十七平台股票扫描
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -362,12 +364,17 @@ def extract_dyn_sectors(direct: dict[str, list[ScanItem]],
 
 # ---------------- 财经快讯 7 源：通用 JSON 提取 ----------------
 
-TITLE_KEYS = ["title", "content", "digest", "summary", "brief", "name",
-              "description", "content_text", "subtitle"]
+# 键名口径与 pushplus_deepseek 一致（2026-10 接口换代后同步）：
+# content_text/content_short 优先于 content（华尔街见闻 content 是 HTML）、
+# createTimestamp 是格隆汇时间键、roll_data 是财联社电报列表键。
+TITLE_KEYS = ["title", "content_text", "content_short", "content",
+              "digest", "summary", "brief", "name", "description",
+              "subtitle"]
 TIME_KEYS = ["ctime", "display_time", "time", "pub_date", "published_at",
              "ltime", "showtime", "created_at", "date", "add_time",
-             "update_time", "publish_time"]
-LIST_KEYS = ["data", "list", "items", "result", "news", "lives", "flash_list"]
+             "update_time", "publish_time", "createTimestamp", "create_time"]
+LIST_KEYS = ["data", "list", "items", "result", "news", "lives", "flash_list",
+             "roll_data", "depth_list", "day_items"]
 
 
 def _json_find_list(payload):
@@ -394,7 +401,12 @@ def extract_flash_rows(payload, limit: int = 30) -> list[dict]:
     for row in rows:
         if not isinstance(row, dict):
             continue
-        scopes = [row] + ([row["data"]] if isinstance(row.get("data"), dict) else [])
+        # 广告/专题位剔除（财联社 is_ad、华尔街见闻 resource_type=ad/theme）
+        if row.get("is_ad") or row.get("resource_type") in ("ad", "theme"):
+            continue
+        # 嵌套作用域：金十双层 data、华尔街见闻信息流 resource 包裹
+        scopes = [row] + [row[k] for k in ("data", "resource")
+                          if isinstance(row.get(k), dict)]
         title = ""
         for sc in scopes:
             for k in TITLE_KEYS:
@@ -416,9 +428,12 @@ def extract_flash_rows(payload, limit: int = 30) -> list[dict]:
             if ts:
                 break
         url = ""
-        for k in ("url", "share_url", "uri", "link"):
-            if isinstance(row.get(k), str) and row[k].startswith("http"):
-                url = row[k]
+        for sc in scopes:
+            for k in ("url", "share_url", "shareurl", "uri", "link", "route"):
+                if isinstance(sc.get(k), str) and sc[k].startswith("http"):
+                    url = sc[k]
+                    break
+            if url:
                 break
         out.append({"title": title, "url": url, "ts": ts})
         if len(out) >= limit:
@@ -461,12 +476,28 @@ def fetch_google(query: str, timeout: int) -> list[dict]:
 
 # ---- 源2：财联社 电报 ----
 
-CLS_URL = ("https://www.cls.cn/nodeapi/telegraphList"
-           "?app=CailianpressWeb&os=web&sv=8.4.6&rn=30")
+# 旧 nodeapi/telegraphList 已 404；现行端点 /v1/roll/get_roll_list 需签名：
+# 参数按 key 排序后 sign = md5(sha1(query))。与 pushplus_deepseek
+# 的 cls_signed_url 同一算法，此处独立实现以保持模块零交叉依赖的惯例，
+# 改动 sv/算法时两处需同步。
+CLS_BASE_URL = "https://www.cls.cn/v1/roll/get_roll_list"
+CLS_BASE_PARAMS = {"appName": "CailianpressWeb", "os": "web", "sv": "8.7.9"}
+
+
+def _cls_signed_url(base: str, extra: dict) -> str:
+    params = dict(CLS_BASE_PARAMS)
+    params.update({k: str(v) for k, v in extra.items()})
+    qs = urllib.parse.urlencode(sorted(params.items()))
+    sign = hashlib.md5(
+        hashlib.sha1(qs.encode("utf-8")).hexdigest().encode("utf-8")
+    ).hexdigest()
+    return f"{base}?{qs}&sign={sign}"
 
 
 def fetch_cls(timeout: int) -> list[dict]:
-    status, body = http_request(CLS_URL, timeout=timeout,
+    url = _cls_signed_url(CLS_BASE_URL, {
+        "last_time": int(time.time()), "refresh_type": 1, "rn": 30})
+    status, body = http_request(url, timeout=timeout,
                                 headers={"Referer": "https://www.cls.cn/telegraph"})
     if status != 200:
         raise ScanError(f"财联社 HTTP {status}")
@@ -478,7 +509,8 @@ def fetch_cls(timeout: int) -> list[dict]:
 
 # ---- 源3：华尔街见闻 快讯 ----
 
-WSCN_URL = ("https://api-ddc-wscn.awtmt.com/market/lives"
+# 旧域名 api-ddc-wscn.awtmt.com 已整体下线，现行域名 api-one.wallstcn.com
+WSCN_URL = ("https://api-one.wallstcn.com/apiv1/content/lives"
             "?channel=global-channel&limit=30")
 
 
@@ -496,7 +528,8 @@ def fetch_wscn(timeout: int) -> list[dict]:
 
 # ---- 源4：格隆汇 事件 ----
 
-GLH_URL = "https://www.gelonghui.com/api/fastnews/v2/getFastNewsList?limit=30"
+# 旧 fastnews/v2 已 404，现行快讯聚合接口 lives/v4
+GLH_URL = "https://www.gelonghui.com/api/live-channels/all/lives/v4"
 
 
 def fetch_gelonghui(timeout: int) -> list[dict]:
@@ -835,14 +868,17 @@ def scan_context(pack: ScanPack) -> str:
 
 # ---------------- 离线样例与自检 ----------------
 
-CLS_SAMPLE = json.dumps({"data": [
-    {"title": "阿里巴巴Q3营收超预期，云计算业务增长提速", "ctime": 9999},
-    {"title": "电商板块午后异动拉升，多只概念股涨停", "ctime": 9999},
-    {"title": "某公司债券违约被立案调查", "ctime": 9999},
-]})
+CLS_SAMPLE = json.dumps({"errno": 0, "data": {"roll_data": [
+    {"title": "阿里巴巴Q3营收超预期，云计算业务增长提速",
+     "brief": "阿里巴巴Q3营收超预期", "ctime": 9999, "is_ad": 0},
+    {"title": "电商板块午后异动拉升，多只概念股涨停", "ctime": 9999,
+     "is_ad": 0},
+    {"title": "某公司债券违约被立案调查", "ctime": 9999, "is_ad": 0},
+]}})
 
-WSCN_SAMPLE = json.dumps({"data": {"lives": [
-    {"content_text": "AI应用板块集体走强，云计算领涨", "display_time": 9999},
+WSCN_SAMPLE = json.dumps({"code": 20000, "data": {"items": [
+    {"title": "", "content_text": "AI应用板块集体走强，云计算领涨",
+     "display_time": 9999},
     {"title": "隔夜美股三大指数收涨", "display_time": 9999},
 ]}})
 
@@ -852,9 +888,9 @@ JIN10_TPL = ('var flash_newest = {"data": ['
              '{"data": {"content": "国际油价小幅下跌", "time": "{t2}"}}'
              ']};')
 
-GLH_SAMPLE = json.dumps({"result": [
-    {"title": "港股电商板块走强，阿里巴巴上涨", "time": "{t1}"},
-    {"title": "恒生指数低开高走", "time": "{t2}"},
+GLH_SAMPLE = json.dumps({"statusCode": 200, "result": [
+    {"title": "港股电商板块走强，阿里巴巴上涨", "createTimestamp": "{t1}"},
+    {"title": "恒生指数低开高走", "createTimestamp": "{t2}"},
 ]})
 
 MKT_SAMPLE = json.dumps({"data": {"list": [

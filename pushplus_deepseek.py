@@ -47,6 +47,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 from statistics import median
 # newsnow 10源（前 7 源用户指定，2026-08-13 追加 3 源：头条/百度/B站）
 try:
@@ -616,13 +617,20 @@ def fetch_youtube(handle: str, hours: int, limit: int,
 # 设计：各家快讯 API 返回结构差异大且无官方文档，这里用「通用 JSON 探测 +
 # 键名试探 + 时间格式自适应」做防御式解析。任何单源失败只记入缺口，不中断。
 
-TITLE_KEYS = ["title", "content", "digest", "summary", "brief", "name",
-              "description", "news_title", "sub_title", "text"]
+# content_text/content_short 必须排在 content 前：华尔街见闻快讯的 content 是
+# 带 <p> 标签的 HTML 正文，优先取纯文本版；createTimestamp 是格隆汇时间键；
+# roll_data/depth_list/day_items 分别是财联社电报/深度、华尔街见闻最热的列表键，
+# 必须显式列出，否则会被财联社深度返回里的 banner 等干扰列表抢占。
+TITLE_KEYS = ["title", "content_text", "content_short", "content",
+              "digest", "summary", "brief", "name", "description",
+              "news_title", "sub_title", "text"]
 TIME_KEYS = ["ctime", "created_at", "display_time", "show_time", "time",
              "pubDate", "publish_time", "update_time", "timestamp",
-             "created", "date", "release_time"]
+             "created", "date", "release_time", "createTimestamp",
+             "create_time"]
 LIST_KEYS = ["data", "list", "items", "result", "newest", "news", "lives",
-             "telegraphs", "articles", "messages", "rows", "records"]
+             "telegraphs", "articles", "messages", "rows", "records",
+             "roll_data", "depth_list", "top_article", "day_items"]
 
 
 def _json_find_list(obj, depth: int = 0):
@@ -679,21 +687,27 @@ def extract_items_generic(payload, source: str, limit: int, hours: int,
     rows = _json_find_list(payload) or []
     items = []
     for row in rows:
+        if not isinstance(row, dict):
+            continue
+        # 广告/专题位不计入舆情样本（财联社 is_ad、华尔街见闻信息流
+        # resource_type=ad/theme）
+        if row.get("is_ad") or row.get("resource_type") in ("ad", "theme"):
+            continue
+        # 嵌套作用域：金十双层 data、华尔街见闻信息流 resource 包裹
+        nested = [row[k] for k in ("data", "resource")
+                  if isinstance(row.get(k), dict)]
         title, ts = "", None
-        for k in TITLE_KEYS:
-            v = row.get(k)
-            if isinstance(v, str) and len(v.strip()) >= 4:
-                title = v.strip()
-                break
-        if not title and isinstance(row.get("data"), dict):  # jin10 双层 data
+        for scope in (row, *nested):
             for k in TITLE_KEYS:
-                v = row["data"].get(k)
+                v = scope.get(k)
                 if isinstance(v, str) and len(v.strip()) >= 4:
                     title = v.strip()
                     break
+            if title:
+                break
         if not title:
             continue
-        for scope in (row, row.get("data") if isinstance(row.get("data"), dict) else {}):
+        for scope in (row, *nested):
             for k in TIME_KEYS:
                 if k in scope:
                     ts = _parse_any_time(scope[k])
@@ -715,9 +729,27 @@ def extract_items_generic(payload, source: str, limit: int, hours: int,
 class FeedSpec:
     name: str
     urls: list[str]                # 依次尝试
-    kind: str = "json"             # json | js | html
+    kind: str = "json"             # json | js | cls(签名JSON) | fb_express | fb_news
     headers: dict = field(default_factory=dict)
     note: str = ""
+    # kind="cls" 时的业务查询参数；值 "NOW_TS" 在请求时替换为当前 epoch 秒
+    query: dict = field(default_factory=dict)
+
+
+# 财联社接口签名：参数按 key 排序后 sign = md5(sha1(query))。
+# 端点与签名算法对照 RSSHub / NewsNow 的 cls 路由（2026-10 实测可用）。
+CLS_BASE_PARAMS = {"appName": "CailianpressWeb", "os": "web", "sv": "8.7.9"}
+
+
+def cls_signed_url(base: str, query: dict, now: datetime) -> str:
+    params = dict(CLS_BASE_PARAMS)
+    for k, v in (query or {}).items():
+        params[k] = str(int(now.timestamp())) if v == "NOW_TS" else str(v)
+    qs = urllib.parse.urlencode(sorted(params.items()))
+    sign = hashlib.md5(
+        hashlib.sha1(qs.encode("utf-8")).hexdigest().encode("utf-8")
+    ).hexdigest()
+    return f"{base}?{qs}&sign={sign}"
 
 
 FEED_HEADERS = {"Referer": "https://wallstreetcn.com/", "Accept": "application/json"}
@@ -726,35 +758,47 @@ FEED_SPECS: list[FeedSpec] = [
         "https://api.mktnews.net/api/flash?limit=10",
         "https://mktnews.net/api/flash?limit=10",
     ]),
+    # 华尔街见闻：旧域名 api-ddc-wscn.awtmt.com 已整体 71404 下线，
+    # 现行域名 api-one.wallstcn.com（api-one-wscn.awtmt.com 为其别名备援）。
     FeedSpec("华尔街见闻 快讯", [
-        "https://api-ddc-wscn.awtmt.com/market/lives?channel=global-channel&limit=10",
-        "https://api-ddc-wscn.awtmt.com/apiv1/content/lives?channel=global-channel&limit=10",
+        "https://api-one.wallstcn.com/apiv1/content/lives?channel=global-channel&limit=10",
+        "https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=global-channel&limit=10",
     ], headers=FEED_HEADERS),
     FeedSpec("华尔街见闻 最新", [
-        "https://api-ddc-wscn.awtmt.com/apiv1/content/articles?limit=10&plat=pc",
+        "https://api-one.wallstcn.com/apiv1/content/information-flow?channel=global-channel&accept=article&limit=10",
+        "https://api-one-wscn.awtmt.com/apiv1/content/information-flow?channel=global-channel&accept=article&limit=10",
     ], headers=FEED_HEADERS),
     FeedSpec("华尔街见闻 最热", [
-        "https://api-ddc-wscn.awtmt.com/apiv1/content/articles/hot?limit=10&plat=pc",
-        "https://api-ddc-wscn.awtmt.com/apiv1/content/articles?limit=10&sort=hot&plat=pc",
+        "https://api-one.wallstcn.com/apiv1/content/articles/hot?period=all",
+        "https://api-one-wscn.awtmt.com/apiv1/content/articles/hot?period=all",
     ], headers=FEED_HEADERS),
+    # 财联社：旧 nodeapi/telegraphList 已 404；现行端点需签名（cls_signed_url）。
     FeedSpec("财联社 电报", [
-        "https://www.cls.cn/nodeapi/telegraphList?app=CailianpressWeb&os=web&sv=8.4.6&rn=10",
-    ], headers={"Referer": "https://www.cls.cn/telegraph"}),
+        "https://www.cls.cn/v1/roll/get_roll_list",
+    ], kind="cls", headers={"Referer": "https://www.cls.cn/telegraph"},
+        query={"last_time": "NOW_TS", "refresh_type": 1, "rn": 20}),
     FeedSpec("财联社 深度", [
-        "https://www.cls.cn/api/depth/home/assembled/1000?app=CailianpressWeb&os=web&sv=8.4.6&rn=10",
-        "https://www.cls.cn/v1/depth/home/articles?app=CailianpressWeb&os=web&sv=8.4.6&rn=10",
-    ], headers={"Referer": "https://www.cls.cn/depth"}),
+        "https://www.cls.cn/v3/depth/home/assembled/1000",
+    ], kind="cls", headers={"Referer": "https://www.cls.cn/depth"}),
     FeedSpec("财联社 热门", [
-        "https://www.cls.cn/v1/articles/hot?app=CailianpressWeb&os=web&sv=8.4.6&rn=10",
-        "https://www.cls.cn/api/articles/hot?app=CailianpressWeb&os=web&sv=8.4.6&rn=10",
-    ], headers={"Referer": "https://www.cls.cn/hot"}),
+        "https://www.cls.cn/v2/article/hot/list",
+    ], kind="cls", headers={"Referer": "https://www.cls.cn/"}),
     FeedSpec("雪球 热门股票", [], kind="xueqiu"),  # 专用流程（Cookie 预热）
+    # 格隆汇：旧 fastnews/v2 已 404；现行快讯聚合接口 lives/v4。
     FeedSpec("格隆汇 事件", [
-        "https://www.gelonghui.com/api/fastnews/v2/getFastNewsList?limit=10",
-        "https://www.gelonghui.com/api/article/v2/getArticleList?type=fastnews&page=1&limit=10",
+        "https://www.gelonghui.com/api/live-channels/all/lives/v4",
     ], headers={"Referer": "https://www.gelonghui.com/live"}),
-    FeedSpec("法布财经 快讯", [], note="公开端点未确认，需提供快讯页地址后接入"),
-    FeedSpec("法布财经 头条", [], note="公开端点未确认，需提供头条页地址后接入"),
+    # 法布财经（FastBull）：无公开 JSON 端点，解析服务端渲染的列表页 HTML。
+    FeedSpec("法布财经 快讯", [
+        "https://www.fastbull.com/cn/express-news",
+    ], kind="fb_express",
+        headers={"Referer": "https://www.fastbull.com/cn/",
+                 "Accept": "text/html"}),
+    FeedSpec("法布财经 头条", [
+        "https://www.fastbull.com/cn/news",
+    ], kind="fb_news",
+        headers={"Referer": "https://www.fastbull.com/cn/",
+                 "Accept": "text/html"}),
     FeedSpec("金十数据", [
         "https://www.jin10.com/flash_newest.js",
     ], kind="js", headers={"Referer": "https://www.jin10.com/", "x-app-id": "rU6QIu7JHe2gOUTe"}),
@@ -766,10 +810,19 @@ def fetch_feed_json(spec: FeedSpec, hours: int, timeout: int,
     last_err = "无可用端点"
     for url in spec.urls:
         try:
+            if spec.kind == "cls":  # 财联社：每次请求现算签名
+                url = cls_signed_url(url, spec.query, now)
             status, body = http_request(url, headers=spec.headers or None,
                                         timeout=timeout)
             if status != 200:
                 last_err = f"HTTP {status}"
+                continue
+            if spec.kind in ("fb_express", "fb_news"):  # 法布财经 HTML 列表页
+                items = parse_fastbull(body, spec.kind, spec.name,
+                                       10, hours, now)
+                if items:
+                    return items
+                last_err = "解析成功但 48h 内无条目（结构可能已变）"
                 continue
             if spec.kind == "js":  # 金十 flash_newest.js：剥 JS 壳
                 m = re.search(r"[{\[]", body)
@@ -787,6 +840,145 @@ def fetch_feed_json(spec: FeedSpec, hours: int, timeout: int,
         except PushError as e:
             last_err = str(e)[:80]
     raise PushError(last_err)
+
+
+# ---- 法布财经（FastBull）：无公开 JSON，解析服务端渲染列表页 ----
+# DOM 结构对照 RSSHub / NewsNow 的 fastbull 路由：
+#   快讯 /cn/express-news：.news-list[data-date=ms]，标题在 .title_name
+#     （形如【标题】正文…），链接在子元素 [data-href] / [data-id]；
+#   头条 /cn/news：a.trending_type[href]，标题在 .title，
+#     时间在子元素 [data-date]（.new_time）。
+# 仓库坚持零第三方依赖，这里用标准库 html.parser 搭一棵迷你 DOM。
+
+
+class _MiniNode:
+    __slots__ = ("tag", "attrs", "children", "texts")
+
+    def __init__(self, tag: str, attrs: dict):
+        self.tag = tag
+        self.attrs = attrs
+        self.children: list[_MiniNode] = []
+        self.texts: list[str] = []
+
+
+class _MiniDomParser(HTMLParser):
+    _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+             "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = _MiniNode("#root", {})
+        self._stack = [self.root]
+
+    def handle_starttag(self, tag, attrs):
+        node = _MiniNode(tag, dict(attrs))
+        self._stack[-1].children.append(node)
+        if tag not in self._VOID:
+            self._stack.append(node)
+
+    def handle_startendtag(self, tag, attrs):
+        self._stack[-1].children.append(_MiniNode(tag, dict(attrs)))
+
+    def handle_endtag(self, tag):
+        # 容错：弹到最近匹配的开标签（页面常有未闭合标签）
+        for i in range(len(self._stack) - 1, 0, -1):
+            if self._stack[i].tag == tag:
+                del self._stack[i:]
+                return
+
+    def handle_data(self, data):
+        if data.strip():
+            self._stack[-1].texts.append(data)
+
+
+def _node_classes(node: _MiniNode) -> set:
+    return set((node.attrs.get("class") or "").split())
+
+
+def _node_text(node: _MiniNode) -> str:
+    parts = list(node.texts)
+    for ch in node.children:
+        parts.append(_node_text(ch))
+    return re.sub(r"\s+", " ", " ".join(parts)).strip()
+
+
+def _find_descendants(node: _MiniNode, pred, out: list | None = None,
+                      include_self: bool = False) -> list:
+    if out is None:
+        out = []
+    if include_self and pred(node):
+        out.append(node)
+    for ch in node.children:
+        if pred(ch):
+            out.append(ch)
+        _find_descendants(ch, pred, out)
+    return out
+
+
+def parse_fastbull(body: str, kind: str, source: str, limit: int,
+                   hours: int, now: datetime) -> list[SentItem]:
+    """解析 FastBull 列表页 HTML → SentItem（去重、按时间倒序、窗口过滤）。"""
+    parser = _MiniDomParser()
+    try:
+        parser.feed(body)
+    except Exception:  # noqa: BLE001 —— 页面结构异常按无条目处理，由上层记缺口
+        return []
+    root = parser.root
+    base = "https://www.fastbull.com"
+    rows: list[tuple[str, str, datetime | None]] = []  # (title, url, ts)
+
+    if kind == "fb_express":
+        blocks = _find_descendants(root, lambda n: "news-list" in _node_classes(n))
+        for b in blocks:
+            cand = _find_descendants(b, lambda n: "title_name" in _node_classes(n))
+            if not cand:
+                continue
+            text = _node_text(cand[0])
+            m = re.match(r"【(.+?)】", text, re.S)
+            title = m.group(1).strip() if m and len(m.group(1).strip()) >= 4 else text
+            link_node = _find_descendants(
+                b, lambda n: bool(n.attrs.get("data-href")), include_self=True)
+            href = link_node[0].attrs["data-href"] if link_node else ""
+            if not href:
+                id_node = _find_descendants(
+                    b, lambda n: bool(n.attrs.get("data-id")), include_self=True)
+                if id_node:
+                    href = f"/cn/fastshort/{id_node[0].attrs['data-id']}"
+            ts = _parse_any_time(b.attrs.get("data-date"))
+            rows.append((title, href, ts))
+    else:  # fb_news
+        blocks = _find_descendants(root,
+                                   lambda n: "trending_type" in _node_classes(n))
+        for b in blocks:
+            cand = _find_descendants(b, lambda n: "title" in _node_classes(n))
+            if not cand:
+                continue
+            title = _node_text(cand[0])
+            dated = _find_descendants(
+                b, lambda n: "new_time" in _node_classes(n)
+                and bool(n.attrs.get("data-date")))
+            if not dated:
+                dated = _find_descendants(
+                    b, lambda n: bool(n.attrs.get("data-date")), include_self=True)
+            ts = _parse_any_time(dated[0].attrs.get("data-date")) if dated else None
+            rows.append((title, b.attrs.get("href") or "", ts))
+
+    seen: set = set()
+    uniq: list[tuple[str, str, datetime | None]] = []
+    for title, href, ts in rows:
+        key = href or title
+        title = re.sub(r"<[^>]+>", "", title).strip()
+        if len(title) < 4 or key in seen:
+            continue
+        seen.add(key)
+        if ts and not _in_window(ts, hours, now):
+            continue
+        uniq.append((title,
+                     urllib.parse.urljoin(base, href) if href else "",
+                     ts))
+    uniq.sort(key=lambda r: r[2] or datetime.min.replace(tzinfo=UTC),
+              reverse=True)
+    return [_mk_item(source, t, u, ts, now) for t, u, ts in uniq[:limit]]
 
 
 XUEQIU_HOT_URL = ("https://stock.xueqiu.com/v5/stock/hot_stock/list.json"
@@ -4167,9 +4359,94 @@ def selftest() -> int:
     jj = json.loads(jin10_sample[m.start():].rstrip(";\n "))
     ij = extract_items_generic(jj, "金十数据", 10, 48, NOW)
     check("金十:JS壳+双层data", len(ij) == 1 and ij[0].label == "利好")
+
+    log("③c2 修复源回归（2026-10 接口换代：华尔街/财联社/格隆汇/法布）")
+    wscn_live = {"code": 20000, "data": {"items": [
+        {"title": "", "content": "<p>HTML正文不应被选</p>",
+         "content_text": "央行开展逆回购操作维护流动性", "display_time": ts_8am},
+        {"title": "两市融资余额减少", "content_text": "长正文",
+         "display_time": ts_8am}]}}
+    iw = extract_items_generic(wscn_live, "华尔街见闻 快讯", 10, 48, NOW)
+    check("华尔街快讯:空title回退content_text且不取HTML content",
+          len(iw) == 2 and iw[0].title.startswith("央行开展逆回购")
+          and "HTML正文" not in iw[0].title
+          and iw[1].title == "两市融资余额减少")
+    wscn_flow = {"data": {"items": [
+        {"resource_type": "article",
+         "resource": {"title": "信息流最新文章标题", "display_time": ts_8am}},
+        {"resource_type": "ad",
+         "resource": {"title": "广告位不应入选", "display_time": ts_8am}}]}}
+    iw2 = extract_items_generic(wscn_flow, "华尔街见闻 最新", 10, 48, NOW)
+    check("华尔街最新:resource嵌套提取+广告剔除",
+          len(iw2) == 1 and iw2[0].title == "信息流最新文章标题")
+    wscn_hot = {"data": {"week_items": [
+                    {"title": "周榜旧文", "display_time": ts_8am - 6 * 86400}],
+                         "day_items": [
+                    {"title": "日榜最热文章", "display_time": ts_8am}],
+                         "offline_ids": [1, 2]}}
+    iw3 = extract_items_generic(wscn_hot, "华尔街见闻 最热", 10, 48, NOW)
+    check("华尔街最热:优先day_items且窗口过滤",
+          len(iw3) == 1 and iw3[0].title == "日榜最热文章")
+    cls_roll = {"errno": 0, "data": {"roll_data": [
+        {"title": "", "brief": "财联社电，指数午后拉升", "ctime": ts_8am,
+         "is_ad": 0},
+        {"title": "广告电报不应入选", "brief": "x", "ctime": ts_8am,
+         "is_ad": 1}]}}
+    ic1 = extract_items_generic(cls_roll, "财联社 电报", 10, 48, NOW)
+    check("财联社电报:roll_data定位+is_ad剔除",
+          len(ic1) == 1 and ic1[0].title.startswith("财联社电"))
+    cls_depth = {"data": {"roll_bar": {},
+                          "banner": [{"id": 1, "title": ""}],
+                          "top_article": [
+                              {"title": "置顶文章", "ctime": ts_8am}],
+                          "depth_list": [
+                              {"title": "深度列表文章一", "ctime": ts_8am},
+                              {"title": "深度列表文章二", "ctime": ts_8am}]}}
+    ic2 = extract_items_generic(cls_depth, "财联社 深度", 10, 48, NOW)
+    check("财联社深度:depth_list不被banner干扰",
+          len(ic2) == 2 and ic2[0].title == "深度列表文章一")
+    check("财联社签名:md5(sha1(排序query))向量",
+          cls_signed_url("https://www.cls.cn/v2/article/hot/list", {}, NOW)
+          .endswith("sign=10bdc2da403ad7415bb639aa22dc6cd3"))
+    check("财联社签名:NOW_TS替换为epoch秒",
+          f"last_time={int(NOW.timestamp())}" in cls_signed_url(
+              "https://www.cls.cn/v1/roll/get_roll_list",
+              {"last_time": "NOW_TS", "refresh_type": 1, "rn": 20}, NOW))
+    glh = {"statusCode": 200, "result": [
+        {"title": "格隆汇快讯标题", "createTimestamp": int(ts_8am)},
+        {"title": "", "content": "格隆汇电，无标题回退正文",
+         "createTimestamp": int(ts_8am)}]}
+    ig = extract_items_generic(glh, "格隆汇 事件", 10, 48, NOW)
+    check("格隆汇:result+createTimestamp",
+          len(ig) == 2 and ig[1].title.startswith("格隆汇电"))
+    fb_now_ms = int(ts_8am) * 1000
+    fb_express = (
+        f'<div class="content-list news-list" data-date="{fb_now_ms}">'
+        '<div data-href="/cn/fastshort/123">'
+        '<div class="title_name">【黄金突破历史新高】现货黄金大涨。</div>'
+        "</div></div>"
+        f'<div class="content-list news-list" data-date="{fb_now_ms}">'
+        '<div data-href="/cn/fastshort/123">'
+        '<div class="title_name">【黄金突破历史新高】重复条目应去重。</div>'
+        "</div></div>")
+    ifb = parse_fastbull(fb_express, "fb_express", "法布财经 快讯",
+                         10, 48, NOW)
+    check("法布快讯:news-list解析+【】标题+去重",
+          len(ifb) == 1 and ifb[0].title == "黄金突破历史新高"
+          and ifb[0].url.endswith("/cn/fastshort/123")
+          and ifb[0].age_h is not None)
+    fb_news = (
+        '<a class="trending_type" href="/cn/news/789">'
+        '<div class="title">全球市场头条新闻标题</div>'
+        f'<span class="new_time" data-date="{fb_now_ms}">x</span></a>')
+    ifb2 = parse_fastbull(fb_news, "fb_news", "法布财经 头条", 10, 48, NOW)
+    check("法布头条:trending_type解析",
+          len(ifb2) == 1 and ifb2[0].title == "全球市场头条新闻标题"
+          and ifb2[0].url.endswith("/cn/news/789"))
+
     fp = FeedPack(hours=48)
     fp.items["金十数据"] = ij
-    fp.errors.append("法布财经 快讯：公开端点未确认，需提供快讯页地址后接入")
+    fp.errors.append("MKTNews 快讯：HTTP 502")
     fp.agg = {"n": 1, "pos": 1, "neg": 0, "neu": 0, "mean": 1.0,
               "n_sources": 1, "综合多头概率锚点": 50 + 45 * min(1.0, 1.0 * 3)}
     md_rule = render_feed_rule("阿里巴巴", fp)
