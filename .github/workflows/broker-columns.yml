@@ -27,7 +27,7 @@ on:
         default: ''
         type: string
       hours:
-        description: '数据窗口小时（留空：香港券商默认 48，国外投行默认 168 一周）'
+        description: '数据窗口小时（留空：香港券商默认 96，国外投行默认 168 一周）'
         required: false
         default: ''
         type: string
@@ -127,7 +127,7 @@ jobs:
             echo "hours=${IN_HOURS:-168}" >> "$GITHUB_OUTPUT"
           else
             echo "topic=${IN_TOPIC:-港股市场}" >> "$GITHUB_OUTPUT"
-            echo "hours=${IN_HOURS:-48}" >> "$GITHUB_OUTPUT"
+            echo "hours=${IN_HOURS:-96}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Show run config (不打印任何 Secret)

@@ -1764,7 +1764,7 @@ def build_messages(template: str, topic: str, context: str,
             "- **券商观点共识与分歧**：归纳 2-3 条（涉及板块/标的方向，标注支撑家数）\n"
             "- **行业事件**：IPO/佣金/开户/政策等券商行业新闻 2-3 条\n"
             "- **数据缺口**：注明未命中的机构，不补造数据\n\n"
-            "要求：标题与评级必须来自给定数据；不得编造目标价；不得给出买卖建议；简体中文 Markdown。"
+            "要求：标题与评级必须来自给定数据；不得编造目标价；不得给出买卖建议；不展示链接；简体中文 Markdown。"
             + RULES_TAIL)
     else:
         # Anthropic 官方 skill 模板：委托 skills_hub 构造完整 prompt
@@ -1900,7 +1900,7 @@ def gen_by_rule(topic: str, template: str,
                 f"- hk_brokers 不可用：{e}",
                 f"- 运行时间：{now}（北京时间）",
                 "- 覆盖券商：中金/中信证券国际/华泰金控/国泰君安国际/招商证券国际/海通国际/交银国际/建银国际/中银国际/富途/老虎/耀才",
-                "- 提示：使用 --template hk_brokers --hours 48 可采集最新券商动态",
+                "- 提示：使用 --template hk_brokers --hours 96 可采集最新券商动态",
                 "", "> ⚠️ 非投资建议，仅供参考。"])
     try:
         import skills_hub as sh
@@ -5419,6 +5419,9 @@ def main(argv: list[str]) -> int:
         return selftest()
 
     channel, provider, template = args.channel, args.ai_provider, args.template
+    if template == "hk_brokers" and not any(
+            a == "--hours" or a.startswith("--hours=") for a in argv):
+        args.hours = 96
     topic = args.topic or env("TOPIC") or DEFAULT_TOPIC
     user_context = args.context or env("CONTEXT")
     hk_code_raw = args.hk_code or env("HK_CODE")
@@ -5515,7 +5518,7 @@ def main(argv: list[str]) -> int:
         user_context = feed_context(topic, feed_pack)
 
         # 每日全市场简报并入栏目（仅全市场主题；环境变量 BRIEF_COLUMNS=0
-        # 可关闭）：🏦 香港券商新闻与数据（48h）+ 🏛 国外投行研报标题（72h）。
+        # 可关闭）：🏦 香港券商新闻与数据（96h）+ 🏛 国外投行研报标题（72h）。
         # 采集失败/无命中只如实记缺口，绝不用演示数据填充正式推送。
         if is_market_wide_topic(topic) and env("BRIEF_COLUMNS") != "0":
             _col_ctx_parts: list[str] = []
@@ -5524,9 +5527,9 @@ def main(argv: list[str]) -> int:
                 from hk_brokers import (collect_hk_brokers,
                                         hk_brokers_context,
                                         render_hk_brokers_appendix)
-                log("\n🏦 简报栏目：香港券商新闻与数据（48h，12 家）…")
+                log("\n🏦 简报栏目：香港券商新闻与数据（96h，12 家）…")
                 _hk_pack = collect_hk_brokers(
-                    topic="港股市场", hours=48,
+                    topic="港股市场", hours=96,
                     timeout=min(args.timeout, 12))
                 log(f"  → {_hk_pack.agg.get('n', 0)} 条 / "
                     f"{_hk_pack.agg.get('firms_hit', 0)}/12 家，"
