@@ -146,26 +146,34 @@ python merge.py folder dir1 dir2 -o merged_dir --conflict merge
 ## 📁 项目结构
 
 ```
-04/
+273/
 ├── merge.py                  # 核心文件合并工具
 ├── merge_algorithms.py       # 归并算法实现
-├── test_merge.py             # 合并测试用例
+├── test_merge.py             # 合并测试用例（unittest）
+├── test_hk_quote.py          # 港股行情解析测试（内置真实抓包样本，离线可跑）
 ├── pushplus_deepseek.py      # 微信推送主流程（DeepSeek/OpenAI/rule + 多通道）
 ├── stock_report.py           # 股票研报统一入口（港股/A股 + 九章投研 + Skills Hub）
 ├── equity_research_column.py # 机构级个股投研独立栏目
 ├── skills_hub.py             # Skills Hub 调度（equity + Anthropic 9 技能）
+├── hk_brokers.py             # 🏦 香港券商新闻与数据栏目（96h 窗口）
+├── foreign_institution_weekly.py # 🏛 国外投行一周研报栏目（168h 窗口）
 ├── hk_quote.py               # 免费港股/A股实时行情（三源核验）
 ├── us_quote.py               # 境外（美股）行情 · 四源交叉验证（腾讯美股/东财美股/Yahoo/Stooq）
 ├── stock_news_scan.py        # 量价舆情动量 · 十七平台股票扫描
 ├── newsnow_sources.py        # NewsNow 社媒热榜 10 源采集
 ├── source_check_db.py        # 数据源检查验证数据库（SQLite 落库）
-├── DATA_SOURCES.md           # 数据源配置说明（17 源 / Cookie / 校验库）
+├── deepseek_search.py        # DeepSeek 联网搜索源（第 18 平台，扫描数按源动态计）
 ├── extract_feeds.py          # 全市场快讯提取
+├── demo.py                   # 合并工具演示
 ├── server_dashboard.py       # 大屏监控（行情 / 研报 / 投研栏目）
-├── server_monitor.html       # 大屏前端
+├── server_monitor.html       # 大屏前端（由 server_dashboard.py::export_static_files() 生成）
+├── DATA_SOURCES.md           # 数据源配置说明（17 源 / Cookie / 校验库）
+├── SOURCE_AVAILABILITY_REPORT.md # 数据源可用性实测报告
 ├── .github/workflows/
-│   ├── alibaba-push.yml      # 工作流：Manual Run - Alibaba PushPlus+DeepSeek
-│   └── stock-report.yml      # 工作流：Manual Run - Stock Report (HK/A-share)
+│   ├── ci.yml                # 工作流：CI - Offline Gate（push/PR 自动离线门禁）
+│   ├── market-brief.yml      # 工作流：Scheduled Market Brief（每日澳门 09:00 / 17:00）
+│   ├── stock-report.yml      # 工作流：Manual Run - Stock Report (HK/A-share/US)
+│   └── broker-columns.yml    # 工作流：Manual Run - Broker Columns（券商/投行栏目）
 ├── equity_research/          # 机构级投研 skill 资源（SKILL/references/industries/scripts）
 ├── skills/                   # Skills Hub（catalog + NOTICE + skill 安装）
 ├── .claude/skills/           # Claude Agent 可直接读取的 skill
@@ -175,10 +183,36 @@ python merge.py folder dir1 dir2 -o merged_dir --conflict merge
 
 ## 🧪 运行测试
 
+一条命令跑完仓库全部离线单元测试（`unittest` 自动发现 `test_*.py`，无需 pytest）：
+
 ```bash
-python test_merge.py
-python merge_algorithms.py
+python -m unittest discover -s . -p "test_*.py" -v   # 31 项：合并工具 + 归并算法 + 港股行情解析
+python -m compileall -q .                            # 全仓语法门禁（含超大模块）
 ```
+
+单个文件也可以直接跑（`test_merge.py` / `test_hk_quote.py` 均为 `unittest` 脚本）：
+
+```bash
+python test_merge.py        # 文件合并 + 归并算法（未装 PyYAML 时自动跳过 YAML 用例）
+python test_hk_quote.py     # 三源行情解析（内置真实抓包样本，断网也能跑）
+python merge_algorithms.py  # 归并算法 demo
+```
+
+此外 **12 个业务模块自带 `--selftest`** 离线自检（解析器 + 模板 + 栏目 + 推送降级），
+返回失败项计数作为退出码，可直接当门禁用：
+
+```bash
+for m in deepseek_search equity_research_column foreign_institution_weekly hk_brokers \
+         newsnow_sources pushplus_deepseek skills_hub source_check_db stock_news_scan \
+         stock_report us_quote; do python "$m.py" --selftest || echo "❌ $m"; done
+```
+
+> `hk_quote.py --selftest` 例外：它是**联网数据源打分基准**（真抓取三源后输出成功率/耗时表），
+> 三源全挂时仍 exit 0，不适合当断言门禁；hk_quote 的离线覆盖由 `test_hk_quote.py` 承担。
+
+上述三步（`compileall` + `unittest discover` + 11 个模块 `--selftest`）已由
+**`ci.yml`（CI - Offline Gate）在每次 push / PR 上自动执行**，详见下文工作流表格。
+自检全程屏蔽 AI Key，结果与仓库是否配置 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` 无关。
 
 ## 🔧 高级特性
 
@@ -205,13 +239,23 @@ result = deep_merge_dicts(base, incoming)
 
 ## 📲 GitHub Actions 工作流（定时全市场简报 + 手动个股研报）
 
-仓库内置三个工作流（`.github/workflows/`）：
+仓库内置四个工作流（`.github/workflows/`）：
 
 | Actions 名称 | 文件 | 入口脚本 | 用途 |
 |---|---|---|---|
+| **CI - Offline Gate (离线自检门禁)** | `ci.yml` | `unittest` + 11 个模块 `--selftest` | **push / PR 自动触发**：语法编译 + 31 项单元测试 + 离线自检，零依赖零 Secret |
 | **Scheduled Market Brief (DOS Monitor)** | `market-brief.yml` | `pushplus_deepseek.py` | 每日澳门/香港 09:00 / 17:00 推送 24h 全市场快讯与板块情报（含香港券商、国外投行两栏目） |
 | **Manual Run - Stock Report (HK/A-share/US)** | `stock-report.yml` | `stock_report.py` | 手动输入代码生成单标的研报；默认仅预览 |
 | **Manual Run - Broker Columns** | `broker-columns.yml` | `pushplus_deepseek.py` | 手动单独运行香港券商（`hk_brokers`）或国外投行研报（`foreign_weekly`）栏目；默认仅预览 |
+
+**CI 门禁（`ci.yml`）填补的缺口**：另外三个工作流全是 `workflow_dispatch` / `schedule`，
+即代码合并进 `main` 之前没有任何自动校验，`--selftest` 与 `test_*.py` 只能靠人手动跑。
+`ci.yml` 在每次 push 到 `main` 与每个 PR 上跑三步：① `python -m compileall -q .`（语法，含
+`server_dashboard.py` / `pushplus_deepseek.py` 等超大模块）；② `python -m unittest discover
+-s . -p "test_*.py"`（31 项）；③ 11 个模块 `--selftest`（逐个跑完再汇总，一个坏掉时其余结果
+仍有诊断价值）。约束与既有工作流一致：纯离线、无第三方依赖（**不加 `cache: 'pip'`**）、
+job 级屏蔽两个 AI Key、action pin 到 commit SHA、`permissions: contents: read`、
+`timeout-minutes: 15`、PR 上 `concurrency` 取消旧运行。实测全套约 1.5 分钟。
 
 **定时推送只发全市场简报，不发个股页**：使用 `feedscan` 聚合 12 源快讯（金十数据单独取最新≤50 条，其余每源≤10 条），不传股票代码、不调用 `stock_report.py` / `equity` 研报，也关闭个股走势图；AI 提示词仅允许市场与板块层面概览，并明确禁止个股评级、目标价与买卖点。简报正文后自动并入 **🏦 香港券商新闻与数据（96h）** 与 **🏛 国外投行研报标题（72h）** 两节（环境变量 `BRIEF_COLUMNS=0` 可关闭）。定时任务固定使用 DOS CRT 复古终端主题。
 

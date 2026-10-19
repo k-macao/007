@@ -1,0 +1,109 @@
+# ============================================================================
+# CI —— 离线自检门禁（push / pull_request 自动触发）
+#
+# 为什么需要它：本仓库另外三个 workflow（market-brief / stock-report /
+# broker-columns）全部是 workflow_dispatch 或 schedule 触发，也就是说
+# **代码合并进 main 之前没有任何自动校验**；`--selftest` 与 `test_*.py`
+# 只能靠人手动跑。这条 workflow 把它们变成门禁：改坏解析器、模板、
+# 栏目或语法，PR 上直接红。
+#
+# 设计约束（与仓库既有 workflow 保持一致）：
+#   · 纯离线、零第三方依赖：本仓库无 requirements.txt/pyproject.toml，
+#     因此**不要**给 setup-python 加 `cache: 'pip'`（会导致该步骤失败）；
+#   · 零 Secret：AI Key 在 job 级与 step 级双保险置空，自检结果与仓库
+#     是否配置 DEEPSEEK_API_KEY / OPENAI_API_KEY 完全无关；
+#   · action 一律 pin 到 commit SHA（防 tag 解析抖动），保留 tag 注释便于阅读；
+#   · 最小权限 `contents: read`、`timeout-minutes: 15`、concurrency 防并发。
+#
+# 覆盖范围：
+#   ① 全部 .py 字节编译（含 server_dashboard.py / pushplus_deepseek.py 等超大模块）
+#   ② unittest 发现并运行 test_*.py（test_merge.py 31 项 / test_hk_quote.py 离线解析）
+#   ③ 11 个模块的 --selftest（解析器 + 模板 + 栏目 + 推送降级）
+#
+# 有意排除：`hk_quote.py --selftest` 是**联网数据源打分基准**（三源真抓取后
+# 输出成功率/耗时表），全部源失败时依然 exit 0，不能当断言门禁用；
+# hk_quote 的离线覆盖由 test_hk_quote.py（内置真实抓包样本）承担。
+# ============================================================================
+name: CI - Offline Gate (离线自检门禁)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # 只对 PR 取消旧运行（推 main 的每次运行都要留档）
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  offline-gate:
+    name: Offline tests & selftests (离线测试与自检)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUNBUFFERED: '1'
+      # 自检必须「真离线」：屏蔽 AI Key，避免联网压缩导致
+      # 「无 Key 时优雅跳过（正文完整）」这类断言误判。
+      DEEPSEEK_API_KEY: ''
+      OPENAI_API_KEY: ''
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+          # 不加 cache: 'pip' —— 本仓库无依赖清单，加了会让本步骤失败
+
+      - name: Show runtime (不打印任何 Secret)
+        run: |
+          python -V
+          python -c "import sys; print(sys.executable)"
+          echo "DEEPSEEK_API_KEY len=${#DEEPSEEK_API_KEY} OPENAI_API_KEY len=${#OPENAI_API_KEY}"
+
+      - name: Byte-compile all Python sources (语法门禁)
+        run: python -m compileall -q .
+
+      - name: Unit tests (unittest discover test_*.py)
+        run: python -m unittest discover -s . -p "test_*.py" -v
+
+      - name: Module selftests (11 个模块 --selftest，离线)
+        shell: bash
+        run: |
+          MODULES="
+            deepseek_search
+            equity_research_column
+            foreign_institution_weekly
+            hk_brokers
+            newsnow_sources
+            pushplus_deepseek
+            skills_hub
+            source_check_db
+            stock_news_scan
+            stock_report
+            us_quote
+          "
+          fail=0
+          for m in $MODULES; do
+            echo "::group::--selftest · ${m}.py"
+            # 逐个跑完再汇总：一个模块坏掉时，其余模块的结果同样有诊断价值
+            if python "${m}.py" --selftest; then
+              echo "✅ ${m}.py 自检通过"
+            else
+              echo "❌ ${m}.py 自检失败（exit=$?）"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          if [[ "$fail" -ne 0 ]]; then
+            echo "::error::离线自检门禁未通过：至少一个模块 --selftest 返回非 0"
+            exit 1
+          fi
+          echo "✅ 全部 11 个模块自检通过"
