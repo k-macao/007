@@ -299,6 +299,10 @@ job 级屏蔽两个 AI Key、action pin 到 commit SHA、`permissions: contents:
 服务器大屏静态页 `server_monitor.html`（含 `examples/server_monitor_preview.html`）由
 `server_dashboard.py::export_static_files()` 生成。
 
+- **源头信息默认隐藏**：大屏快讯卡片不展示采集渠道（如 Google 新闻 / 财联社电报），终端日志与机构周报
+  副标题也不再枚举渠道名；数据层仍保留 `source` 字段用于情绪归因、指纹去重与后台统计。
+  需要排查渠道时设置环境变量 `SHOW_SOURCE_INFO=1` 即可恢复展示（`python server_dashboard.py` 启动前导出）。
+
 ### 📊 推送自带字符模拟图（纯字符，无图片，微信直接可见）
 
 只要给了 `hk_code` 或股票代码（手动 Stock Report 工作流），个股研报会在正文顶部附一段**字符模拟走势图**。定时全市场 `feedscan` 不传代码并显式关闭字符图，因此不会附带个股走势图：

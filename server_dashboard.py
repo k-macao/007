@@ -68,6 +68,28 @@ try:
 except Exception:
     foreign_mod = None
 
+# ================================================================ 展示开关
+# 源头信息默认隐藏：快讯卡片不再展示「Google 新闻 / 财联社电报」等采集渠道标签，
+# 数据层仍保留 source 字段（用于情绪归因、去重与后台统计）。
+# 需要排查渠道时设置环境变量 SHOW_SOURCE_INFO=1 恢复展示。
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+SHOW_SOURCE_INFO = _env_flag("SHOW_SOURCE_INFO", False)
+
+
+def _feed_source_html(source: str) -> str:
+    """快讯来源标签：默认隐藏（返回空串），开关打开时输出原标签。"""
+    if not SHOW_SOURCE_INFO:
+        return ""
+    return f'<span class="feed-src">{source}</span>'
+
+
 # ================================================================ 实时行情合并
 
 def _generic_profile(market: str, code: str) -> dict:
@@ -752,10 +774,11 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
     """ for a in data["alerts"])
 
     # 6. 横排十七平台实时情报雷达流（财经7源 + 社媒10源）
+    #    来源标签由 _feed_source_html 统一控制：默认隐藏，仅保留分类/时间/情绪。
     feeds_html = "".join(f"""
     <div class="feed-card">
         <div class="feed-top">
-            <span class="feed-src">{f['source']}</span>
+            {_feed_source_html(f['source'])}
             <span class="feed-cat {'cat-fin' if f['cat']=='财经' else 'cat-soc'}">{f['cat']}</span>
             <span class="feed-time">{f['time']}</span>
             <span class="feed-badge {'badge-pos' if f['type']=='利好' else ('badge-neg' if f['type']=='利空' else 'badge-neu')}">{f['type']}</span>
@@ -764,6 +787,35 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
         <div class="feed-summary">{f['summary']}</div>
     </div>
     """ for f in data["feeds"])
+
+    # 7. 终端日志 / 机构周报副标题中的渠道枚举同样受开关控制
+    if SHOW_SOURCE_INFO:
+        feed_sync_log = ("18 platforms queried (Yahoo / EastMoney / Tencent / Google / CLS / WSCN / "
+                         "GLH / Jin10 / MKT / Xueqiu / Zhihu / Weibo / Douyin / Hupu / AIHot / ZaoBao / "
+                         "HK01 / DeepSeek).")
+        foreign_source_tag = "168H · DeepSeek+Google双源 · 情绪打标 · 表格渲染"
+        foreign_source_sub = ("DeepSeek AI 搜索为主 + Google RSS 备用 · 评级/目标价/概率 · "
+                              "主线/板块/评级调整 · 附录明细可追溯 · 支持离线自检")
+    else:
+        feed_sync_log = "18 platforms queried · 156h window · dedup + sentiment tagging complete."
+        foreign_source_tag = "168H · 双链路检索 · 情绪打标 · 表格渲染"
+        foreign_source_sub = ("双链路检索 · 评级/目标价/概率 · 主线/板块/评级调整 · "
+                              "附录明细可追溯 · 支持离线自检")
+
+    # 前端 JS 文案同样按开关注入（json.dumps 保证引号安全）
+    js_foreign_meta = json.dumps("DeepSeek+Google" if SHOW_SOURCE_INFO else "双链路检索",
+                                 ensure_ascii=False)
+    js_foreign_pending = json.dumps(
+        "DeepSeek AI 搜索为主，Google RSS 备用" if SHOW_SOURCE_INFO else "双链路检索",
+        ensure_ascii=False)
+    js_quote_log = json.dumps(
+        "Cross-checking price quotes across Tencent Finance, EastMoney, Yahoo... OK"
+        if SHOW_SOURCE_INFO else "Cross-checking price quotes across 3 quote feeds... OK",
+        ensure_ascii=False)
+    js_foreign_log = json.dumps(
+        "12 foreign institutions · 168H window · DeepSeek+Google dual-feed active."
+        if SHOW_SOURCE_INFO else "12 foreign institutions · 168H window · dual-feed active.",
+        ensure_ascii=False)
 
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -2083,14 +2135,14 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
         <!-- 🌍 国外专业投资机构一周研报栏目（新增） -->
         <div class="section-header" id="foreign-section">
             <span>🌍 国外机构一周研报 · 12家顶级投行/研究机构 (FOREIGN INSTITUTION WEEKLY)</span>
-            <span class="section-tag">Goldman / MorganStanley / JPMorgan / Citi / BofA / UBS / Barclays / Nomura / HSBC / Jefferies / Bernstein / Morningstar · 168H · DeepSeek+Google双源 · 情绪打标 · 表格渲染</span>
+            <span class="section-tag">Goldman / MorganStanley / JPMorgan / Citi / BofA / UBS / Barclays / Nomura / HSBC / Jefferies / Bernstein / Morningstar · {foreign_source_tag}</span>
         </div>
         <div class="equity-column-panel" id="foreign-column-panel" style="border-color:rgba(0,229,255,0.5);box-shadow:0 0 20px rgba(0,229,255,0.15);">
             <div class="equity-hero">
                 <div class="equity-hero-main">
                     <div class="equity-kicker" style="color:var(--cyan);">INDEPENDENT COLUMN · 12 INSTITUTIONS · 168H WINDOW · SENTIMENT TAGGING</div>
                     <div class="equity-title">国外机构一周研报聚合</div>
-                    <div class="equity-sub">DeepSeek AI 搜索为主 + Google RSS 备用 · 评级/目标价/概率 · 主线/板块/评级调整 · 附录明细可追溯 · 支持离线自检</div>
+                    <div class="equity-sub">{foreign_source_sub}</div>
                     <div class="equity-links">
                         <a class="equity-link" href="#" onclick="return false;" style="cursor:default;">🌐 12 机构全覆盖</a>
                         <a class="equity-link" href="#" onclick="return false;" style="cursor:default;">📊 情绪打标 + 概率映射</a>
@@ -2255,7 +2307,7 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
         <!-- 📟 终端实时日志流 -->
         <div class="terminal-panel" id="terminal-log">
             <div class="log-line"><span class="log-ts">[SYS.INIT]</span> <span class="log-tag">OK</span> <span class="log-msg">NOC Telemetry Cluster 04 initialized. High-frequency feeds listening.</span></div>
-            <div class="log-line"><span class="log-ts">[FEED.SYNC]</span> <span class="log-tag">OK</span> <span class="log-msg">18 platforms queried (Yahoo / EastMoney / Tencent / Google / CLS / WSCN / GLH / Jin10 / MKT / Xueqiu / Zhihu / Weibo / Douyin / Hupu / AIHot / ZaoBao / HK01 / DeepSeek).</span></div>
+            <div class="log-line"><span class="log-ts">[FEED.SYNC]</span> <span class="log-tag">OK</span> <span class="log-msg">{feed_sync_log}</span></div>
             <div class="log-line"><span class="log-ts">[SENTIMENT]</span> <span class="log-tag">CALC</span> <span class="log-msg">Momentum score computed at +8.4. Cross-source confidence verified at 99.4%.</span></div>
         </div>
 
@@ -2534,9 +2586,9 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
             const channel = (document.getElementById('foreign-channel') || {{}}).value || 'console';
             if (panel) panel.style.display = 'block';
             if (title) title.textContent = '🌍 国外机构一周研报 · ' + (topic || '全市场');
-            if (meta) meta.textContent = '168H · 12机构 · DeepSeek+Google · ' + channel;
+            if (meta) meta.textContent = '168H · 12机构 · ' + {js_foreign_meta} + ' · ' + channel;
             if (status) {{ status.textContent = '生成中…'; status.style.color = 'var(--amber)'; status.style.borderColor = 'var(--amber)'; }}
-            if (body) body.innerHTML = '<div style=\"color:var(--text-muted);\">⏳ 正在聚合 12 家机构 168H 研报（DeepSeek AI 搜索为主，Google RSS 备用）…</div>';
+            if (body) body.innerHTML = '<div style=\"color:var(--text-muted);\">⏳ 正在聚合 12 家机构 168H 研报（' + {js_foreign_pending} + '）…</div>';
             if (btn) btn.disabled = true;
             playBeep(760, 'sine', 0.12);
             appendLog('FOREIGN.GEN', 'QUERY', (topic || '全市场') + ' · 168H · 12机构');
@@ -2879,11 +2931,11 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
                 for (let r=top; r<=bottom; r++) grid[r][i] = (b.close >= b.open ? '█' : '▓');
             }});
             const labels = [hi, lo];
-            chart.textContent = grid.map((line, r) => (r===0 ? labels[0].toFixed(2).padStart(7)+' ' : r===rows-1 ? labels[1].toFixed(2).padStart(7)+' ' : '       ') + line.join('')).join('\n');
+            chart.textContent = grid.map((line, r) => (r===0 ? labels[0].toFixed(2).padStart(7)+' ' : r===rows-1 ? labels[1].toFixed(2).padStart(7)+' ' : '       ') + line.join('')).join('\\n');
             const maxVol = Math.max(...view.map(b => Number(b.vol) || 0), 1);
             const vrows = 5, vg = Array.from({{length:vrows}}, () => Array(cols).fill(' '));
             view.forEach((b,i) => {{ const n=Math.max(1,Math.round((Number(b.vol)||0)/maxVol*vrows)); for(let r=vrows-n;r<vrows;r++) vg[r][i]='▂'; }});
-            volume.textContent = 'VOL  ' + vg.map(r => r.join('')).join('\n');
+            volume.textContent = 'VOL  ' + vg.map(r => r.join('')).join('\\n');
         }}
         const drawTradeViewChart = drawCharChart; // 兼容旧名
 
@@ -3035,9 +3087,9 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
         const logSamples = [
             ["HEARTBEAT", "TICK", "Node HK-Master-01 reported 0 packet loss (latency 2.1ms)"],
             ["AI.INFERENCE", "OK", "DeepSeek sentiment embedding batch completed in 18ms"],
-            ["MARKET.DATA", "FLOW", "Cross-checking price quotes across Tencent Finance, EastMoney, Yahoo... OK"],
+            ["MARKET.DATA", "FLOW", {js_quote_log}],
             ["RADAR.SCAN", "PULSE", "18 platforms active. No anomalous divergence detected."],
-            ["FOREIGN.WEEKLY", "PULSE", "12 foreign institutions · 168H window · DeepSeek+Google dual-feed active."]
+            ["FOREIGN.WEEKLY", "PULSE", {js_foreign_log}]
         ];
         let sampleIdx = 0;
         setInterval(() => {{
