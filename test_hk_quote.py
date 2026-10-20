@@ -187,6 +187,20 @@ class TestTradeViewIntegration(unittest.TestCase):
         self.assertIn("tradeview-vol-canvas", html)
         self.assertTrue("generateDefaultChartBars" in html or "generateDefaultKlineBars" in html)
 
+    def test_feed_source_hidden_toggle(self):
+        """源头信息默认隐藏：快讯卡片不渲染来源标签；SHOW_SOURCE_INFO=1 时恢复"""
+        import server_dashboard as sd
+        from unittest import mock
+        with mock.patch.object(sd, "SHOW_SOURCE_INFO", False):
+            hidden = sd.render_server_monitor_html("09988")
+        with mock.patch.object(sd, "SHOW_SOURCE_INFO", True):
+            shown = sd.render_server_monitor_html("09988")
+        self.assertNotIn('<span class="feed-src">', hidden)
+        self.assertNotIn("Google 新闻", hidden)
+        self.assertIn('<span class="feed-src">Google 新闻</span>', shown)
+        # 数据层仍保留 source 字段（供情绪归因 / 去重 / 后台统计），只是前端不展示
+        self.assertTrue(sd.STOCKS["09988"]["feeds"][0]["source"])
+
 
 class TestAIReportIntegration(unittest.TestCase):
     def test_report_endpoint_payload(self):

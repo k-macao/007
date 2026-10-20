@@ -1762,7 +1762,6 @@
             
     <div class="feed-card">
         <div class="feed-top">
-            <span class="feed-src">Google 新闻</span>
             <span class="feed-cat cat-fin">财经</span>
             <span class="feed-time">12m 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1773,7 +1772,6 @@
     
     <div class="feed-card">
         <div class="feed-top">
-            <span class="feed-src">财联社电报</span>
             <span class="feed-cat cat-fin">财经</span>
             <span class="feed-time">28m 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1784,7 +1782,6 @@
     
     <div class="feed-card">
         <div class="feed-top">
-            <span class="feed-src">华尔街见闻</span>
             <span class="feed-cat cat-fin">财经</span>
             <span class="feed-time">45m 前</span>
             <span class="feed-badge badge-neu">中性</span>
@@ -1795,7 +1792,6 @@
     
     <div class="feed-card">
         <div class="feed-top">
-            <span class="feed-src">格隆汇</span>
             <span class="feed-cat cat-fin">财经</span>
             <span class="feed-time">1h 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1806,7 +1802,6 @@
     
     <div class="feed-card">
         <div class="feed-top">
-            <span class="feed-src">金十数据</span>
             <span class="feed-cat cat-fin">财经</span>
             <span class="feed-time">2h 前</span>
             <span class="feed-badge badge-neu">中性</span>
@@ -1817,7 +1812,6 @@
     
     <div class="feed-card">
         <div class="feed-top">
-            <span class="feed-src">MKTNews</span>
             <span class="feed-cat cat-fin">财经</span>
             <span class="feed-time">3h 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1828,7 +1822,6 @@
     
     <div class="feed-card">
         <div class="feed-top">
-            <span class="feed-src">雪球热帖</span>
             <span class="feed-cat cat-fin">财经</span>
             <span class="feed-time">实时</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1839,7 +1832,6 @@
     
     <div class="feed-card">
         <div class="feed-top">
-            <span class="feed-src">知乎热议</span>
             <span class="feed-cat cat-soc">社媒</span>
             <span class="feed-time">1h 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1850,7 +1842,6 @@
     
     <div class="feed-card">
         <div class="feed-top">
-            <span class="feed-src">微博财经</span>
             <span class="feed-cat cat-soc">社媒</span>
             <span class="feed-time">实时</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1861,7 +1852,6 @@
     
     <div class="feed-card">
         <div class="feed-top">
-            <span class="feed-src">抖音热榜</span>
             <span class="feed-cat cat-soc">社媒</span>
             <span class="feed-time">实时</span>
             <span class="feed-badge badge-neu">中性</span>
@@ -1872,7 +1862,6 @@
     
     <div class="feed-card">
         <div class="feed-top">
-            <span class="feed-src">虎扑步行街</span>
             <span class="feed-cat cat-soc">社媒</span>
             <span class="feed-time">4h 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1883,7 +1872,6 @@
     
     <div class="feed-card">
         <div class="feed-top">
-            <span class="feed-src">AI hot 追踪</span>
             <span class="feed-cat cat-soc">社媒</span>
             <span class="feed-time">2h 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1894,7 +1882,6 @@
     
     <div class="feed-card">
         <div class="feed-top">
-            <span class="feed-src">联合早报</span>
             <span class="feed-cat cat-soc">社媒</span>
             <span class="feed-time">5h 前</span>
             <span class="feed-badge badge-neu">中性</span>
@@ -1905,7 +1892,6 @@
     
     <div class="feed-card">
         <div class="feed-top">
-            <span class="feed-src">香港01</span>
             <span class="feed-cat cat-soc">社媒</span>
             <span class="feed-time">6h 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1919,7 +1905,7 @@
         <!-- 📟 终端实时日志流 -->
         <div class="terminal-panel" id="terminal-log">
             <div class="log-line"><span class="log-ts">[SYS.INIT]</span> <span class="log-tag">OK</span> <span class="log-msg">NOC Telemetry Cluster 04 initialized. High-frequency feeds listening.</span></div>
-            <div class="log-line"><span class="log-ts">[FEED.SYNC]</span> <span class="log-tag">OK</span> <span class="log-msg">14 platforms queried (Yahoo / EastMoney / Tencent / Google / CLS / WSCN / GLH / Jin10 / MKT / Xueqiu / Zhihu / Weibo / Douyin / Hupu / AIHot / ZaoBao / HK01).</span></div>
+            <div class="log-line"><span class="log-ts">[FEED.SYNC]</span> <span class="log-tag">OK</span> <span class="log-msg">14 platforms queried · 156h window · dedup + sentiment tagging complete.</span></div>
             <div class="log-line"><span class="log-ts">[SENTIMENT]</span> <span class="log-tag">CALC</span> <span class="log-msg">Momentum score computed at +8.4. Cross-source confidence verified at 99.4%.</span></div>
         </div>
 
@@ -2452,13 +2438,11 @@
                 for (let r=top; r<=bottom; r++) grid[r][i] = (b.close >= b.open ? '█' : '▓');
             });
             const labels = [hi, lo];
-            chart.textContent = grid.map((line, r) => (r===0 ? labels[0].toFixed(2).padStart(7)+' ' : r===rows-1 ? labels[1].toFixed(2).padStart(7)+' ' : '       ') + line.join('')).join('
-');
+            chart.textContent = grid.map((line, r) => (r===0 ? labels[0].toFixed(2).padStart(7)+' ' : r===rows-1 ? labels[1].toFixed(2).padStart(7)+' ' : '       ') + line.join('')).join('\n');
             const maxVol = Math.max(...view.map(b => Number(b.vol) || 0), 1);
             const vrows = 5, vg = Array.from({length:vrows}, () => Array(cols).fill(' '));
             view.forEach((b,i) => { const n=Math.max(1,Math.round((Number(b.vol)||0)/maxVol*vrows)); for(let r=vrows-n;r<vrows;r++) vg[r][i]='▂'; });
-            volume.textContent = 'VOL  ' + vg.map(r => r.join('')).join('
-');
+            volume.textContent = 'VOL  ' + vg.map(r => r.join('')).join('\n');
         }
         const drawTradeViewChart = drawCharChart; // 兼容旧名
 
@@ -2610,7 +2594,7 @@
         const logSamples = [
             ["HEARTBEAT", "TICK", "Node HK-Master-01 reported 0 packet loss (latency 2.1ms)"],
             ["AI.INFERENCE", "OK", "DeepSeek sentiment embedding batch completed in 18ms"],
-            ["MARKET.DATA", "FLOW", "Cross-checking price quotes across Tencent Finance, EastMoney, Yahoo... OK"],
+            ["MARKET.DATA", "FLOW", "Cross-checking price quotes across 3 quote feeds... OK"],
             ["RADAR.SCAN", "PULSE", "14 platforms active. No anomalous divergence detected."]
         ];
         let sampleIdx = 0;
