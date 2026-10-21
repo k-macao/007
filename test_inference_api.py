@@ -329,9 +329,10 @@ class HuggingFaceTests(EnvMixin, unittest.TestCase):
         cfg = self.client(INFERENCE_PROVIDER="huggingface-serverless",
                           HF_TOKEN="hf_test_123456").config
         self.assertEqual(cfg.api_style, "hf-inference")
+        # 旧的 api-inference.huggingface.co 端点已下线，统一走 router.huggingface.co
         self.assertEqual(
             cfg.endpoint(),
-            "https://api-inference.huggingface.co/models/Qwen/Qwen2.5-7B-Instruct")
+            "https://router.huggingface.co/hf-inference/models/Qwen/Qwen2.5-7B-Instruct")
 
     def test_hf_dedicated_endpoint(self):
         cfg = ia.resolve_config(

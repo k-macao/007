@@ -199,7 +199,49 @@ source_checks(id, run_id→check_runs, source_key, source_name, group_name,
 
 ---
 
-## 五、常见故障排查
+## 五、Hugging Face 数据源（`hf_hub.py`）
+
+前面四节都是「爬虫式」数据源（热榜 / 快讯 / 行情接口）。这一节是**数据集式**数据源：
+直接通过 Hugging Face 的 datasets-server 切片读取公开标注数据集，
+**不用 `pip install datasets`，也不用把 GB 级数据拉到本地**。
+
+| 端点 | 作用 | 单次上限 |
+|---|---|---|
+| `/is-valid` | 数据集 viewer 是否可读 | — |
+| `/splits` | 列出 (config, split) 组合 | — |
+| `/rows` / `/first-rows` | 取切片行 | 100 行 |
+| `/search` | 服务端全文检索 | 100 行 |
+| `/filter` | 服务端 SQL 过滤（如 `language='zh'`） | 100 行 |
+| `/parquet` | parquet 直链（要整包下载时用） | — |
+| `/size` | 行数与体积 | — |
+
+模块：`hf_hub.py`（纯标准库）· 测试：`test_hf_hub.py`（Mock 三协议，离线）
+· 清单与选型理由：`HUGGINGFACE.md`。
+
+```bash
+python hf_hub.py --splits Kenpache/multilingual-financial-sentiment
+python hf_hub.py --rows  Kenpache/multilingual-financial-sentiment --length 5
+python hf_hub.py --ds-filter Kenpache/multilingual-financial-sentiment \
+                 --where "language='zh'" --length 20
+python hf_hub.py --check        # 连通性自检（Hub + datasets-server + 推理端点）
+```
+
+配置与鉴权：
+
+| 项 | 说明 |
+|---|---|
+| Token | `HF_TOKEN` → `HUGGINGFACE_API_KEY` → `HUGGINGFACEHUB_API_TOKEN` → `INFERENCE_API_KEY`，只需 Read 权限；**不配置也能用**（情绪引擎自动降级为本地中英金融词典） |
+| 端点覆盖 | `HF_HUB_BASE` / `HF_DATASETS_SERVER` / `HF_TASK_API`，可指向镜像或本机 Mock（`--mock-server`） |
+| Key 安全 | Authorization 头只发给 `*.huggingface.co` 与 localhost |
+| 已下线端点 | `api-inference.huggingface.co` 已停止服务，统一改用 `router.huggingface.co/hf-inference` |
+
+已接入链路：`server_dashboard.py` 大屏「🤗 Hugging Face」面板（`/api/hf/*`）、
+`stock_news_scan.py --hf-sentiment`（扫描报告追加情绪复核章节）、
+`.github/workflows/hf-sentiment.yml`（周更基线评估）。
+
+---
+
+## 六、常见故障排查
 
 | 现象 | 可能原因 | 处理 |
 |---|---|---|

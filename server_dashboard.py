@@ -68,6 +68,11 @@ try:
 except Exception:
     foreign_mod = None
 
+try:
+    import hf_hub as hf_mod
+except Exception:
+    hf_mod = None
+
 # ================================================================ 展示开关
 # 源头信息默认隐藏：快讯卡片不再展示「Google 新闻 / 财联社电报」等采集渠道标签，
 # 数据层仍保留 source 字段（用于情绪归因、去重与后台统计）。
@@ -2278,6 +2283,60 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
             <pre id="inf-output" style="margin-top:10px;padding:12px;border:1px dashed rgba(92,255,92,0.3);background:rgba(0,0,0,0.35);color:var(--text);white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.7;max-height:280px;overflow:auto;">等待调用…</pre>
         </div>
 
+        <!-- 🤗 Hugging Face：精选目录 / Hub 检索 / 金融情绪引擎 -->
+        <div class="section-header" id="hf-section">
+            <span>🤗 Hugging Face · 数据集与金融情绪引擎 (HF HUB &amp; SENTIMENT ENGINE)</span>
+            <span class="section-tag">datasets-server 免下载取数 · FinBERT / 中文 tone 模型 · 无 Token 自动降级本地词典</span>
+        </div>
+        <div class="equity-column-panel" id="hf-panel" style="border-color:rgba(255,153,0,0.35);box-shadow:0 0 18px rgba(255,153,0,0.10);">
+            <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
+                <span class="selector-label">🤗 状态:</span>
+                <span class="pill-badge" id="hf-status" style="color:var(--amber);border-color:var(--amber);">未检测</span>
+                <span class="selector-label">Token:</span>
+                <span id="hf-token" style="color:var(--text-muted);font-size:13px;">—</span>
+                <span class="selector-label">精选:</span>
+                <span id="hf-cat-count" style="color:var(--cyan);font-size:13px;">—</span>
+                <span class="selector-label">大模型端点:</span>
+                <span id="hf-llm" style="color:var(--text-muted);font-size:13px;">—</span>
+                <span class="selector-label">Task API:</span>
+                <span id="hf-task-api" style="color:var(--text-muted);font-size:12px;">—</span>
+            </div>
+            <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
+                <button class="report-btn" id="hf-cat-btn" onclick="loadHFCatalog()" style="border-color:var(--amber);color:var(--amber);background:rgba(248,184,0,0.12);">📚 精选目录</button>
+                <span class="selector-label">🔎 Hub 检索:</span>
+                <input id="hf-q" class="report-input" placeholder="关键词：financial sentiment / chronos / 港股" autocomplete="off" />
+                <select id="hf-kind" class="report-select">
+                    <option value="model">模型</option>
+                    <option value="dataset">数据集</option>
+                    <option value="space">Spaces</option>
+                </select>
+                <button class="report-btn" id="hf-search-btn" onclick="searchHF()" style="border-color:var(--cyan);color:var(--cyan);background:rgba(0,229,255,0.10);">🔍 搜索</button>
+                <span class="report-meta" id="hf-list-meta"></span>
+            </div>
+            <div id="hf-list" style="margin-top:8px;max-height:230px;overflow:auto;font-size:13px;line-height:1.6;color:var(--text);padding-right:4px;">
+                点「📚 精选目录」查看已核对的 HF 金融资源，或输入关键词「🔍 搜索」实时检索 Hub。
+            </div>
+            <div style="margin-top:10px;">
+                <textarea id="hf-text" class="report-input" style="width:100%;min-height:64px;resize:vertical;box-sizing:border-box;" placeholder="粘贴新闻 / 快讯，一行一条（也可直接拖进浏览器文本）"></textarea>
+            </div>
+            <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
+                <span class="selector-label">⚙️ 引擎:</span>
+                <select id="hf-engine-pick" class="report-select">
+                    <option value="auto">auto（HF 模型→大模型→词典）</option>
+                    <option value="llm">llm（DeepSeek 等大模型端点）</option>
+                    <option value="lexicon">lexicon（离线词典）</option>
+                    <option value="hf">hf（强制 HF 模型）</option>
+                </select>
+                <button class="report-btn" onclick="fillHF('公司三季度净利润同比增长 42%，大幅超市场预期' + String.fromCharCode(10) + '控股股东拟减持不超过 2% 股份，套现约 3 亿元' + String.fromCharCode(10) + '公司将于下周四披露三季报')">📝 示例</button>
+                <button class="report-btn" onclick="fillHF('Revenue surges 38% year over year, beats estimates' + String.fromCharCode(10) + 'Quarterly results miss estimates; cuts full-year guidance')">🌐 英文示例</button>
+                <button class="report-btn" id="hf-run" onclick="runHFSentiment()" style="border-color:var(--green);color:var(--green);background:rgba(92,255,92,0.12);">🧠 情绪打分</button>
+                <span class="report-meta" id="hf-meta"></span>
+            </div>
+            <div id="hf-result" style="margin-top:10px;padding:12px;border:1px dashed rgba(255,153,0,0.3);background:rgba(0,0,0,0.35);min-height:52px;font-size:13px;color:var(--text);">
+                等待分析…
+            </div>
+        </div>
+
         <!-- 🖥️ 横排服务器集群节点状态流 -->
         <div class="node-stream">
             {nodes_html}
@@ -2871,6 +2930,153 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
         }}
         setTimeout(refreshInferenceConfig, 400);
 
+        // —— Hugging Face：精选目录 / Hub 检索 / 金融情绪引擎 ——
+        async function refreshHFConfig() {{
+            try {{
+                const resp = await fetch('/api/hf/config');
+                const cfg = await resp.json();
+                const st = document.getElementById('hf-status');
+                if (st) {{
+                    st.textContent = !cfg.ok ? '不可用'
+                        : (cfg.token_present ? 'HF 已接入' : '离线词典模式');
+                    st.style.color = cfg.token_present ? 'var(--green)' : 'var(--amber)';
+                    st.style.borderColor = st.style.color;
+                }}
+                const tk = document.getElementById('hf-token');
+                if (tk) tk.textContent = cfg.token_masked || '未配置（自动用本地词典）';
+                const cc = document.getElementById('hf-cat-count');
+                if (cc) cc.textContent = (cfg.catalog_count || 0) + ' 项（6 类）';
+                const api = document.getElementById('hf-task-api');
+                if (api) api.textContent = cfg.task_api || '—';
+                const llm = document.getElementById('hf-llm');
+                if (llm) llm.textContent = cfg.llm_configured
+                    ? ((cfg.llm_provider || 'custom') + ' · ' + (cfg.llm_model || ''))
+                    : '未配置（INFERENCE_* / DEEPSEEK_API_KEY）';
+            }} catch (e) {{ /* 静默 */ }}
+        }}
+
+        async function loadHFCatalog() {{
+            const box = document.getElementById('hf-list');
+            const meta = document.getElementById('hf-list-meta');
+            if (box) box.innerHTML = '<div style="color:var(--text-muted);">⏳ 正在读取精选目录…</div>';
+            try {{
+                const resp = await fetch('/api/hf/catalog');
+                const r = await resp.json();
+                if (!r.ok) {{
+                    if (box) box.innerHTML = '<div style="color:var(--red);">❌ ' + (r.error || '读取失败') + '</div>';
+                    return;
+                }}
+                const groups = r.groups || {{}};
+                let html = '';
+                for (const cat in groups) {{
+                    const label = (r.categories && r.categories[cat]) || cat;
+                    html += '<div style="color:var(--amber);margin:8px 0 4px;">' + label + '</div>';
+                    groups[cat].forEach(function (it) {{
+                        html += '<div style="padding:3px 0;border-bottom:1px dashed rgba(255,255,255,.06);">'
+                            + '<a href="' + (it.url || '#') + '" target="_blank" rel="noopener" '
+                            + 'style="color:var(--cyan);text-decoration:none;">' + (it.id || '') + '</a>'
+                            + ' <span style="color:var(--text-muted);font-size:12px;">[' + (it.lang || '-') + ']'
+                            + (it.downloads ? ' ⬇' + Number(it.downloads).toLocaleString() : '')
+                            + '</span>'
+                            + '<div style="color:var(--text-muted);font-size:12px;line-height:1.5;">'
+                            + (it.why || '') + '</div></div>';
+                    }});
+                }}
+                if (box) box.innerHTML = html || '（目录为空）';
+                if (meta) meta.textContent = (r.total || 0) + ' 项精选资源';
+                appendLog('HF.CATALOG', 'OK', (r.total || 0) + ' 项');
+            }} catch (e) {{
+                if (box) box.innerHTML = '<div style="color:var(--red);">❌ ' + e.message + '</div>';
+            }}
+        }}
+
+        async function searchHF() {{
+            const q = (document.getElementById('hf-q') || {{}}).value || '';
+            const kind = (document.getElementById('hf-kind') || {{}}).value || 'model';
+            const box = document.getElementById('hf-list');
+            const meta = document.getElementById('hf-list-meta');
+            if (box) box.innerHTML = '<div style="color:var(--text-muted);">⏳ 正在检索 Hugging Face Hub…</div>';
+            appendLog('HF.SEARCH', 'QUERY', kind + ' · ' + (q || '(全部)'));
+            try {{
+                const resp = await fetch('/api/hf/search?q=' + encodeURIComponent(q)
+                    + '&kind=' + encodeURIComponent(kind) + '&limit=12');
+                const r = await resp.json();
+                if (!r.ok) {{
+                    if (box) box.innerHTML = '<div style="color:var(--red);">❌ ' + (r.error || '检索失败') + '</div>';
+                    appendLog('HF.SEARCH', 'ERR', (r.error || '未知错误'));
+                    return;
+                }}
+                let html = '';
+                (r.items || []).forEach(function (it) {{
+                    html += '<div style="padding:4px 0;border-bottom:1px dashed rgba(255,255,255,.06);">'
+                        + '<a href="' + (it.url || '#') + '" target="_blank" rel="noopener" '
+                        + 'style="color:var(--cyan);text-decoration:none;">' + (it.id || '') + '</a>'
+                        + ' <span style="color:var(--text-muted);font-size:12px;">⬇'
+                        + Number(it.downloads || 0).toLocaleString() + ' ♥' + (it.likes || 0)
+                        + ' · ' + (it.pipeline_tag || it.sdk || '-')
+                        + (it.license ? ' · ' + it.license : '') + '</span></div>';
+                }});
+                if (box) box.innerHTML = html || '（没有结果）';
+                if (meta) meta.textContent = kind + ' · ' + (r.total || 0) + ' 条';
+                appendLog('HF.SEARCH', 'OK', kind + ' · ' + (r.total || 0) + ' 条');
+            }} catch (e) {{
+                if (box) box.innerHTML = '<div style="color:var(--red);">❌ ' + e.message + '</div>';
+                appendLog('HF.SEARCH', 'ERR', e.message);
+            }}
+        }}
+
+        async function runHFSentiment() {{
+            const input = document.getElementById('hf-text');
+            const out = document.getElementById('hf-result');
+            const meta = document.getElementById('hf-meta');
+            const btn = document.getElementById('hf-run');
+            const raw = ((input && input.value) || '').trim();
+            if (!raw) {{
+                if (out) out.innerHTML = '<div style="color:var(--red);">请先粘贴文本，或点上面的「📝 示例」。</div>';
+                return;
+            }}
+            const engine = (document.getElementById('hf-engine-pick') || {{}}).value || 'auto';
+            if (out) out.innerHTML = '<div style="color:var(--text-muted);">⏳ 正在打分…</div>';
+            if (btn) btn.disabled = true;
+            appendLog('HF.SENTIMENT', 'QUERY', raw.slice(0, 40) + ' · ' + engine);
+            try {{
+                const resp = await fetch('/api/hf/sentiment', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ texts: raw.split(String.fromCharCode(10)), engine: engine }})
+                }});
+                const r = await resp.json();
+                if (!r.ok) {{
+                    if (out) out.innerHTML = '<div style="color:var(--red);">❌ ' + (r.error || '打分失败') + '</div>';
+                    if (meta) meta.textContent = (r.kind || 'error');
+                    appendLog('HF.SENTIMENT', 'ERR', (r.error || '未知错误'));
+                    return;
+                }}
+                if (out) out.innerHTML = r.html || '';
+                const agg = r.aggregate || {{}};
+                if (meta) meta.textContent = (r.engine === 'hf'
+                        ? 'Hugging Face 模型 · ' + (r.model || '')
+                        : (r.engine === 'llm'
+                            ? '大模型端点 · ' + (r.model || '')
+                            : '本地金融词典（离线）'))
+                    + ' · ' + (r.count || 0) + ' 条 · ' + (agg.label || '') + ' ' + (agg.score || 0)
+                    + (r.note ? ' · ' + r.note : '');
+                appendLog('HF.SENTIMENT', 'OK', (agg.label || '') + ' ' + (agg.score || 0));
+            }} catch (e) {{
+                if (out) out.innerHTML = '<div style="color:var(--red);">❌ ' + e.message + '</div>';
+                appendLog('HF.SENTIMENT', 'ERR', e.message);
+            }} finally {{
+                if (btn) btn.disabled = false;
+            }}
+        }}
+
+        function fillHF(text) {{
+            const el = document.getElementById('hf-text');
+            if (el) {{ el.value = text; el.focus(); }}
+        }}
+        setTimeout(refreshHFConfig, 600);
+        setTimeout(loadHFCatalog, 1000);
+
         // —— 实时行情轮询：拉取 /api/quote 更新价格卡片，不整页刷新 ——
         const STOCK_CODE = '{stock_code}';
         async function refreshQuote() {{
@@ -3443,6 +3649,145 @@ def _api_inference_chat(params: dict) -> dict:
     return result
 
 
+# ================================================================ 🤗 Hugging Face 接口
+# hf_hub.py 的五个 HTTP 入口：目录 / 搜索 / 数据集切片 / 情绪分析 / 配置。
+# 全部走 hf_hub 的纯标准库实现：有 HF_TOKEN 时情绪引擎自动切到 HF 模型，
+# 否则用内置中英金融词典，接口形态不变。
+
+_HF_DEFAULT_DATASET = "Kenpache/multilingual-financial-sentiment"
+
+
+def _api_hf_config() -> dict:
+    if hf_mod is None:
+        return {"ok": False, "configured": False, "error": "hf_hub 未加载"}
+    payload = hf_mod.describe_config()
+    payload["ok"] = True
+    payload["available"] = True
+    # 推理端点（DeepSeek/OpenAI/…）是否可用：决定 auto 引擎会不会走大模型
+    llm = payload.get("llm") or {}
+    payload["llm_configured"] = bool(llm.get("configured"))
+    payload["llm_provider"] = llm.get("provider", "")
+    payload["llm_model"] = llm.get("model", "")
+    return payload
+
+
+def _api_hf_catalog(params: dict) -> dict:
+    if hf_mod is None:
+        return {"ok": False, "error": "hf_hub 未加载", "items": []}
+    category = str(params.get("category") or params.get("cat") or "").strip()
+    live = str(params.get("live") or "").strip().lower() in ("1", "true", "yes", "on")
+    try:
+        items = hf_mod.catalog(category, with_stats=live)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}", "items": []}
+    groups: dict[str, list] = {}
+    for item in items:
+        # 目录条目补一个可直接点开的 Hub 链接（大屏用）
+        item.setdefault(
+            "url",
+            f"https://huggingface.co/"
+            f"{'spaces' if item.get('kind') == 'space' else item.get('kind', '') + 's'}"
+            f"/{item.get('id', '')}")
+        groups.setdefault(item.get("cat", ""), []).append(item)
+    return {
+        "ok": True,
+        "category": category,
+        "total": len(items),
+        "categories": hf_mod.CATALOG_CATEGORIES,
+        "groups": groups,
+        "items": items,
+    }
+
+
+def _api_hf_search(params: dict) -> dict:
+    if hf_mod is None:
+        return {"ok": False, "error": "hf_hub 未加载", "items": []}
+    query = str(params.get("q") or params.get("query") or "").strip()
+    kind = str(params.get("kind") or "model").strip().lower()
+    if kind not in hf_mod.KINDS:
+        kind = "model"
+    try:
+        limit = max(1, min(30, int(params.get("limit") or 10)))
+    except (TypeError, ValueError):
+        limit = 10
+    try:
+        items = hf_mod.search(kind, query, sort=str(params.get("sort") or "downloads"),
+                              limit=limit)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "kind": getattr(e, "kind", "error"),
+                "error": f"{e.__class__.__name__}: {e}", "items": []}
+    return {"ok": True, "kind": kind, "query": query, "total": len(items),
+            "items": items}
+
+
+def _api_hf_dataset(params: dict) -> dict:
+    """取一个 HF 数据集的切片行（datasets-server /rows，免下载）。"""
+    if hf_mod is None:
+        return {"ok": False, "error": "hf_hub 未加载", "records": []}
+    dataset = str(params.get("dataset") or params.get("id")
+                  or _HF_DEFAULT_DATASET).strip()
+    if len(dataset) > 200:
+        return {"ok": False, "error": "dataset 名称过长", "records": []}
+    try:
+        length = max(1, min(100, int(params.get("length") or 10)))
+        offset = max(0, int(params.get("offset") or 0))
+    except (TypeError, ValueError):
+        length, offset = 10, 0
+    try:
+        payload = hf_mod.dataset_rows(
+            dataset,
+            config=(str(params.get("config") or "").strip() or None),
+            split=(str(params.get("split") or "").strip() or None),
+            offset=offset, length=length)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "kind": getattr(e, "kind", "error"),
+                "error": f"{e.__class__.__name__}: {e}", "records": []}
+    payload["ok"] = True
+    payload["html"] = hf_mod.render_sentiment_html(
+        hf_mod.market_sentiment(payload.get("records") or [])) \
+        if payload.get("records") else ""
+    return payload
+
+
+def _api_hf_sentiment(params: dict) -> dict:
+    """给一批文本 / 快讯条目打金融情绪分。
+
+    body: {"texts": ["...", "..."], "engine": "auto|lexicon|hf", "model": "..."}
+    """
+    if hf_mod is None:
+        return {"ok": False, "error": "hf_hub 未加载"}
+    raw = params.get("texts")
+    if isinstance(raw, str):
+        texts = [line.strip() for line in raw.splitlines() if line.strip()]
+    elif isinstance(raw, list):
+        texts = [str(t).strip() for t in raw if str(t).strip()]
+    else:
+        texts = []
+    if not texts:
+        return {"ok": False, "error": "texts 不能为空（字符串按行拆分或字符串数组）"}
+    if len(texts) > 200:
+        texts = texts[:200]
+    engine = str(params.get("engine") or "auto").strip().lower()
+    if engine not in ("auto", "lexicon", "hf", "llm"):
+        engine = "auto"
+    model = str(params.get("model") or "").strip() or hf_mod.DEFAULT_SENTIMENT_MODEL
+    llm_model = str(params.get("llm_model") or "").strip()
+    try:
+        batch = max(1, min(50, int(params.get("batch") or 0)))
+    except (TypeError, ValueError):
+        batch = hf_mod.DEFAULT_LLM_BATCH
+    try:
+        result = hf_mod.score_texts(texts, engine=engine, model=model,
+                                    llm_model=llm_model, llm_batch=batch)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "kind": getattr(e, "kind", "error"),
+                "error": f"{e.__class__.__name__}: {e}"}
+    result["ok"] = True
+    result["html"] = hf_mod.render_sentiment_html(result)
+    result["markdown"] = hf_mod.render_sentiment_md(result)
+    return result
+
+
 # ================================================================ HTTP 服务处理
 
 class MonitorHandler(http.server.BaseHTTPRequestHandler):
@@ -3570,6 +3915,40 @@ class MonitorHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
             return
 
+        if path in ("/api/hf", "/api/hf/config"):
+            payload = (_api_hf_config() if hf_mod is not None
+                       else {"ok": False, "available": False,
+                             "error": "hf_hub 未加载"})
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload, ensure_ascii=False,
+                                        default=str).encode("utf-8"))
+            return
+
+        if path in ("/api/hf/catalog", "/api/hf/catalog/list"):
+            payload = _api_hf_catalog({k: v[0] for k, v in qs.items()})
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload, ensure_ascii=False,
+                                        default=str).encode("utf-8"))
+            return
+
+        if path in ("/api/hf/search", "/api/hf/search/list"):
+            payload = _api_hf_search({k: v[0] for k, v in qs.items()})
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload, ensure_ascii=False,
+                                        default=str).encode("utf-8"))
+            return
+
+        if path in ("/api/hf/dataset", "/api/hf/rows"):
+            payload = _api_hf_dataset({k: v[0] for k, v in qs.items()})
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload, ensure_ascii=False,
+                                        default=str).encode("utf-8"))
+            return
+
         if path in ("/api/foreign_weekly", "/api/foreign_weekly/teaser",
                     "/api/foreign", "/api/foreign/teaser"):
             topic = qs.get("topic", qs.get("code", [""]))[0]
@@ -3633,6 +4012,14 @@ class MonitorHandler(http.server.BaseHTTPRequestHandler):
         elif path in ("/api/foreign_weekly", "/api/foreign_weekly/report",
                       "/api/foreign", "/api/foreign/report"):
             payload = _api_foreign_weekly(params)
+        elif path in ("/api/hf/sentiment", "/api/hf/score"):
+            payload = _api_hf_sentiment(params)
+        elif path == "/api/hf/catalog":
+            payload = _api_hf_catalog(params)
+        elif path == "/api/hf/search":
+            payload = _api_hf_search(params)
+        elif path in ("/api/hf/dataset", "/api/hf/rows"):
+            payload = _api_hf_dataset(params)
         else:
             payload = {"ok": False, "error": "Not Found"}
 

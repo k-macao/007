@@ -17,8 +17,9 @@
 #
 # 覆盖范围：
 #   ① 全部 .py 字节编译（含 server_dashboard.py / pushplus_deepseek.py 等超大模块）
-#   ② unittest 发现并运行 test_*.py（58 项：推理 API / HF 双协议 + 港股行情离线解析）
-#   ③ 12 个模块的 --selftest（推理 API + 解析器 + 模板 + 栏目 + 推送降级）
+#   ② unittest 发现并运行 test_*.py（推理 API / HF 双协议 + 港股行情离线解析
+#      + hf_hub 对接层：目录 / 词典 / datasets-server / 情绪引擎）
+#   ③ 13 个模块的 --selftest（推理 API + 解析器 + 模板 + 栏目 + 推送降级 + HF Hub）
 #
 # 有意排除：`hk_quote.py --selftest` 是**联网数据源打分基准**（三源真抓取后
 # 输出成功率/耗时表），全部源失败时依然 exit 0，不能当断言门禁用；
@@ -31,6 +32,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      probe_hf:
+        description: '额外跑一次 Hugging Face 探活（需外网；只打印脱敏结果，不打印明文 Key）'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -74,7 +81,7 @@ jobs:
       - name: Unit tests (unittest discover test_*.py)
         run: python -m unittest discover -s . -p "test_*.py" -v
 
-      - name: Module selftests (12 个模块 --selftest，离线)
+      - name: Module selftests (13 个模块 --selftest，离线)
         shell: bash
         run: |
           MODULES="
@@ -82,6 +89,7 @@ jobs:
             deepseek_search
             equity_research_column
             foreign_institution_weekly
+            hf_hub
             hk_brokers
             newsnow_sources
             pushplus_deepseek
@@ -107,4 +115,88 @@ jobs:
             echo "::error::离线自检门禁未通过：至少一个模块 --selftest 返回非 0"
             exit 1
           fi
-          echo "✅ 全部 12 个模块自检通过"
+          echo "✅ 全部 13 个模块自检通过"
+
+  # ==========================================================================
+  # 🤗 Hugging Face 探活（仅 workflow_dispatch 且勾选 probe_hf 时运行）
+  #
+  # 为什么单独开一个 job：上面的离线门禁是**零网络**的，永远测不出
+  # 「HF_TOKEN 配没配、配了能不能用」。这一 job 只在手动勾选时跑，用真实外网回答：
+  #   ① 仓库里有没有 HF_TOKEN（只打印长度与脱敏片段，不打印明文）
+  #   ② Hub 检索 / datasets-server 取数通不通（公开数据，不需要 Key）
+  #   ③ 有 Key 时，FinBERT / 中文 tone 模型能不能真跑起来（engine=hf 强制走模型）
+  #
+  # 2026-10-22 实测结论（本仓库当前 Token）：
+  #   whoami-v2 → 200（用户 kmacao，fine-grained token「273」，含
+  #   inference.serverless.write）说明 **Token 有效**；但任务推理返回
+  #   402 {"error":"You have no remaining credits..."，即 **账户无推理额度**。
+  #   二者要分开看：402 不是 Key 错，auto 引擎会据此降级到本地词典。
+  #
+  # 写法上的两个刻意选择（避免 GitHub 校验失败）：
+  #   · job 级 if 用 github.event.inputs，不用 inputs 上下文；
+  #   · 不把 secrets 写进 if 条件，改为在 shell 里判断环境变量是否为空。
+  # ==========================================================================
+  hf-probe:
+    name: HF Token probe (手动勾选 probe_hf 才跑)
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.probe_hf == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    env:
+      PYTHONUNBUFFERED: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Probe Hub + datasets-server + model (不打印明文 Key)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -n "$HF_TOKEN" ]; then
+            echo "HF_TOKEN：已配置（长度 ${#HF_TOKEN}，脱敏：${HF_TOKEN:0:4}…${HF_TOKEN: -4}）"
+          else
+            echo "HF_TOKEN：未配置（公开数据集仍可用；模型调用会降级为本地词典）"
+          fi
+          echo ""
+          echo "—— ① 连通性：Hub / datasets-server / 模型推理 ——"
+          python hf_hub.py --check || echo "（上面有失败项，见 kind 分类）"
+          echo ""
+          if [ -n "$HF_TOKEN" ]; then
+            echo "—— ② 强制 engine=hf：能出 JSON 说明 Token 有效且模型可调用 ——"
+            python hf_hub.py --sentiment "Revenue surges 38% year over year, beats estimates" \
+                             --engine hf --json || echo "❌ 英文 FinBERT 调用失败"
+            echo "—— ③ 中文 tone 模型 ——"
+            python hf_hub.py --sentiment "公司三季度净利润同比增长 42%，大幅超市场预期" \
+                             --engine hf --model yiyanghkust/finbert-tone-chinese --json \
+                             || echo "❌ 中文 tone 模型调用失败（可能未在 Inference Providers 上架）"
+          else
+            echo "⏭ 未配置 HF_TOKEN，跳过模型调用（上面 --check 已验证公开端点）"
+          fi
+
+      - name: Write job summary
+        if: always()
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          {
+            echo "## 🤗 Hugging Face 探活结果"
+            echo ""
+            echo "- 分支：\`${{ github.ref_name }}\` · 提交 \`${GITHUB_SHA::7}\`"
+            if [ -n "$HF_TOKEN" ]; then
+              echo "- HF_TOKEN：✅ 已配置（长度 ${#HF_TOKEN}，脱敏 ${HF_TOKEN:0:4}…${HF_TOKEN: -4}）"
+            else
+              echo "- HF_TOKEN：⚠️ 未配置（公开数据集可用，模型调用降级为本地词典）"
+            fi
+            echo ""
+            echo "判定口径：\`--check\` 里前四项全绿 = Hub + datasets-server 通；"
+            echo "模型调用能出 JSON = Token 有效且**有推理额度**（402 = 额度用尽，不是 Key 错）。"
+          } >> "$GITHUB_STEP_SUMMARY"

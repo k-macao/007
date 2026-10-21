@@ -101,7 +101,13 @@ python inference_api.py -p "写一句开盘提示" --stream
 |---|---|---|---|
 | 推理路由（推荐） | `huggingface` / `hf` | `https://router.huggingface.co/v1` | OpenAI 兼容，支持流式 |
 | 专用 Inference Endpoint | `huggingface-endpoint` | `HF_ENDPOINT_URL=https://xxx.endpoints.huggingface.cloud/v1` | OpenAI 兼容 |
-| Serverless Task API | `huggingface-serverless` | `https://api-inference.huggingface.co/models/<model>` | `inputs` → `generated_text`（已适配流式） |
+| Serverless Task API | `huggingface-serverless` | `https://router.huggingface.co/hf-inference/models/<model>` | `inputs` → `generated_text`（已适配流式） |
+
+> ⚠️ **端点迁移（2026-10-22 修正）**：Hugging Face 已下线旧域名
+> `api-inference.huggingface.co`，serverless 推理统一迁移到
+> `router.huggingface.co/hf-inference`。本仓库的 `huggingface-serverless` 预设
+> 与 `hf_hub.py` 的 task 调用都已切到新域名；若你本地脚本还在用旧域名，会直接
+> 连接失败。
 
 ```bash
 # 1) 推理路由（任意聊天模型，推荐）
@@ -178,6 +184,94 @@ python test_inference_api.py           # 39 项单元测试（含 HF 双协议�
 
 ---
 
+## 🤗 Hugging Face 数据集与情绪引擎（新增）
+
+`hf_hub.py` 把「去 Hugging Face 找数据」和「用 Hugging Face 模型算情绪」两件事
+收进同一个纯标准库模块，和 `inference_api.py` 的分工是：
+
+| 模块 | 负责 |
+|---|---|
+| `inference_api.py` | **生成**：把任意 OpenAI 兼容端点（DeepSeek / OpenAI / 硅基流动 / Ollama / HF Router …）当聊天模型用 |
+| `hf_hub.py` | **取数 + 判别**：Hub 检索、datasets-server 免下载取数、文本分类（FinBERT 等）；`--engine llm` 时复用 `inference_api.py` 调大模型做零样本情绪判别 |
+
+| 能力 | 说明 |
+|---|---|
+| Hub 检索 | 模型 / 数据集 / Spaces 搜索与详情，输出下载量、点赞、许可、pipeline_tag |
+| 免下载取数 | `datasets-server` 的 `/is-valid` `/splits` `/rows` `/search` `/filter` `/parquet` `/size`，GB 级数据集也能只读 100 行 |
+| 情绪引擎 | 四选一：`lexicon`（内置中英金融词典，零网络）/ `hf`（真跑 HF 上的 FinBERT、中文 tone 模型）/ **`llm`（DeepSeek 等大模型端点，走 `inference_api.py`）** / `auto`（`hf` → `llm` → `lexicon` 依次降级） |
+| 基线评估 | 抓 HF 上带标注的公开数据集当黄金标签，算准确率 / macro-F1 / 分组准确率——词典或模型退化会立刻看出来 |
+| 离线联调 | `start_mock_server()` 模拟 Hub + datasets-server + task API；`start_llm_mock_server()` 模拟 OpenAI 兼容端点——**没有 Key 也能验证 llm 引擎全链路** |
+| 精选目录 | 21 个已核对存在的 HF 金融资源（情绪模型、情绪数据集、研报语料、行情新闻流、时序基座、参考 Space），附接入理由与命令 |
+
+```bash
+# ① 看精选目录（含中文金融、时序基座、研报语料三类）
+python hf_hub.py --catalog
+python hf_hub.py --catalog --category sentiment-dataset --live   # 附实时下载量
+
+# ② 免下载读任意公开数据集（不用 pip install datasets）
+python hf_hub.py --rows Kenpache/multilingual-financial-sentiment --length 5
+python hf_hub.py --ds-search zeroshot/twitter-financial-news-sentiment -q "Nvidia" --length 5
+python hf_hub.py --ds-filter Kenpache/multilingual-financial-sentiment \
+                 --where "language='zh'" --length 10
+
+# ③ 情绪打分（四个引擎：auto / lexicon / hf / llm）
+export HF_TOKEN=hf_xxx                       # 可选，只需 Read 权限（且要有推理额度）
+python hf_hub.py --sentiment "公司三季度净利润同比增长 42%，大幅超市场预期"
+python hf_hub.py --sentiment "Revenue surges 38%, beats estimates" --json
+python hf_hub.py --sentiment-file news.txt --engine hf \
+                 --model yiyanghkust/finbert-tone-chinese      # 强制中文 tone 模型
+
+# ③-b HF 没推理额度时：让大模型端点来判（DeepSeek 为例，零新增依赖）
+export DEEPSEEK_API_KEY=sk-xxx               # 或 INFERENCE_BASE_URL/API_KEY/MODEL 通用写法
+export INFERENCE_PROVIDER=deepseek
+python hf_hub.py --sentiment "业绩大超预期，上调全年指引" --engine llm
+python hf_hub.py --sentiment-file news.txt --engine llm --llm-model deepseek-chat --llm-batch 20
+
+# ④ 用 HF 公开数据集给情绪引擎打基线
+python hf_hub.py --benchmark Kenpache/multilingual-financial-sentiment \
+                 --group-field language --length 100
+python hf_hub.py --benchmark zeroshot/twitter-financial-news-sentiment --length 100
+
+# ⑤ 抓新闻数据集直接出情绪画像（按 language / ticker 分组）
+python hf_hub.py --digest NickyNicky/finance-financialmodelingprep-stock-news-sentiments-rss-feed
+
+# ⑥ 检索 + 连通性 + 离线自检
+python hf_hub.py --search "financial sentiment" --kind dataset --limit 8
+python hf_hub.py --check
+python hf_hub.py --selftest        # 74 项离线自检（Mock 四个协议，CI 门禁）
+python hf_hub.py --mock-server 18090   # 无 Key 也能联调：Hub + datasets-server + task API
+```
+
+### 已接入的位置
+
+- **大屏** `python server_dashboard.py 8080` → 新增「🤗 Hugging Face · 数据集与金融情绪引擎」面板
+  （精选目录 / Hub 检索 / 情绪打分三合一），接口：
+  `GET /api/hf/config` · `GET /api/hf/catalog` · `GET /api/hf/search?q=&kind=` ·
+  `GET /api/hf/dataset?dataset=&length=` · `POST /api/hf/sentiment`
+- **扫描** `python stock_news_scan.py 09988 --hf-sentiment`
+  → 在十八平台扫描报告末尾追加「🤗 Hugging Face 情绪复核」章节
+  （`--hf-engine auto|lexicon|hf|llm`、`--hf-model`、`--hf-llm-model` 可配，
+   `--json` 输出里带 `hf_sentiment` 字段）
+- **CI**：`.github/workflows/ci.yml` 增加 `hf_hub --selftest`（第 13 个自检模块）；
+  `hf-sentiment.yml` 周更基线支持 `engine = llm`（用 `DEEPSEEK_API_KEY`）
+- **周更**：`.github/workflows/hf-sentiment.yml` 每周一自动跑一次基线评估，
+  也支持手动跑 `benchmark` / `digest`
+
+### 端到点说明（都已按 HF 现行文档对齐）
+
+| 用途 | 端点 |
+|---|---|
+| Hub 检索/详情 | `https://huggingface.co/api/{models,datasets,spaces}` |
+| 数据集免下载取数 | `https://datasets-server.huggingface.co/{is-valid,splits,rows,search,filter,parquet,size}` |
+| Task 推理（文本分类等） | `https://router.huggingface.co/hf-inference/models/<model>` |
+
+三个地址都可用 `HF_HUB_BASE` / `HF_DATASETS_SERVER` / `HF_TASK_API` 指向镜像或本机 Mock；
+Key 只发给 `*.huggingface.co` 与 localhost，其它域名一律不带 Authorization 头。
+
+完整的资源清单与选型理由见 **[HUGGINGFACE.md](HUGGINGFACE.md)**。
+
+---
+
 ## 🚀 快速开始
 
 ```bash
@@ -196,6 +290,8 @@ python -m unittest discover -s . -p "test_*.py" -v # 离线单元测试
 ```
 273/
 ├── inference_api.py          # 统一推理 API 接入层（客户端 / 网关 / Mock / 自检）
+├── hf_hub.py                 # 🤗 HF Hub 接入层（检索 / datasets-server 取数 / 情绪引擎 / 基线）
+├── test_hf_hub.py            # HF Hub 离线测试（Mock 三个协议，不联网）
 ├── test_inference_api.py     # 推理 API 离线测试（Mock 端点，不联网）
 ├── test_hk_quote.py          # 港股行情解析测试（内置真实抓包样本，离线可跑）
 ├── pushplus_deepseek.py      # 微信推送主流程（DeepSeek/OpenAI/rule + 多通道）
@@ -214,16 +310,20 @@ python -m unittest discover -s . -p "test_*.py" -v # 离线单元测试
 ├── server_dashboard.py       # 大屏监控（行情 / 研报 / 投研栏目）
 ├── server_monitor.html       # 大屏前端（由 server_dashboard.py::export_static_files() 生成）
 ├── DATA_SOURCES.md           # 数据源配置说明（17 源 / Cookie / 校验库）
+├── HUGGINGFACE.md            # 🤗 HF 金融资源精选清单与选型理由（模型/数据集/Spaces）
 ├── SOURCE_AVAILABILITY_REPORT.md # 数据源可用性实测报告
 ├── .github/workflows/
 │   ├── ci.yml                # 工作流：CI - Offline Gate（push/PR 自动离线门禁）
 │   ├── market-brief.yml      # 工作流：Scheduled Market Brief（每日澳门 09:00 / 17:00）
 │   ├── stock-report.yml      # 工作流：Manual Run - Stock Report (HK/A-share/US)
-│   └── broker-columns.yml    # 工作流：Manual Run - Broker Columns（券商/投行栏目）
+│   ├── broker-columns.yml    # 工作流：Manual Run - Broker Columns（券商/投行栏目）
+│   └── hf-sentiment.yml      # 工作流：Hugging Face 情绪引擎（周更基线 / 手动画像）
 ├── equity_research/          # 机构级投研 skill 资源（SKILL/references/industries/scripts）
 ├── skills/                   # Skills Hub（catalog + NOTICE + skill 安装）
 ├── .claude/skills/           # Claude Agent 可直接读取的 skill
-├── examples/                 # 主题预览 HTML + 推理接入示例
+├── examples/                 # 主题预览 HTML + 推理/HF 接入示例
+│   ├── inference_quickstart.py  # 推理 API：爬虫摘要 / 量化解读 / SSE 流式
+│   └── hf_quickstart.py         # 🤗 HF：快讯情绪画像 / 基线评估 / Hub 检索
 └── README.md
 ```
 
