@@ -1972,13 +1972,55 @@ def ai_compress_enabled() -> bool:
     return True
 
 
-def _ai_endpoint(provider: str) -> tuple[str, str, str]:
-    """按 provider 返回 (url, model, key)；key 可能为空串。"""
+def inference_override():
+    """显式配置的统一推理 API（INFERENCE_*）；未配置返回 None。
+
+    这一层让 DeepSeek / OpenAI / 硅基流动 / 百炼 / 本地 vLLM 等
+    OpenAI 兼容端点都能直接驱动本仓库的全部 AI 能力，无需改代码。
+    """
+    try:
+        import inference_api as ia
+        cfg = ia.explicit_config()
+    except Exception:  # 模块缺失或配置异常时退回旧逻辑
+        return None
+    return cfg if (cfg is not None and cfg.configured) else None
+
+
+def ai_credentials(provider: str) -> tuple[str, str, str, str, bool]:
+    """返回 (url, model, key, label, keyless)。
+
+    优先级：INFERENCE_* 统一推理 API > 旧 DEEPSEEK/OPENAI 配置。
+    keyless=True 表示本地端点（Ollama/vLLM 等）允许空 Key。
+    """
+    cfg = inference_override()
+    if cfg is not None:
+        return (cfg.endpoint(), cfg.model, cfg.api_key,
+                f"推理API · {cfg.label}", bool(cfg.keyless))
     if provider == "openai":
         base = env("OPENAI_BASE_URL") or DEFAULT_OPENAI_BASE_URL
         return (f"{base.rstrip('/')}/chat/completions", "gpt-4o-mini",
-                env("OPENAI_API_KEY") or "")
-    return DEEPSEEK_URL, "deepseek-chat", env("DEEPSEEK_API_KEY") or ""
+                env("OPENAI_API_KEY") or "", "openai（gpt-4o-mini）", False)
+    return (DEEPSEEK_URL, "deepseek-chat", env("DEEPSEEK_API_KEY") or "",
+            "deepseek（deepseek-chat）", False)
+
+
+def ai_ready(provider: str) -> bool:
+    """当前是否具备调用 AI 的条件（有 Key，或本地 keyless 端点）。"""
+    url, _model, key, _label, keyless = ai_credentials(provider)
+    return bool(url) and (bool(key) or keyless)
+
+
+def ai_auto_provider() -> str:
+    """auto 模式解析：显式推理 API 或旧 DeepSeek Key 可用则走 AI，否则 rule。"""
+    if inference_override() is not None:
+        return "deepseek"
+    return "deepseek" if env("DEEPSEEK_API_KEY") else "rule"
+
+
+def _ai_endpoint(provider: str) -> tuple[str, str, str]:
+    """按 provider 返回 (url, model, key)；key 可能为空串。"""
+    url, model, key, _label, _keyless = ai_credentials(provider)
+    return url, model, key
 
 
 def split_md_sections(md: str) -> list[str]:
@@ -2122,10 +2164,15 @@ def has_deliverable_channel(channel: str) -> bool:
 def required_secrets(channel: str, provider: str) -> list[str]:
     req: list[str] = []
     req.extend(channel_required_secrets(channel))
-    if provider == "deepseek":
-        req.append("DEEPSEEK_API_KEY")
-    elif provider == "openai":
-        req.append("OPENAI_API_KEY")
+    if provider in ("deepseek", "openai"):
+        cfg = inference_override()
+        if cfg is not None:
+            # 已接入统一推理 API：只有远端且未配 Key 时才提示 INFERENCE_API_KEY
+            if cfg.requires_key and not cfg.api_key:
+                req.append("INFERENCE_API_KEY")
+        else:
+            req.append("DEEPSEEK_API_KEY" if provider == "deepseek"
+                       else "OPENAI_API_KEY")
     return req
 
 
@@ -5185,8 +5232,11 @@ def selftest() -> int:
     check("### 归属上一节", len(split_md_sections("## A\n\nx\n\n### 子\n\ny")) == 1)
     # 环境开关
     old_env = os.environ.get("AI_COMPRESS")
-    old_ai_keys = {k: os.environ[k] for k in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY")
-                   if k in os.environ}
+    ai_env_names = ("DEEPSEEK_API_KEY", "OPENAI_API_KEY",
+                    "INFERENCE_PROVIDER", "INFERENCE_BASE_URL",
+                    "INFERENCE_API_KEY", "INFERENCE_MODEL",
+                    "INFERENCE_TIMEOUT", "INFERENCE_MAX_RETRIES")
+    old_ai_keys = {k: os.environ[k] for k in ai_env_names if k in os.environ}
     try:
         os.environ["AI_COMPRESS"] = "0"
         check("AI_COMPRESS=0 关闭压缩", ai_compress_enabled() is False)
@@ -5194,8 +5244,8 @@ def selftest() -> int:
         check("关闭时不做任何调用", out is md3 and note == "")
         os.environ.pop("AI_COMPRESS")
         check("默认开启", ai_compress_enabled() is True)
-        # 无 Key：跳过
-        for k in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
+        # 无 Key：跳过（含统一推理 API，避免外部 INFERENCE_* 干扰断言）
+        for k in ai_env_names:
             os.environ.pop(k, None)
         out, note = ai_compress_md(md3, provider="deepseek")
         check("无 Key 跳过并说明", out is md3 and "跳过" in note)
@@ -5237,7 +5287,7 @@ def selftest() -> int:
             os.environ.pop("DEEPSEEK_API_KEY", None)
         check("输出变长回退原文", out2 == md3 and "未缩短" in note2)
     finally:
-        for _k in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
+        for _k in ai_env_names:
             os.environ.pop(_k, None)
         os.environ.update(old_ai_keys)   # 自检期间清空的 AI Key 原样恢复
         if old_env is None:
@@ -5734,11 +5784,10 @@ def main(argv: list[str]) -> int:
                 except TypeError:
                     content = gen_by_rule(topic, template, sent_pack=sent_pack)
         else:
-            key_env = ("DEEPSEEK_API_KEY" if provider == "deepseek"
-                       else "OPENAI_API_KEY")
-            key = env(key_env)
-            if not key:
-                log(f"⚠️  缺少 Secret：{key_env}（ai_provider={provider}），已降级使用 rule 模板继续。")
+            ai_url, ai_model, key, ai_label, keyless = ai_credentials(provider)
+            if not key and not keyless:
+                log(f"⚠️  缺少 AI Key（ai_provider={provider}；可配置 INFERENCE_API_KEY "
+                    f"或 DEEPSEEK_API_KEY），已降级使用 rule 模板继续。")
                 provider = "rule"
                 if template == "sentiment" and sent_pack is not None:
                     content = render_sentiment_rule(topic, code4sent, sent_pack)
@@ -5771,15 +5820,10 @@ def main(argv: list[str]) -> int:
                         content = gen_by_rule(topic, template, sent_pack=sent_pack)
             else:
                 messages = build_messages(template, topic, context, risk)
-                if provider == "deepseek":
-                    content = chat_completion(DEEPSEEK_URL, key, "deepseek-chat",
-                                              messages, TEMPLATE_MAX_TOKENS[template],
-                                              args.timeout)
-                else:
-                    base = env("OPENAI_BASE_URL") or DEFAULT_OPENAI_BASE_URL
-                    content = chat_completion(
-                        f"{base.rstrip('/')}/chat/completions", key, "gpt-4o-mini",
-                        messages, TEMPLATE_MAX_TOKENS[template], args.timeout)
+                log(f"  🤖 推理端点：{ai_label}")
+                content = chat_completion(
+                    ai_url, key, ai_model, messages,
+                    TEMPLATE_MAX_TOKENS[template], args.timeout)
     except PushError as e:
         if args.dry_run and "缺少 Secret" in str(e):
             log(f"⚠️  {e}")
@@ -5866,17 +5910,10 @@ def main(argv: list[str]) -> int:
         try:
             messages[-1]["content"] = (ANTI_DUP_PREFIX
                                        + messages[-1]["content"])
-            if provider == "deepseek":
-                content = chat_completion(
-                    DEEPSEEK_URL, key, "deepseek-chat", messages,
-                    TEMPLATE_MAX_TOKENS[template], args.timeout,
-                    temperature=0.9)
-            else:
-                base = env("OPENAI_BASE_URL") or DEFAULT_OPENAI_BASE_URL
-                content = chat_completion(
-                    f"{base.rstrip('/')}/chat/completions", key,
-                    "gpt-4o-mini", messages, TEMPLATE_MAX_TOKENS[template],
-                    args.timeout, temperature=0.9)
+            content = chat_completion(
+                ai_url, key, ai_model, messages,
+                TEMPLATE_MAX_TOKENS[template], args.timeout,
+                temperature=0.9)
             # 差异化重试生成的是全新正文：同样走一遍 AI 分节压缩
             if getattr(args, "ai_compress", True):
                 content, comp_note = ai_compress_md(

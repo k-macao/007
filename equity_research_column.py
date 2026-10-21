@@ -967,26 +967,20 @@ def generate_column(
         )
         gen_note = "rule 九章骨架（未调用大模型）+ dcf.py 脚本估值"
     else:
-        key_env = "DEEPSEEK_API_KEY" if provider == "deepseek" else "OPENAI_API_KEY"
-        key = pp.env(key_env)
-        if not key:
+        url, model, key, ai_label, keyless = pp.ai_credentials(provider)
+        if not key and not keyless:
             report_md = gen_rule_report(
                 topic, context=context, mode=mode, industry=industry,
                 quote=quote, dcf_output=dcf_out, dcf_summary=dcf_summary,
                 assumptions=assumptions, code=code,
             )
-            gen_note = f"缺少 {key_env}，已降级为 rule 九章骨架 + dcf.py"
+            gen_note = (f"缺少 AI Key（{provider}），已降级为 rule 九章骨架 + dcf.py"
+                        "；可配置 INFERENCE_API_KEY 接入统一推理 API")
             provider = "rule"
         else:
-            if provider == "deepseek":
-                model, url = "deepseek-chat", pp.DEEPSEEK_URL
-            else:
-                model = "gpt-4o-mini"
-                base = pp.env("OPENAI_BASE_URL") or pp.DEFAULT_OPENAI_BASE_URL
-                url = f"{base.rstrip('/')}/chat/completions"
             report_md = pp.chat_completion(
                 url, key, model, messages, TEMPLATE_MAX_TOKENS, timeout)
-            gen_note = f"{provider}（{model}）+ dcf.py + equity-research skill"
+            gen_note = f"{ai_label} + dcf.py + equity-research skill"
 
     # 输出页排版：行情核验块顶置（先价后文、跨市场统一），栏目元数据留在末尾
     extras = []

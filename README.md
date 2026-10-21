@@ -61,6 +61,81 @@ python server_dashboard.py 8080   # GET /api/skills · POST /api/skills
 
 ---
 
+---
+
+## 🔌 推理 API 统一接入（新增）
+
+`inference_api.py` 把「任意 OpenAI 兼容推理端点」收敛成一层：仓库里已有的 AI 研报、
+九章投研、Skills、快讯压缩自动复用，不用改代码；同时给 App 提供 HTTP 接口与网关。
+
+| 能力 | 说明 |
+|---|---|
+| 一个客户端 | `chat` / `chat_stream`（SSE 流式）/ `list_models` / `health` |
+| 十个预设 | DeepSeek、OpenAI、硅基流动、Moonshot、智谱、百炼 DashScope、Ollama、vLLM、LM Studio、自定义 |
+| 容错 | 超时、指数退避重试（429/5xx）、`config/auth/rate_limit/http/network/timeout/format` 错误分类 |
+| 安全 | Key 只留服务端；配置摘要永远脱敏；网关支持 `INFERENCE_GATEWAY_TOKEN` |
+| 离线联调 | `--mock-server` 自带 OpenAI 兼容 Mock（流式 + 故障注入），无 Key 也能跑通全链路 |
+
+### 三个环境变量接任意模型
+
+```bash
+export INFERENCE_BASE_URL=https://api.siliconflow.cn/v1
+export INFERENCE_API_KEY=sk-xxx
+export INFERENCE_MODEL=Qwen/Qwen2.5-7B-Instruct
+
+python inference_api.py --check          # 连通性自检
+python inference_api.py -p "用一句话解释港股通"
+python inference_api.py -p "写一句开盘提示" --stream
+```
+
+也可只用预设：`INFERENCE_PROVIDER=deepseek`（配合 `DEEPSEEK_API_KEY`）或
+`INFERENCE_PROVIDER=ollama`（本地、无需 Key）。完整列表：`python inference_api.py --list-providers`。
+
+### 已自动接入的位置（无需改代码）
+
+设置 `INFERENCE_*` 后，以下链路会自动走你的推理端点：
+
+- `stock_report.py`（AI 研报）· `equity_research_column.py`（九章投研）
+- `skills_hub.py`（rollingSirius + Anthropic 官方 9 技能）
+- `pushplus_deepseek.py` 的正文生成、差异化重试与 AI 分节压缩
+- 大屏「🔌 推理 API」面板（测试连接 / 直接对话）
+
+### App 直接调用（大屏 / 网关）
+
+```bash
+python server_dashboard.py 8080
+curl http://localhost:8080/api/inference/config            # 脱敏配置
+curl http://localhost:8080/api/inference/health            # 连通性
+curl -X POST http://localhost:8080/api/inference/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"把这段爬虫快讯做 3 条摘要：...","max_tokens":600}'
+```
+
+给手机 / 前端一个稳定入口（Key 不下发客户端，OpenAI 协议可直接用官方 SDK）：
+
+```bash
+INFERENCE_GATEWAY_TOKEN=app-token python inference_api.py --serve 8090
+# POST http://<server>:8090/v1/chat/completions
+```
+
+### 量化 / 爬虫项目对接
+
+`examples/inference_quickstart.py` 演示三个场景：爬虫快讯 → 摘要、量化因子 → 多空解读、SSE 流式：
+
+```bash
+python examples/inference_quickstart.py          # 无 Key 自动启动 Mock
+python examples/inference_quickstart.py --mock   # 强制离线
+```
+
+### 自检
+
+```bash
+python inference_api.py --selftest     # 39 项离线自检（Mock 端点 + 网关 + 重试/鉴权）
+python test_inference_api.py           # 29 项单元测试（含大屏 /api/inference/*）
+```
+
+---
+
 ## 🚀 快速开始
 
 ```bash
@@ -78,6 +153,8 @@ python -m unittest discover -s . -p "test_*.py" -v # 离线单元测试
 
 ```
 273/
+├── inference_api.py          # 统一推理 API 接入层（客户端 / 网关 / Mock / 自检）
+├── test_inference_api.py     # 推理 API 离线测试（Mock 端点，不联网）
 ├── test_hk_quote.py          # 港股行情解析测试（内置真实抓包样本，离线可跑）
 ├── pushplus_deepseek.py      # 微信推送主流程（DeepSeek/OpenAI/rule + 多通道）
 ├── stock_report.py           # 股票研报统一入口（港股/A股 + 九章投研 + Skills Hub）
@@ -104,7 +181,7 @@ python -m unittest discover -s . -p "test_*.py" -v # 离线单元测试
 ├── equity_research/          # 机构级投研 skill 资源（SKILL/references/industries/scripts）
 ├── skills/                   # Skills Hub（catalog + NOTICE + skill 安装）
 ├── .claude/skills/           # Claude Agent 可直接读取的 skill
-├── examples/                 # 主题预览 HTML + 生成脚本
+├── examples/                 # 主题预览 HTML + 推理接入示例
 └── README.md
 ```
 
@@ -113,7 +190,7 @@ python -m unittest discover -s . -p "test_*.py" -v # 离线单元测试
 一条命令跑完仓库全部离线单元测试（`unittest` 自动发现 `test_*.py`，无需 pytest）：
 
 ```bash
-python -m unittest discover -s . -p "test_*.py" -v   # 19 项：港股行情解析（断网可跑）
+python -m unittest discover -s . -p "test_*.py" -v   # 48 项：推理 API + 港股行情解析（断网可跑）
 python -m compileall -q .                            # 全仓语法门禁（含超大模块）
 ```
 
@@ -121,13 +198,14 @@ python -m compileall -q .                            # 全仓语法门禁（含�
 
 ```bash
 python test_hk_quote.py     # 三源行情解析（内置真实抓包样本，断网也能跑）
+python test_inference_api.py  # 推理 API + 网关 + 大屏接口（Mock 端点，断网可跑）
 ```
 
-此外 **11 个业务模块自带 `--selftest`** 离线自检（解析器 + 模板 + 栏目 + 推送降级），
+此外 **12 个业务模块自带 `--selftest`** 离线自检（推理 API + 解析器 + 模板 + 栏目 + 推送降级），
 返回失败项计数作为退出码，可直接当门禁用：
 
 ```bash
-for m in deepseek_search equity_research_column foreign_institution_weekly hk_brokers \
+for m in inference_api deepseek_search equity_research_column foreign_institution_weekly hk_brokers \
          newsnow_sources pushplus_deepseek skills_hub source_check_db stock_news_scan \
          stock_report us_quote; do python "$m.py" --selftest || echo "❌ $m"; done
 ```
@@ -135,7 +213,7 @@ for m in deepseek_search equity_research_column foreign_institution_weekly hk_br
 > `hk_quote.py --selftest` 例外：它是**联网数据源打分基准**（真抓取三源后输出成功率/耗时表），
 > 三源全挂时仍 exit 0，不适合当断言门禁；hk_quote 的离线覆盖由 `test_hk_quote.py` 承担。
 
-上述三步（`compileall` + `unittest discover` + 11 个模块 `--selftest`）已由
+上述三步（`compileall` + `unittest discover` + 12 个模块 `--selftest`）已由
 **`ci.yml`（CI - Offline Gate）在每次 push / PR 上自动执行**，详见下文工作流表格。
 自检全程屏蔽 AI Key，结果与仓库是否配置 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` 无关。
 
@@ -145,7 +223,7 @@ for m in deepseek_search equity_research_column foreign_institution_weekly hk_br
 
 | Actions 名称 | 文件 | 入口脚本 | 用途 |
 |---|---|---|---|
-| **CI - Offline Gate (离线自检门禁)** | `ci.yml` | `unittest` + 11 个模块 `--selftest` | **push / PR 自动触发**：语法编译 + 19 项单元测试 + 离线自检，零依赖零 Secret |
+| **CI - Offline Gate (离线自检门禁)** | `ci.yml` | `unittest` + 12 个模块 `--selftest` | **push / PR 自动触发**：语法编译 + 48 项单元测试 + 离线自检，零依赖零 Secret |
 | **Scheduled Market Brief (DOS Monitor)** | `market-brief.yml` | `pushplus_deepseek.py` | 每日澳门/香港 09:00 / 17:00 推送 24h 全市场快讯与板块情报（含香港券商、国外投行两栏目） |
 | **Manual Run - Stock Report (HK/A-share/US)** | `stock-report.yml` | `stock_report.py` | 手动输入代码生成单标的研报；默认仅预览 |
 | **Manual Run - Broker Columns** | `broker-columns.yml` | `pushplus_deepseek.py` | 手动单独运行香港券商（`hk_brokers`）或国外投行研报（`foreign_weekly`）栏目；默认仅预览 |
@@ -154,7 +232,7 @@ for m in deepseek_search equity_research_column foreign_institution_weekly hk_br
 即代码合并进 `main` 之前没有任何自动校验，`--selftest` 与 `test_*.py` 只能靠人手动跑。
 `ci.yml` 在每次 push 到 `main` 与每个 PR 上跑三步：① `python -m compileall -q .`（语法，含
 `server_dashboard.py` / `pushplus_deepseek.py` 等超大模块）；② `python -m unittest discover
--s . -p "test_*.py"`（19 项）；③ 11 个模块 `--selftest`（逐个跑完再汇总，一个坏掉时其余结果
+-s . -p "test_*.py"`（48 项）；③ 12 个模块 `--selftest`（逐个跑完再汇总，一个坏掉时其余结果
 仍有诊断价值）。约束与既有工作流一致：纯离线、无第三方依赖（**不加 `cache: 'pip'`**）、
 job 级屏蔽两个 AI Key、action pin 到 commit SHA、`permissions: contents: read`、
 `timeout-minutes: 15`、PR 上 `concurrency` 取消旧运行。实测全套约 1.5 分钟。
