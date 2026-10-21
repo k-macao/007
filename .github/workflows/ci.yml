@@ -17,8 +17,9 @@
 #
 # 覆盖范围：
 #   ① 全部 .py 字节编译（含 server_dashboard.py / pushplus_deepseek.py 等超大模块）
-#   ② unittest 发现并运行 test_*.py（58 项：推理 API / HF 双协议 + 港股行情离线解析）
-#   ③ 12 个模块的 --selftest（推理 API + 解析器 + 模板 + 栏目 + 推送降级）
+#   ② unittest 发现并运行 test_*.py（推理 API / HF 双协议 + 港股行情离线解析
+#      + hf_hub 对接层：目录 / 词典 / datasets-server / 情绪引擎）
+#   ③ 13 个模块的 --selftest（推理 API + 解析器 + 模板 + 栏目 + 推送降级 + HF Hub）
 #
 # 有意排除：`hk_quote.py --selftest` 是**联网数据源打分基准**（三源真抓取后
 # 输出成功率/耗时表），全部源失败时依然 exit 0，不能当断言门禁用；
@@ -74,7 +75,7 @@ jobs:
       - name: Unit tests (unittest discover test_*.py)
         run: python -m unittest discover -s . -p "test_*.py" -v
 
-      - name: Module selftests (12 个模块 --selftest，离线)
+      - name: Module selftests (13 个模块 --selftest，离线)
         shell: bash
         run: |
           MODULES="
@@ -82,6 +83,7 @@ jobs:
             deepseek_search
             equity_research_column
             foreign_institution_weekly
+            hf_hub
             hk_brokers
             newsnow_sources
             pushplus_deepseek
@@ -107,4 +109,4 @@ jobs:
             echo "::error::离线自检门禁未通过：至少一个模块 --selftest 返回非 0"
             exit 1
           fi
-          echo "✅ 全部 12 个模块自检通过"
+          echo "✅ 全部 13 个模块自检通过"

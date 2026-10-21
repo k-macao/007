@@ -43,6 +43,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
+# Hugging Face 情绪引擎（可选）：有 HF_TOKEN 时走 HF 金融模型，
+# 否则用 hf_hub 内置的中英双语金融词典；模块缺失时整条链路静默降级。
+try:
+    import hf_hub
+except Exception:  # noqa: BLE001
+    hf_hub = None
+
 UTC = timezone.utc
 DEFAULT_WINDOW_HOURS = 156          # 默认窗口：最近 156 小时
 SOCIAL_REALTIME = "实时"            # 热榜类条目的时效标记
@@ -793,6 +800,46 @@ def _related_sector_lines(pack: ScanPack) -> list[str]:
     return related
 
 
+def hf_sentiment_block(pack: ScanPack, *, engine: str = "auto",
+                       model: str = "") -> dict | None:
+    """用 Hugging Face 情绪引擎（hf_hub）给扫描结果再打一层分。
+
+    与内置 score_text（简单正负面词表）互为补充：hf_hub 的词典覆盖更全、
+    支持英文，且配置了 HF_TOKEN 时会自动切到 FinBERT / 中文 tone 模型。
+    返回 None 表示 hf_hub 不可用或没有可分析的条目。
+    """
+    if hf_hub is None:
+        return None
+    titles: list[str] = []
+    for items in pack.direct.values():
+        titles.extend(i.title for i in items if i.title)
+    for items in pack.sector_hits.values():
+        titles.extend(i.title for i in items if i.title)
+    if not titles:
+        return None
+    try:
+        result = hf_hub.market_sentiment(
+            titles, engine=engine,
+            model=model or hf_hub.DEFAULT_SENTIMENT_MODEL)
+    except Exception:  # noqa: BLE001 —— 情绪引擎失败不能拖垮扫描主流程
+        return None
+    result["source"] = f"扫描 {len(titles)} 条（直接 {sum(len(v) for v in pack.direct.values())}"
+    result["source"] += f" / 板块 {sum(len(v) for v in pack.sector_hits.values())}）"
+    return result
+
+
+def render_hf_sentiment_md(result: dict | None) -> str:
+    """把 hf_hub 的情绪结果渲染成 Markdown 附录（无表格式）。"""
+    if not result:
+        return ""
+    lines = ["", hf_hub.render_sentiment_md(result,
+                                            title="🤗 Hugging Face 情绪复核"),
+             f"- 样本来源：{result.get('source', '')}"]
+    if result.get("engine") == "hf" and result.get("model"):
+        lines.append(f"- 模型：{result['model']}（Hugging Face Inference Providers）")
+    return "\n".join(lines)
+
+
 def render_scan_md(pack: ScanPack) -> str:
     """多平台扫描的 Markdown 附录（直接相关 + 板块相关 + 有关板块 + 缺口），当前 18 平台含 DeepSeek 搜索。"""
     a = pack.agg
@@ -1108,6 +1155,21 @@ def selftest_scan() -> int:
     ctx = scan_context(pack)
     check("AI 上下文含代码+板块行", "09988" in ctx and "有关板块" in ctx)
 
+    # —— 🤗 Hugging Face 情绪复核（离线词典，不触网）
+    if hf_hub is None:
+        check("HF 情绪引擎可用（hf_hub 已加载）", False)
+    else:
+        hf_res = hf_sentiment_block(pack, engine="lexicon")
+        check("HF 情绪复核产出结果", bool(hf_res) and hf_res["count"] > 0)
+        check("HF 情绪复核三档计数自洽",
+              bool(hf_res) and sum(hf_res["aggregate"][k]
+                                   for k in ("positive", "neutral", "negative"))
+              == hf_res["count"])
+        hf_md = render_hf_sentiment_md(hf_res)
+        check("HF 情绪复核渲染章节", "Hugging Face 情绪复核" in hf_md)
+        check("空包返回 None 不报错",
+              hf_sentiment_block(ScanPack(hours=156), engine="lexicon") is None)
+
     print(f"\n{'✅ 十八平台扫描自检通过' if fails == 0 else f'❌ {fails} 项失败'}")
     return 1 if fails else 0
 
@@ -1125,6 +1187,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--sectors", default="",
                    help="追加板块关键词，逗号分隔（如：电商,云计算）")
     p.add_argument("--timeout", type=int, default=12)
+    p.add_argument("--hf-sentiment", action="store_true",
+                   help="追加 Hugging Face 情绪复核章节（HF_TOKEN 存在时自动用 HF 模型）")
+    p.add_argument("--hf-model", default="",
+                   help="指定 HF 分类模型（默认 ProsusAI/finbert）")
     p.add_argument("--selftest", action="store_true", help="离线自检后退出")
     p.add_argument("--json", action="store_true", help="以 JSON 输出聚合结果")
     return p.parse_args(argv)
@@ -1138,8 +1204,10 @@ def main(argv: list[str] | None = None) -> int:
     extra = [s.strip() for s in re.split(r"[,，]", args.sectors) if s.strip()]
     pack = scan_stock(code=args.code, name=args.name, hours=args.hours,
                       timeout=args.timeout, extra_sectors=extra)
+    hf_result = hf_sentiment_block(pack, model=args.hf_model) \
+        if args.hf_sentiment else None
     if args.json:
-        print(json.dumps({
+        payload = {
             "code": pack.code, "name": pack.name, "hours": pack.hours,
             "agg": pack.agg, "sectors": pack.sectors,
             "dyn_sectors": pack.dyn_sectors,
@@ -1147,9 +1215,22 @@ def main(argv: list[str] | None = None) -> int:
             "sector_hits": {k: [i.title for i in v]
                             for k, v in pack.sector_hits.items()},
             "errors": pack.errors,
-        }, ensure_ascii=False, indent=2))
+        }
+        if hf_result:
+            payload["hf_sentiment"] = {
+                "engine": hf_result.get("engine"),
+                "model": hf_result.get("model"),
+                "aggregate": hf_result.get("aggregate"),
+                "note": hf_result.get("note", ""),
+            }
+        elif args.hf_sentiment:
+            payload["hf_sentiment"] = {"error": "hf_hub 不可用或无条目"}
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print(render_scan_md(pack))
+        if args.hf_sentiment:
+            print(render_hf_sentiment_md(hf_result)
+                  or "\n（🤗 Hugging Face 情绪复核不可用：hf_hub 未加载或无条目）")
     return 0
 
 

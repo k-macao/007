@@ -1,0 +1,194 @@
+# ============================================================================
+# 手动 / 周更：🤗 Hugging Face 情绪引擎（hf_hub.py）
+#
+# 两种模式：
+#   benchmark —— 抓 HF 上带标注的金融情绪数据集当黄金标签，给情绪引擎打分
+#                （准确率 / macro-F1 / 分档 P-R-F1 / 分组准确率），用来盯住
+#                「词典或模型有没有退化」。
+#   digest    —— 抓一个 HF 新闻/快讯数据集，直接出情绪画像 Markdown
+#                （按 language / ticker 分组）。
+#
+# 与仓库其它 workflow 一致的约束：
+#   · 纯标准库、零第三方依赖（不给 setup-python 加 cache: 'pip'）；
+#   · 先跑离线自检再联网，模块坏了就红在这里，不浪费 HF 配额；
+#   · action 一律 pin 到 commit SHA；
+#   · 最小权限 contents: read、concurrency 防并发、timeout-minutes 收敛。
+#
+# Token 说明：仓库未配置 HF_TOKEN 时，情绪引擎自动降级为 hf_hub 内置的
+# 中英双语金融词典（纯离线，仍能跑出全流程）；配置了 Read 权限的 Token 后，
+# engine=auto 会自动切到 Hugging Face 上的 FinBERT / 中文 tone 模型。
+# ============================================================================
+name: Hugging Face Sentiment (HF 情绪引擎 / 基线评估)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '模式（benchmark=用 HF 标注数据集打分 / digest=抓新闻数据集出情绪画像）'
+        required: true
+        default: 'benchmark'
+        type: choice
+        options:
+          - benchmark
+          - digest
+      dataset:
+        description: 'HF 数据集 ID（默认多语言金融情绪，含中文 7,930 条）'
+        required: false
+        default: 'Kenpache/multilingual-financial-sentiment'
+        type: string
+      where:
+        description: '服务端过滤条件（可选，例如 language=zh；留空取前 N 行）'
+        required: false
+        default: ''
+        type: string
+      group_field:
+        description: '分组字段名（留空不分组，常用 language / ticker）'
+        required: false
+        default: 'language'
+        type: string
+      length:
+        description: '取样行数（1-100，datasets-server 单次上限）'
+        required: false
+        default: '100'
+        type: string
+      engine:
+        description: '情绪引擎（auto=有 Token 走 HF 模型 / lexicon=强制本地词典）'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - lexicon
+      text_field:
+        description: '文本字段名（留空自动探测）'
+        required: false
+        default: ''
+        type: string
+      label_field:
+        description: '标签字段名（仅 benchmark，留空自动探测）'
+        required: false
+        default: ''
+        type: string
+  schedule:
+    # 每周一 10:30（澳门时间）= UTC 02:30：跑一次离线词典基线，盯退化
+    - cron: '30 2 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hf-sentiment-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  hf-sentiment:
+    name: Run HF sentiment engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      PYTHONUNBUFFERED: '1'
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      OUT_DIR: output
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Resolve inputs (schedule 触发时给默认值)
+        id: cfg
+        shell: bash
+        env:
+          IN_MODE: ${{ inputs.mode }}
+          IN_DATASET: ${{ inputs.dataset }}
+          IN_WHERE: ${{ inputs.where }}
+          IN_GROUP: ${{ inputs.group_field }}
+          IN_LENGTH: ${{ inputs.length }}
+          IN_ENGINE: ${{ inputs.engine }}
+          IN_TEXT: ${{ inputs.text_field }}
+          IN_LABEL: ${{ inputs.label_field }}
+        run: |
+          echo "mode=${IN_MODE:-benchmark}" >> "$GITHUB_OUTPUT"
+          echo "dataset=${IN_DATASET:-Kenpache/multilingual-financial-sentiment}" >> "$GITHUB_OUTPUT"
+          echo "where=${IN_WHERE}" >> "$GITHUB_OUTPUT"
+          echo "group=${IN_GROUP:-language}" >> "$GITHUB_OUTPUT"
+          echo "length=${IN_LENGTH:-100}" >> "$GITHUB_OUTPUT"
+          echo "engine=${IN_ENGINE:-auto}" >> "$GITHUB_OUTPUT"
+          echo "text=${IN_TEXT}" >> "$GITHUB_OUTPUT"
+          echo "label=${IN_LABEL}" >> "$GITHUB_OUTPUT"
+
+      - name: Show run config (不打印任何 Secret)
+        run: |
+          echo "mode=${{ steps.cfg.outputs.mode }} dataset=${{ steps.cfg.outputs.dataset }}"
+          echo "where=${{ steps.cfg.outputs.where }} group=${{ steps.cfg.outputs.group }} length=${{ steps.cfg.outputs.length }}"
+          echo "engine=${{ steps.cfg.outputs.engine }} text=${{ steps.cfg.outputs.text }} label=${{ steps.cfg.outputs.label }}"
+          echo "HF_TOKEN set=${{ secrets.HF_TOKEN != '' }}"
+          python -V
+
+      - name: Offline selftest (离线自检 · 屏蔽 Token)
+        env:
+          HF_TOKEN: ''
+        run: python hf_hub.py --selftest
+
+      - name: Unit tests (离线)
+        env:
+          HF_TOKEN: ''
+        run: python -m unittest test_hf_hub -v
+
+      - name: Run benchmark (HF 数据集当黄金标签)
+        if: ${{ steps.cfg.outputs.mode == 'benchmark' }}
+        run: |
+          mkdir -p "$OUT_DIR"
+          set -o pipefail
+          python hf_hub.py --benchmark "${{ steps.cfg.outputs.dataset }}" \
+            --length "${{ steps.cfg.outputs.length }}" \
+            --engine "${{ steps.cfg.outputs.engine }}" \
+            ${WHERE:+--where "$WHERE"} \
+            ${GROUP:+--group-field "$GROUP"} \
+            ${TEXT:+--text-field "$TEXT"} \
+            ${LABEL:+--label-field "$LABEL"} \
+            | tee "$OUT_DIR/hf_benchmark.md"
+        env:
+          WHERE: ${{ steps.cfg.outputs.where }}
+          GROUP: ${{ steps.cfg.outputs.group }}
+          TEXT: ${{ steps.cfg.outputs.text }}
+          LABEL: ${{ steps.cfg.outputs.label }}
+
+      - name: Run digest (新闻数据集 → 情绪画像)
+        if: ${{ steps.cfg.outputs.mode == 'digest' }}
+        run: |
+          mkdir -p "$OUT_DIR"
+          set -o pipefail
+          python hf_hub.py --digest "${{ steps.cfg.outputs.dataset }}" \
+            --length "${{ steps.cfg.outputs.length }}" \
+            --engine "${{ steps.cfg.outputs.engine }}" \
+            ${WHERE:+--where "$WHERE"} \
+            ${GROUP:+--group-field "$GROUP"} \
+            ${TEXT:+--text-field "$TEXT"} \
+            | tee "$OUT_DIR/hf_digest.md"
+        env:
+          WHERE: ${{ steps.cfg.outputs.where }}
+          GROUP: ${{ steps.cfg.outputs.group }}
+          TEXT: ${{ steps.cfg.outputs.text }}
+
+      - name: Write job summary
+        if: always()
+        run: |
+          FILE="$OUT_DIR/hf_${{ steps.cfg.outputs.mode }}.md"
+          {
+            echo "## 🤗 Hugging Face 情绪引擎 · ${{ steps.cfg.outputs.mode }}"
+            echo ""
+            echo "- 数据集：\`${{ steps.cfg.outputs.dataset }}\`"
+            echo "- 引擎：\`${{ steps.cfg.outputs.engine }}\`（HF Token ${{ secrets.HF_TOKEN != '' && '已配置' || '未配置 → 本地词典' }}）"
+            echo ""
+            if [[ -f "$FILE" ]]; then
+              cat "$FILE"
+            else
+              echo "（本次没有产出文件，检查上面步骤的日志）"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

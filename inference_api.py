@@ -174,11 +174,15 @@ PRESETS: dict[str, Preset] = {
         "", "tgi", "HF_TOKEN", True,
         docs="https://huggingface.co/docs/inference-endpoints",
         key_envs=("HUGGINGFACE_API_KEY", "HUGGINGFACEHUB_API_TOKEN")),
+    # 注意：旧的 https://api-inference.huggingface.co/models/<model> 端点已下线，
+    # HF 把 serverless 推理统一迁移到 router.huggingface.co/hf-inference。
+    # 这里保持 base_url = ".../hf-inference"，由 endpoint() 拼成
+    # https://router.huggingface.co/hf-inference/models/<model>。
     "huggingface-serverless": Preset(
         "huggingface-serverless", "Hugging Face Serverless (Task API)",
-        "https://api-inference.huggingface.co",
+        "https://router.huggingface.co/hf-inference",
         "Qwen/Qwen2.5-7B-Instruct", "HF_TOKEN", True,
-        docs="https://huggingface.co/docs/api-inference",
+        docs="https://huggingface.co/docs/inference-providers",
         api_style="hf-inference",
         key_envs=("HUGGINGFACE_API_KEY", "HUGGINGFACEHUB_API_TOKEN")),
     "custom": Preset(
