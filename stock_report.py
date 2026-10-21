@@ -52,7 +52,8 @@ def resolve_ai_provider(ai_provider: str | None) -> str:
     """把 auto / 空串解析成实际提供方，其它值原样返回。"""
     p = (ai_provider or "").strip().lower()
     if p in ("", "auto"):
-        return "deepseek" if pp.env("DEEPSEEK_API_KEY") else "rule"
+        # 统一推理 API（INFERENCE_*）或旧 DEEPSEEK_API_KEY 任一可用即可
+        return pp.ai_auto_provider()
     return p
 
 
@@ -390,23 +391,16 @@ def run_report(raw_code: str, *, channel: str = "console",
         report_md = pp.gen_by_rule(topic, template, sent_pack=sent_pack)
         gen_note = "rule 规则模板（未调用大模型）"
     else:
-        key_env = "DEEPSEEK_API_KEY" if provider == "deepseek" else "OPENAI_API_KEY"
-        key = pp.env(key_env)
-        if not key:
+        url, model, key, ai_label, keyless = pp.ai_credentials(provider)
+        if not key and not keyless:
             report_md = pp.gen_by_rule(topic, template, sent_pack=None)
-            gen_note = f"缺少 {key_env}，已降级为 rule 规则模板"
+            gen_note = (f"缺少 AI Key（{provider}），已降级为 rule 规则模板"
+                        "；可配置 INFERENCE_API_KEY 接入统一推理 API")
         else:
-            if provider == "deepseek":
-                model = "deepseek-chat"
-                url = pp.DEEPSEEK_URL
-            else:
-                model = "gpt-4o-mini"
-                base = pp.env("OPENAI_BASE_URL") or pp.DEFAULT_OPENAI_BASE_URL
-                url = f"{base.rstrip('/')}/chat/completions"
             report_md = pp.chat_completion(
                 url, key, model, messages,
                 pp.TEMPLATE_MAX_TOKENS.get(template, 3000), push_timeout)
-            gen_note = f"{provider}（{model}）"
+            gen_note = ai_label
 
     # ---- ②b AI 分节压缩：拿到正文后，每部分（章节）分别调用 AI 简化 + 压缩 ----
     #     失败自动回退该节原文；无 Key / 总开关关闭时跳过（见 pp.ai_compress_md）。
@@ -481,7 +475,10 @@ def run_report(raw_code: str, *, channel: str = "console",
 # 自检期间需要屏蔽的 AI Key —— 自检是「离线自检」，不得因为 CI 环境里配了
 # DEEPSEEK_API_KEY / OPENAI_API_KEY 就真的联网调用大模型（既慢又会让
 # 「无 Key 时优雅跳过」这类断言失败）。
-_AI_KEY_ENVS = ("DEEPSEEK_API_KEY", "OPENAI_API_KEY")
+_AI_KEY_ENVS = ("DEEPSEEK_API_KEY", "OPENAI_API_KEY",
+                "INFERENCE_PROVIDER", "INFERENCE_BASE_URL",
+                "INFERENCE_API_KEY", "INFERENCE_MODEL",
+                "INFERENCE_TIMEOUT", "INFERENCE_MAX_RETRIES")
 
 
 class _NoAIKeys:
@@ -644,10 +641,11 @@ def _selftest_impl() -> int:
     check("argparse 接受 auto", args_auto.ai_provider == "auto")
     args_empty = parse_args(["600519"])
     check("默认即为 auto", args_empty.ai_provider == "auto")
-    check("auto 无 Key 时解析为 rule",
-          resolve_ai_provider("auto") == "rule"
-          and resolve_ai_provider("") == resolve_ai_provider("auto")
-          and resolve_ai_provider(None) == resolve_ai_provider("auto"))
+    with _NoAIKeys():
+        check("auto 无 Key 时解析为 rule",
+              resolve_ai_provider("auto") == "rule"
+              and resolve_ai_provider("") == resolve_ai_provider("auto")
+              and resolve_ai_provider(None) == resolve_ai_provider("auto"))
     os.environ["DEEPSEEK_API_KEY"] = "sk-selftest"
     try:
         check("auto 有 Key 时解析为 deepseek",

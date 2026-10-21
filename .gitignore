@@ -8,8 +8,6 @@ venv/
 *.db
 source_check.db
 .DS_Store
-.merged/
-merged_*
 /tmp/
 *.tmp
 output/

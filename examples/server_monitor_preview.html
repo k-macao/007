@@ -1158,11 +1158,11 @@
             <div class="hud-clocks">
                 <div class="clock-badge">
                     <span class="pulse-dot"></span>
-                    <span id="cst-clock">2026-08-15 01:41:16 CST (北京时间)</span>
+                    <span id="cst-clock">2026-10-22 03:30:29 CST (北京时间)</span>
                 </div>
                 <div class="clock-badge">
                     <span style="color:var(--text-dim);">UTC</span>
-                    <span id="utc-clock">2026-08-14 17:41:16 UTC</span>
+                    <span id="utc-clock">2026-10-21 19:30:29 UTC</span>
                 </div>
                 <div class="clock-badge" style="border-color:var(--red);color:var(--red);">
                     <span>● REC LIVE 60 FPS</span>
@@ -1192,7 +1192,7 @@
             <span class="dsb-icon" id="q-banner-icon">⚠️</span>
             <span class="dsb-strong" id="q-banner-strong">演示数据 (STATIC DEMO)</span>
             <span class="dsb-hint" id="q-banner-hint">实时行情暂不可用（网络不可达或数据源失败），当前展示内置示例价格，不随市场更新。点击 ⚡ 实时刷新重试。</span>
-            <span class="dsb-time" id="q-banner-time">快照生成: 2026-08-15 01:41:16 CST (北京时间)</span>
+            <span class="dsb-time" id="q-banner-time">快照生成: 2026-10-22 03:30:29 CST (北京时间)</span>
         </div>
 
         <!-- 标的切换栏 (横排) -->
@@ -1218,6 +1218,7 @@
             <select id="report-template" class="report-select" title="分析框架">
                 <option value="analysis">多空因子分析</option>
                 <option value="equity" selected>🏛 机构级个股投研</option>
+                <option value="foreign_weekly">🌍 国外机构一周研报</option>
                 <option value="morning_note">🌅 晨会纪要</option>
                 <option value="initiate">📑 首次覆盖</option>
                 <option value="earnings_preview">🔭 财报前瞻 Skill</option>
@@ -1232,7 +1233,8 @@
                 <option value="earnings">财报前瞻</option>
             </select>
             <select id="report-theme" class="report-select" title="推送风格（PushPlus HTML 主题，微信详情页可见）">
-                <option value="guizang" selected>✦ 风格 GUIZANG 电子杂志长页</option>
+                <option value="dos" selected>🖥 风格 DOS CRT 复古终端</option>
+                <option value="guizang">✦ 风格 GUIZANG 电子杂志长页</option>
                 <option value="monitor">🖥 风格 MONITOR 服务器大屏</option>
                 <option value="game">🎮 风格 GAME 8-bit 像素游戏</option>
                 <option value="noc">🛰 风格 NOC 零表格监视</option>
@@ -1311,6 +1313,65 @@
             </div>
         </div>
 
+        <!-- 🌍 国外专业投资机构一周研报栏目（新增） -->
+        <div class="section-header" id="foreign-section">
+            <span>🌍 国外机构一周研报 · 12家顶级投行/研究机构 (FOREIGN INSTITUTION WEEKLY)</span>
+            <span class="section-tag">Goldman / MorganStanley / JPMorgan / Citi / BofA / UBS / Barclays / Nomura / HSBC / Jefferies / Bernstein / Morningstar · 168H · 双链路检索 · 情绪打标 · 表格渲染</span>
+        </div>
+        <div class="equity-column-panel" id="foreign-column-panel" style="border-color:rgba(0,229,255,0.5);box-shadow:0 0 20px rgba(0,229,255,0.15);">
+            <div class="equity-hero">
+                <div class="equity-hero-main">
+                    <div class="equity-kicker" style="color:var(--cyan);">INDEPENDENT COLUMN · 12 INSTITUTIONS · 168H WINDOW · SENTIMENT TAGGING</div>
+                    <div class="equity-title">国外机构一周研报聚合</div>
+                    <div class="equity-sub">双链路检索 · 评级/目标价/概率 · 主线/板块/评级调整 · 附录明细可追溯 · 支持离线自检</div>
+                    <div class="equity-links">
+                        <a class="equity-link" href="#" onclick="return false;" style="cursor:default;">🌐 12 机构全覆盖</a>
+                        <a class="equity-link" href="#" onclick="return false;" style="cursor:default;">📊 情绪打标 + 概率映射</a>
+                        <a class="equity-link" href="#" onclick="return false;" style="cursor:default;">📋 表格渲染 + 附录</a>
+                    </div>
+                </div>
+                <div class="equity-hero-side">
+                    <div class="equity-stat"><span class="equity-stat-n" id="fw-inst">12</span><span class="equity-stat-l">机构</span></div>
+                    <div class="equity-stat"><span class="equity-stat-n" id="fw-hours">168</span><span class="equity-stat-l">小时窗口</span></div>
+                    <div class="equity-stat"><span class="equity-stat-n" id="fw-demo-n">5</span><span class="equity-stat-l">离线样本</span></div>
+                    <div class="equity-stat"><span class="equity-stat-n" id="fw-status">—</span><span class="equity-stat-l">栏目状态</span></div>
+                </div>
+            </div>
+            <div class="equity-features" id="foreign-features">
+                <div class="equity-chip">Goldman Sachs</div>
+                <div class="equity-chip">Morgan Stanley</div>
+                <div class="equity-chip">J.P. Morgan</div>
+                <div class="equity-chip">Citi Research</div>
+                <div class="equity-chip">BofA Securities</div>
+                <div class="equity-chip">UBS</div>
+                <div class="equity-chip">Barclays</div>
+                <div class="equity-chip">Nomura</div>
+                <div class="equity-chip">HSBC</div>
+                <div class="equity-chip">Jefferies</div>
+                <div class="equity-chip">Bernstein</div>
+                <div class="equity-chip">Morningstar</div>
+            </div>
+            <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;">
+                <span class="selector-label">🌍 外研周报:</span>
+                <input id="foreign-topic-input" class="report-input" placeholder="主题：AI / 科技股 / 半导体 / 电动车 / 港股 / 比特币…" autocomplete="off" value="" />
+                <select id="foreign-channel" class="report-select">
+                    <option value="console">📺 预览</option>
+                    <option value="pushplus">📲 PushPlus</option>
+                    <option value="wecom">💬 企微</option>
+                    <option value="serverchan">🔔 Server酱</option>
+                </select>
+                <button class="report-btn" id="foreign-btn" onclick="genForeignWeekly()" style="border-color:var(--cyan);color:var(--cyan);background:rgba(0,229,255,0.12);">🌍 生成外研周报</button>
+            </div>
+            <div id="foreign-panel" class="report-panel" style="display:none;margin-top:10px;border-color:var(--cyan);">
+                <div class="report-head">
+                    <span class="report-title" id="foreign-title" style="color:var(--cyan);">🌍 国外机构一周研报</span>
+                    <span class="report-status" id="foreign-status" style="color:var(--cyan);border-color:var(--cyan);">待命</span>
+                    <span class="report-meta" id="foreign-meta"></span>
+                </div>
+                <div class="report-body" id="foreign-body"></div>
+            </div>
+        </div>
+
         <!-- 🧩 Skills Hub：官方 + 社区最新技能 -->
         <div class="section-header" id="skills-section">
             <span>🧩 Skills Hub · 最新投研技能目录 (AGENT SKILLS)</span>
@@ -1365,6 +1426,37 @@
                 </div>
                 <div class="report-body" id="skill-body"></div>
             </div>
+        </div>
+
+        <!-- 🔌 推理 API：统一接入（OpenAI 兼容） -->
+        <div class="section-header" id="inference-section">
+            <span>🔌 推理 API · 统一接入 (INFERENCE GATEWAY)</span>
+            <span class="section-tag">Hugging Face / DeepSeek / 硅基流动 / 百炼 / Ollama / vLLM · Key 不出服务端</span>
+        </div>
+        <div class="equity-column-panel" id="inference-panel" style="border-color:rgba(92,255,92,0.35);box-shadow:0 0 18px rgba(92,255,92,0.10);">
+            <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
+                <span class="selector-label">🔌 状态:</span>
+                <span class="pill-badge" id="inf-status" style="color:var(--amber);border-color:var(--amber);">未检测</span>
+                <span class="selector-label">Provider:</span>
+                <span id="inf-provider" style="color:var(--cyan);font-size:13px;">—</span>
+                <span class="selector-label">Model:</span>
+                <span id="inf-model" style="color:var(--cyan);font-size:13px;">—</span>
+                <span class="selector-label">Key:</span>
+                <span id="inf-key" style="color:var(--text-muted);font-size:13px;">—</span>
+                <button class="report-btn" onclick="checkInference()" style="border-color:var(--green);color:var(--green);background:rgba(92,255,92,0.12);">🩺 测试连接</button>
+            </div>
+            <div style="margin-top:10px;">
+                <textarea id="inf-prompt" class="report-input" style="width:100%;min-height:64px;resize:vertical;box-sizing:border-box;" placeholder="问点什么：例如「把下面这段快讯做 3 条要点摘要」"></textarea>
+            </div>
+            <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
+                <span class="selector-label">快捷:</span>
+                <button class="report-btn" onclick="fillInference('把以下爬虫快讯做 3 条要点摘要，并标注影响板块：港股科技股午后走强；半导体设备订单回暖；新能源车 9 月交付超预期。')">🕷 爬虫摘要</button>
+                <button class="report-btn" onclick="fillInference('根据以下量化因子做多空解读并给出仓位建议：动量 0.62；波动率 +18%；PE 分位 35%。')">📈 量化解读</button>
+                <button class="report-btn" onclick="fillInference('用一句话给出今日港股开盘提示')">💬 一句话</button>
+                <button class="report-btn" id="inf-send" onclick="sendInference()" style="border-color:var(--amber);color:var(--amber);background:rgba(248,184,0,0.12);">🚀 发送</button>
+                <span class="report-meta" id="inf-meta"></span>
+            </div>
+            <pre id="inf-output" style="margin-top:10px;padding:12px;border:1px dashed rgba(92,255,92,0.3);background:rgba(0,0,0,0.35);color:var(--text);white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.7;max-height:280px;overflow:auto;">等待调用…</pre>
         </div>
 
         <!-- 🖥️ 横排服务器集群节点状态流 -->
@@ -1753,15 +1845,16 @@
     
         </div>
 
-        <!-- 🌐 横排十七平台实时情报雷达流 (财经7源 + 社媒10源) -->
+        <!-- 🌐 横排十八平台实时情报雷达流 (财经7源 + 社媒10源 + AI搜索) -->
         <div class="section-header">
-            <span>🌐 十七平台实时情报雷达流 (17-PLATFORM INTELLIGENCE RADAR)</span>
-            <span class="section-tag">财经7源 + 社媒10源 · 156H 窗口过滤 · 横排卡片流</span>
+            <span>🌐 十八平台实时情报雷达流 (18-PLATFORM INTELLIGENCE RADAR)</span>
+            <span class="section-tag">财经7源 + 社媒10源 + AI搜索 · 156H 窗口过滤 · 横排卡片流</span>
         </div>
         <div class="feeds-matrix-horiz">
             
     <div class="feed-card">
         <div class="feed-top">
+            
             <span class="feed-cat cat-fin">财经</span>
             <span class="feed-time">12m 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1772,6 +1865,7 @@
     
     <div class="feed-card">
         <div class="feed-top">
+            
             <span class="feed-cat cat-fin">财经</span>
             <span class="feed-time">28m 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1782,6 +1876,7 @@
     
     <div class="feed-card">
         <div class="feed-top">
+            
             <span class="feed-cat cat-fin">财经</span>
             <span class="feed-time">45m 前</span>
             <span class="feed-badge badge-neu">中性</span>
@@ -1792,6 +1887,7 @@
     
     <div class="feed-card">
         <div class="feed-top">
+            
             <span class="feed-cat cat-fin">财经</span>
             <span class="feed-time">1h 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1802,6 +1898,7 @@
     
     <div class="feed-card">
         <div class="feed-top">
+            
             <span class="feed-cat cat-fin">财经</span>
             <span class="feed-time">2h 前</span>
             <span class="feed-badge badge-neu">中性</span>
@@ -1812,6 +1909,7 @@
     
     <div class="feed-card">
         <div class="feed-top">
+            
             <span class="feed-cat cat-fin">财经</span>
             <span class="feed-time">3h 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1822,6 +1920,7 @@
     
     <div class="feed-card">
         <div class="feed-top">
+            
             <span class="feed-cat cat-fin">财经</span>
             <span class="feed-time">实时</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1832,6 +1931,7 @@
     
     <div class="feed-card">
         <div class="feed-top">
+            
             <span class="feed-cat cat-soc">社媒</span>
             <span class="feed-time">1h 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1842,6 +1942,7 @@
     
     <div class="feed-card">
         <div class="feed-top">
+            
             <span class="feed-cat cat-soc">社媒</span>
             <span class="feed-time">实时</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1852,6 +1953,7 @@
     
     <div class="feed-card">
         <div class="feed-top">
+            
             <span class="feed-cat cat-soc">社媒</span>
             <span class="feed-time">实时</span>
             <span class="feed-badge badge-neu">中性</span>
@@ -1862,6 +1964,7 @@
     
     <div class="feed-card">
         <div class="feed-top">
+            
             <span class="feed-cat cat-soc">社媒</span>
             <span class="feed-time">4h 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1872,6 +1975,7 @@
     
     <div class="feed-card">
         <div class="feed-top">
+            
             <span class="feed-cat cat-soc">社媒</span>
             <span class="feed-time">2h 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1882,6 +1986,7 @@
     
     <div class="feed-card">
         <div class="feed-top">
+            
             <span class="feed-cat cat-soc">社媒</span>
             <span class="feed-time">5h 前</span>
             <span class="feed-badge badge-neu">中性</span>
@@ -1892,6 +1997,7 @@
     
     <div class="feed-card">
         <div class="feed-top">
+            
             <span class="feed-cat cat-soc">社媒</span>
             <span class="feed-time">6h 前</span>
             <span class="feed-badge badge-pos">利好</span>
@@ -1905,7 +2011,7 @@
         <!-- 📟 终端实时日志流 -->
         <div class="terminal-panel" id="terminal-log">
             <div class="log-line"><span class="log-ts">[SYS.INIT]</span> <span class="log-tag">OK</span> <span class="log-msg">NOC Telemetry Cluster 04 initialized. High-frequency feeds listening.</span></div>
-            <div class="log-line"><span class="log-ts">[FEED.SYNC]</span> <span class="log-tag">OK</span> <span class="log-msg">14 platforms queried · 156h window · dedup + sentiment tagging complete.</span></div>
+            <div class="log-line"><span class="log-ts">[FEED.SYNC]</span> <span class="log-tag">OK</span> <span class="log-msg">18 platforms queried · 156h window · dedup + sentiment tagging complete.</span></div>
             <div class="log-line"><span class="log-ts">[SENTIMENT]</span> <span class="log-tag">CALC</span> <span class="log-msg">Momentum score computed at +8.4. Cross-source confidence verified at 99.4%.</span></div>
         </div>
 
@@ -2010,7 +2116,7 @@
             const btn = document.getElementById('report-btn');
             const channel = (document.getElementById('report-channel') || {}).value || 'console';
             const template = (document.getElementById('report-template') || {}).value || 'analysis';
-            const theme = (document.getElementById('report-theme') || {}).value || 'guizang';
+            const theme = (document.getElementById('report-theme') || {}).value || 'dos';
             if (!code) {
                 if (input) { input.style.borderColor = 'var(--red)'; input.focus(); }
                 appendLog('REPORT.INPUT', 'WARN', '请输入股票代码');
@@ -2117,7 +2223,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         code: code, mode: mode, channel: channel,
-                        dry_run: channel === 'console', theme: 'guizang'
+                        dry_run: channel === 'console', theme: 'dos'
                     })
                 });
                 const r = await resp.json();
@@ -2150,6 +2256,92 @@
             }
         }
 
+        // —— 🌍 国外机构一周研报栏目 ——
+        async function loadForeignTeaser() {
+            try {
+                const resp = await fetch('/api/foreign_weekly/teaser');
+                const t = await resp.json();
+                if (!t || !t.ok) {
+                    const st = document.getElementById('fw-status');
+                    if (st) st.textContent = '缺失';
+                    return;
+                }
+                const st = document.getElementById('fw-status');
+                if (st) st.textContent = '就绪';
+                const n = document.getElementById('fw-demo-n');
+                if (n && t.agg) n.textContent = t.agg.n || t.agg.total || '5';
+                appendLog('FOREIGN.WEEKLY', 'OK', 'institutions 12 · demo ' + (t.agg ? (t.agg.n || 5) : 5));
+            } catch (e) {
+                const st = document.getElementById('fw-status');
+                if (st) st.textContent = '离线';
+                appendLog('FOREIGN.WEEKLY', 'WARN', 'teaser failed: ' + e.message);
+            }
+        }
+
+        async function genForeignWeekly() {
+            const input = document.getElementById('foreign-topic-input');
+            const topic = (input ? input.value : '').trim();
+            const panel = document.getElementById('foreign-panel');
+            const body = document.getElementById('foreign-body');
+            const title = document.getElementById('foreign-title');
+            const meta = document.getElementById('foreign-meta');
+            const status = document.getElementById('foreign-status');
+            const btn = document.getElementById('foreign-btn');
+            const channel = (document.getElementById('foreign-channel') || {}).value || 'console';
+            if (panel) panel.style.display = 'block';
+            if (title) title.textContent = '🌍 国外机构一周研报 · ' + (topic || '全市场');
+            if (meta) meta.textContent = '168H · 12机构 · ' + "双链路检索" + ' · ' + channel;
+            if (status) { status.textContent = '生成中…'; status.style.color = 'var(--amber)'; status.style.borderColor = 'var(--amber)'; }
+            if (body) body.innerHTML = '<div style="color:var(--text-muted);">⏳ 正在聚合 12 家机构 168H 研报（' + "双链路检索" + '）…</div>';
+            if (btn) btn.disabled = true;
+            playBeep(760, 'sine', 0.12);
+            appendLog('FOREIGN.GEN', 'QUERY', (topic || '全市场') + ' · 168H · 12机构');
+            try {
+                const resp = await fetch('/api/foreign_weekly', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        topic: topic, hours: 168, channel: channel,
+                        dry_run: channel === 'console', use_deepseek: true
+                    })
+                });
+                const r = await resp.json();
+                if (!r || !r.ok) {
+                    if (status) { status.textContent = '失败'; status.style.color = 'var(--red)'; status.style.borderColor = 'var(--red)'; }
+                    if (body) body.innerHTML = '<div style="color:var(--red);">❌ ' + ((r && r.error) || '未知错误') + '</div>';
+                    appendLog('FOREIGN.GEN', 'ERR', (r && r.error) || '未知错误');
+                    return;
+                }
+                const agg = r.agg || {};
+                if (meta) meta.textContent = '样本 ' + (agg.n || r.count || 0) + ' 篇 · 机构 '
+                    + (agg.institutions_hit || 0) + '/' + (agg.institutions_total || 12)
+                    + ' · 情绪 利好' + (agg.sentiment ? (agg.sentiment['利好']||0) : 0)
+                    + '/中性' + (agg.sentiment ? (agg.sentiment['中性']||0) : 0)
+                    + '/利空' + (agg.sentiment ? (agg.sentiment['利空']||0) : 0);
+                if (status) {
+                    status.textContent = '完成';
+                    status.style.color = 'var(--green)';
+                    status.style.borderColor = 'var(--green)';
+                }
+                let html = '';
+                if (r.rule_md) {
+                    html += '<div style="background:rgba(0,229,255,0.06);border:1px solid rgba(0,229,255,0.18);border-radius:8px;padding:12px;margin-bottom:12px;"><pre style="white-space:pre-wrap;margin:0;font-size:13px;line-height:1.6;">' + r.rule_md + '</pre></div>';
+                }
+                if (r.appendix_md) {
+                    html += '<div style="background:rgba(255,255,255,0.04);border:1px dashed rgba(255,255,255,0.12);border-radius:8px;padding:10px;"><pre style="white-space:pre-wrap;margin:0;font-size:12px;color:var(--text-muted);">' + r.appendix_md + '</pre></div>';
+                }
+                if (!html) html = '<div style="color:var(--text-muted);">无数据</div>';
+                if (body) body.innerHTML = html;
+                appendLog('FOREIGN.GEN', 'OK', '样本 ' + (agg.n || 0) + ' · 机构 ' + (agg.institutions_hit || 0) + '/' + (agg.institutions_total || 12));
+            } catch (e) {
+                if (status) { status.textContent = '失败'; status.style.color = 'var(--red)'; status.style.borderColor = 'var(--red)'; }
+                if (body) body.innerHTML = '<div style="color:var(--red);">❌ ' + e.message + '</div>';
+                appendLog('FOREIGN.GEN', 'ERR', e.message);
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        }
+
         // 回车触发研报生成
         (function() {
             const input = document.getElementById('report-code-input');
@@ -2164,8 +2356,13 @@
             if (sk) sk.addEventListener('keydown', function(e) {
                 if (e.key === 'Enter') genSkill();
             });
+            const fw = document.getElementById('foreign-topic-input');
+            if (fw) fw.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') genForeignWeekly();
+            });
             setTimeout(loadEquityTeaser, 600);
             setTimeout(loadSkillsHub, 700);
+            setTimeout(loadForeignTeaser, 800);
         })();
 
         async function loadSkillsHub() {
@@ -2232,7 +2429,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         code: code, skill: skill, channel: channel,
-                        dry_run: channel === 'console', theme: 'guizang'
+                        dry_run: channel === 'console', theme: 'dos'
                     })
                 });
                 const r = await resp.json();
@@ -2261,6 +2458,91 @@
                 if (btn) btn.disabled = false;
             }
         }
+
+        // —— 推理 API：配置展示 / 连通性测试 / 直接对话 ——
+        async function refreshInferenceConfig() {
+            try {
+                const resp = await fetch('/api/inference/config');
+                const cfg = await resp.json();
+                const provider = document.getElementById('inf-provider');
+                const modelEl = document.getElementById('inf-model');
+                const keyEl = document.getElementById('inf-key');
+                const status = document.getElementById('inf-status');
+                if (provider) provider.textContent = cfg.provider || '—';
+                if (modelEl) modelEl.textContent = cfg.model || '—';
+                if (keyEl) keyEl.textContent = cfg.key_masked || (cfg.configured ? 'keyless' : '未配置');
+                if (status) {
+                    status.textContent = cfg.configured ? '已配置' : '未配置';
+                    status.style.color = cfg.configured ? 'var(--green)' : 'var(--amber)';
+                    status.style.borderColor = status.style.color;
+                }
+            } catch (e) { /* 静默：配置接口不可用不影响大屏 */ }
+        }
+
+        async function checkInference() {
+            const status = document.getElementById('inf-status');
+            const meta = document.getElementById('inf-meta');
+            if (status) { status.textContent = '检测中…'; status.style.color = 'var(--amber)'; status.style.borderColor = 'var(--amber)'; }
+            if (meta) meta.textContent = '正在请求 /api/inference/health …';
+            try {
+                const resp = await fetch('/api/inference/health');
+                const r = await resp.json();
+                if (status) {
+                    status.textContent = r.ok ? '连通 ✅' : '不可用 ❌';
+                    status.style.color = r.ok ? 'var(--green)' : 'var(--red)';
+                    status.style.borderColor = status.style.color;
+                }
+                if (meta) meta.textContent = (r.provider || '') + ' · ' + (r.model || '') + ' · ' + (r.latency_ms || 0) + 'ms' + (r.error ? ' · ' + r.error : '');
+                appendLog('INFERENCE.CHECK', r.ok ? 'OK' : 'ERR', (r.base_url || '') + ' ' + (r.error || r.mode || ''));
+            } catch (e) {
+                if (status) { status.textContent = '检测失败'; status.style.color = 'var(--red)'; status.style.borderColor = 'var(--red)'; }
+                if (meta) meta.textContent = e.message;
+            }
+        }
+
+        function fillInference(text) {
+            const input = document.getElementById('inf-prompt');
+            if (input) { input.value = text; input.focus(); }
+        }
+
+        async function sendInference() {
+            const input = document.getElementById('inf-prompt');
+            const output = document.getElementById('inf-output');
+            const meta = document.getElementById('inf-meta');
+            const button = document.getElementById('inf-send');
+            const prompt = ((input && input.value) || '').trim();
+            if (!prompt) {
+                if (output) output.textContent = '请先输入内容，或点上面的快捷按钮。';
+                return;
+            }
+            if (output) output.textContent = '⏳ 正在调用推理 API…';
+            if (meta) meta.textContent = 'POST /api/inference/chat';
+            if (button) button.disabled = true;
+            appendLog('INFERENCE.CHAT', 'QUERY', prompt.slice(0, 60));
+            try {
+                const resp = await fetch('/api/inference/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: prompt, max_tokens: 800 })
+                });
+                const r = await resp.json();
+                if (!r.ok) {
+                    if (output) output.textContent = '❌ ' + (r.error || '推理 API 调用失败');
+                    if (meta) meta.textContent = (r.kind || 'error') + (r.status ? ' · HTTP ' + r.status : '');
+                    appendLog('INFERENCE.CHAT', 'ERR', (r.error || '未知错误'));
+                    return;
+                }
+                if (output) output.textContent = r.content || '（模型返回空内容）';
+                if (meta) meta.textContent = (r.provider || '') + ' · ' + (r.model || '') + ' · ' + (r.latency_ms || 0) + 'ms' + (r.usage && r.usage.total_tokens ? ' · tokens ' + r.usage.total_tokens : '');
+                appendLog('INFERENCE.CHAT', 'OK', (r.model || '') + ' · ' + (r.latency_ms || 0) + 'ms');
+            } catch (e) {
+                if (output) output.textContent = '❌ ' + e.message;
+                appendLog('INFERENCE.CHAT', 'ERR', e.message);
+            } finally {
+                if (button) button.disabled = false;
+            }
+        }
+        setTimeout(refreshInferenceConfig, 400);
 
         // —— 实时行情轮询：拉取 /api/quote 更新价格卡片，不整页刷新 ——
         const STOCK_CODE = '09988';
@@ -2595,7 +2877,8 @@
             ["HEARTBEAT", "TICK", "Node HK-Master-01 reported 0 packet loss (latency 2.1ms)"],
             ["AI.INFERENCE", "OK", "DeepSeek sentiment embedding batch completed in 18ms"],
             ["MARKET.DATA", "FLOW", "Cross-checking price quotes across 3 quote feeds... OK"],
-            ["RADAR.SCAN", "PULSE", "14 platforms active. No anomalous divergence detected."]
+            ["RADAR.SCAN", "PULSE", "18 platforms active. No anomalous divergence detected."],
+            ["FOREIGN.WEEKLY", "PULSE", "12 foreign institutions · 168H window · dual-feed active."]
         ];
         let sampleIdx = 0;
         setInterval(() => {

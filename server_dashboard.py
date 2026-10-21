@@ -2247,6 +2247,37 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
             </div>
         </div>
 
+        <!-- 🔌 推理 API：统一接入（OpenAI 兼容） -->
+        <div class="section-header" id="inference-section">
+            <span>🔌 推理 API · 统一接入 (INFERENCE GATEWAY)</span>
+            <span class="section-tag">Hugging Face / DeepSeek / 硅基流动 / 百炼 / Ollama / vLLM · Key 不出服务端</span>
+        </div>
+        <div class="equity-column-panel" id="inference-panel" style="border-color:rgba(92,255,92,0.35);box-shadow:0 0 18px rgba(92,255,92,0.10);">
+            <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
+                <span class="selector-label">🔌 状态:</span>
+                <span class="pill-badge" id="inf-status" style="color:var(--amber);border-color:var(--amber);">未检测</span>
+                <span class="selector-label">Provider:</span>
+                <span id="inf-provider" style="color:var(--cyan);font-size:13px;">—</span>
+                <span class="selector-label">Model:</span>
+                <span id="inf-model" style="color:var(--cyan);font-size:13px;">—</span>
+                <span class="selector-label">Key:</span>
+                <span id="inf-key" style="color:var(--text-muted);font-size:13px;">—</span>
+                <button class="report-btn" onclick="checkInference()" style="border-color:var(--green);color:var(--green);background:rgba(92,255,92,0.12);">🩺 测试连接</button>
+            </div>
+            <div style="margin-top:10px;">
+                <textarea id="inf-prompt" class="report-input" style="width:100%;min-height:64px;resize:vertical;box-sizing:border-box;" placeholder="问点什么：例如「把下面这段快讯做 3 条要点摘要」"></textarea>
+            </div>
+            <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
+                <span class="selector-label">快捷:</span>
+                <button class="report-btn" onclick="fillInference('把以下爬虫快讯做 3 条要点摘要，并标注影响板块：港股科技股午后走强；半导体设备订单回暖；新能源车 9 月交付超预期。')">🕷 爬虫摘要</button>
+                <button class="report-btn" onclick="fillInference('根据以下量化因子做多空解读并给出仓位建议：动量 0.62；波动率 +18%；PE 分位 35%。')">📈 量化解读</button>
+                <button class="report-btn" onclick="fillInference('用一句话给出今日港股开盘提示')">💬 一句话</button>
+                <button class="report-btn" id="inf-send" onclick="sendInference()" style="border-color:var(--amber);color:var(--amber);background:rgba(248,184,0,0.12);">🚀 发送</button>
+                <span class="report-meta" id="inf-meta"></span>
+            </div>
+            <pre id="inf-output" style="margin-top:10px;padding:12px;border:1px dashed rgba(92,255,92,0.3);background:rgba(0,0,0,0.35);color:var(--text);white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.7;max-height:280px;overflow:auto;">等待调用…</pre>
+        </div>
+
         <!-- 🖥️ 横排服务器集群节点状态流 -->
         <div class="node-stream">
             {nodes_html}
@@ -2755,6 +2786,91 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
             }}
         }}
 
+        // —— 推理 API：配置展示 / 连通性测试 / 直接对话 ——
+        async function refreshInferenceConfig() {{
+            try {{
+                const resp = await fetch('/api/inference/config');
+                const cfg = await resp.json();
+                const provider = document.getElementById('inf-provider');
+                const modelEl = document.getElementById('inf-model');
+                const keyEl = document.getElementById('inf-key');
+                const status = document.getElementById('inf-status');
+                if (provider) provider.textContent = cfg.provider || '—';
+                if (modelEl) modelEl.textContent = cfg.model || '—';
+                if (keyEl) keyEl.textContent = cfg.key_masked || (cfg.configured ? 'keyless' : '未配置');
+                if (status) {{
+                    status.textContent = cfg.configured ? '已配置' : '未配置';
+                    status.style.color = cfg.configured ? 'var(--green)' : 'var(--amber)';
+                    status.style.borderColor = status.style.color;
+                }}
+            }} catch (e) {{ /* 静默：配置接口不可用不影响大屏 */ }}
+        }}
+
+        async function checkInference() {{
+            const status = document.getElementById('inf-status');
+            const meta = document.getElementById('inf-meta');
+            if (status) {{ status.textContent = '检测中…'; status.style.color = 'var(--amber)'; status.style.borderColor = 'var(--amber)'; }}
+            if (meta) meta.textContent = '正在请求 /api/inference/health …';
+            try {{
+                const resp = await fetch('/api/inference/health');
+                const r = await resp.json();
+                if (status) {{
+                    status.textContent = r.ok ? '连通 ✅' : '不可用 ❌';
+                    status.style.color = r.ok ? 'var(--green)' : 'var(--red)';
+                    status.style.borderColor = status.style.color;
+                }}
+                if (meta) meta.textContent = (r.provider || '') + ' · ' + (r.model || '') + ' · ' + (r.latency_ms || 0) + 'ms' + (r.error ? ' · ' + r.error : '');
+                appendLog('INFERENCE.CHECK', r.ok ? 'OK' : 'ERR', (r.base_url || '') + ' ' + (r.error || r.mode || ''));
+            }} catch (e) {{
+                if (status) {{ status.textContent = '检测失败'; status.style.color = 'var(--red)'; status.style.borderColor = 'var(--red)'; }}
+                if (meta) meta.textContent = e.message;
+            }}
+        }}
+
+        function fillInference(text) {{
+            const input = document.getElementById('inf-prompt');
+            if (input) {{ input.value = text; input.focus(); }}
+        }}
+
+        async function sendInference() {{
+            const input = document.getElementById('inf-prompt');
+            const output = document.getElementById('inf-output');
+            const meta = document.getElementById('inf-meta');
+            const button = document.getElementById('inf-send');
+            const prompt = ((input && input.value) || '').trim();
+            if (!prompt) {{
+                if (output) output.textContent = '请先输入内容，或点上面的快捷按钮。';
+                return;
+            }}
+            if (output) output.textContent = '⏳ 正在调用推理 API…';
+            if (meta) meta.textContent = 'POST /api/inference/chat';
+            if (button) button.disabled = true;
+            appendLog('INFERENCE.CHAT', 'QUERY', prompt.slice(0, 60));
+            try {{
+                const resp = await fetch('/api/inference/chat', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ prompt: prompt, max_tokens: 800 }})
+                }});
+                const r = await resp.json();
+                if (!r.ok) {{
+                    if (output) output.textContent = '❌ ' + (r.error || '推理 API 调用失败');
+                    if (meta) meta.textContent = (r.kind || 'error') + (r.status ? ' · HTTP ' + r.status : '');
+                    appendLog('INFERENCE.CHAT', 'ERR', (r.error || '未知错误'));
+                    return;
+                }}
+                if (output) output.textContent = r.content || '（模型返回空内容）';
+                if (meta) meta.textContent = (r.provider || '') + ' · ' + (r.model || '') + ' · ' + (r.latency_ms || 0) + 'ms' + (r.usage && r.usage.total_tokens ? ' · tokens ' + r.usage.total_tokens : '');
+                appendLog('INFERENCE.CHAT', 'OK', (r.model || '') + ' · ' + (r.latency_ms || 0) + 'ms');
+            }} catch (e) {{
+                if (output) output.textContent = '❌ ' + e.message;
+                appendLog('INFERENCE.CHAT', 'ERR', e.message);
+            }} finally {{
+                if (button) button.disabled = false;
+            }}
+        }}
+        setTimeout(refreshInferenceConfig, 400);
+
         // —— 实时行情轮询：拉取 /api/quote 更新价格卡片，不整页刷新 ——
         const STOCK_CODE = '{stock_code}';
         async function refreshQuote() {{
@@ -3259,12 +3375,90 @@ def _api_foreign_weekly(params: dict) -> dict:
         return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
 
 
+# ================================================================ 推理 API 接口
+#
+# 统一推理 API（inference_api.py）的三个 HTTP 入口：
+#   GET  /api/inference/config   → 脱敏配置（永不含明文 Key）
+#   GET  /api/inference/health   → 连通性自检（/models 或 1-token ping）
+#   POST /api/inference/chat     → 直接对话（爬虫摘要 / 量化解读 / 任意 prompt）
+# 配置只需环境变量 INFERENCE_BASE_URL / INFERENCE_API_KEY / INFERENCE_MODEL。
+
+def _api_inference_config() -> dict:
+    try:
+        import inference_api as ia
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "configured": False,
+                "error": f"inference_api 未加载：{e.__class__.__name__}: {e}"}
+    try:
+        payload = ia.describe_config()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "configured": False,
+                "error": f"{e.__class__.__name__}: {e}"}
+    payload["ok"] = True
+    return payload
+
+
+def _api_inference_health() -> dict:
+    try:
+        import inference_api as ia
+        client = ia.InferenceClient(ia.resolve_config())
+        report = client.health(deep=True)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "kind": "error",
+                "error": f"{e.__class__.__name__}: {e}"}
+    report["ok"] = bool(report.get("ok"))
+    return report
+
+
+def _api_inference_chat(params: dict) -> dict:
+    prompt = str(params.get("prompt") or params.get("message") or "").strip()
+    if not prompt:
+        return {"ok": False, "kind": "config", "error": "prompt 不能为空"}
+    if len(prompt) > 6000:
+        return {"ok": False, "kind": "config",
+                "error": f"prompt 过长（{len(prompt)} 字，上限 6000）"}
+    try:
+        max_tokens = max(16, min(2000, int(params.get("max_tokens") or 800)))
+    except (TypeError, ValueError):
+        max_tokens = 800
+    try:
+        temperature = max(0.0, min(2.0, float(params.get("temperature", 0.7))))
+    except (TypeError, ValueError):
+        temperature = 0.7
+
+    system = str(params.get("system") or "").strip()
+    messages = ([{"role": "system", "content": system}] if system else [])
+    messages.append({"role": "user", "content": prompt})
+
+    try:
+        import inference_api as ia
+        config = ia.resolve_config()
+        result = ia.InferenceClient(config).chat_result(
+            messages, max_tokens=max_tokens, temperature=temperature)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "kind": getattr(e, "kind", "error"),
+                "error": f"{e.__class__.__name__}: {e}"}
+    result.pop("raw", None)
+    result["ok"] = True
+    return result
+
+
 # ================================================================ HTTP 服务处理
 
 class MonitorHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         # 简化日志输出
         sys.stderr.write(f"[{datetime.now().strftime('%H:%M:%S')}] {args[0]} {args[1]}\n")
+
+    def do_OPTIONS(self):
+        """跨域预检：外部 App / 前端可直接调用 /api/inference/*。"""
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers",
+                         "Content-Type, Authorization")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -3333,6 +3527,22 @@ class MonitorHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
             self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            return
+
+        if path in ("/api/inference", "/api/inference/config"):
+            payload = _api_inference_config()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload, ensure_ascii=False,
+                                        default=str).encode("utf-8"))
+            return
+
+        if path in ("/api/inference/health", "/api/inference/check"):
+            payload = _api_inference_health()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload, ensure_ascii=False,
+                                        default=str).encode("utf-8"))
             return
 
         if path in ("/api/skills", "/api/skills/teaser"):
@@ -3412,7 +3622,9 @@ class MonitorHandler(http.server.BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             params = {}
 
-        if path == "/api/report":
+        if path in ("/api/inference", "/api/inference/chat"):
+            payload = _api_inference_chat(params)
+        elif path == "/api/report":
             payload = _api_report(params)
         elif path in ("/api/equity", "/api/equity/report"):
             payload = _api_equity_column(params)

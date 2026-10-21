@@ -494,22 +494,16 @@ def run_skill(
         report_md = gen_rule_skill(tmpl, topic, context=context, quote=quote, code=code)
         gen_note = f"rule 骨架 · skill `{meta['id']}`（未调用大模型）"
     else:
-        key_env = "DEEPSEEK_API_KEY" if provider == "deepseek" else "OPENAI_API_KEY"
-        key = pp.env(key_env)
-        if not key:
+        url, model, key, ai_label, keyless = pp.ai_credentials(provider)
+        if not key and not keyless:
             report_md = gen_rule_skill(tmpl, topic, context=context, quote=quote, code=code)
-            gen_note = f"缺少 {key_env}，已降级 rule · skill `{meta['id']}`"
+            gen_note = (f"缺少 AI Key（{provider}），已降级 rule · skill `{meta['id']}`"
+                        "；可配置 INFERENCE_API_KEY 接入统一推理 API")
             provider = "rule"
         else:
-            if provider == "deepseek":
-                model, url = "deepseek-chat", pp.DEEPSEEK_URL
-            else:
-                model = "gpt-4o-mini"
-                base = pp.env("OPENAI_BASE_URL") or pp.DEFAULT_OPENAI_BASE_URL
-                url = f"{base.rstrip('/')}/chat/completions"
             report_md = pp.chat_completion(
                 url, key, model, messages, meta["max_tokens"], timeout)
-            gen_note = f"{provider}（{model}）+ skill `{meta['id']}`"
+            gen_note = f"{ai_label} + skill `{meta['id']}`"
 
     extras = []
     if market_md:

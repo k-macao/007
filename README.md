@@ -1,6 +1,6 @@
-# 04 - 文件合并工具 · 章鱼 AI 全景分析
+# 273 - 章鱼 AI 全景分析
 
-一个强大的 Python 文件合并工具集，并集成港股/A 股实时行情、多通道推送与**机构级个股投研独立栏目**。
+港股 / A 股 / 美股实时行情、多通道推送、定时全市场简报，以及**机构级个股投研独立栏目**。
 
 ## 🏛 机构级个股投研独立栏目（新增）
 
@@ -61,95 +61,142 @@ python server_dashboard.py 8080   # GET /api/skills · POST /api/skills
 
 ---
 
-## 📦 功能特性（文件合并）
+---
 
-### 1. 文件合并 (`merge.py`)
+## 🔌 推理 API 统一接入（新增）
 
-- **文本文件合并** - 支持去重、添加标题、排序、自定义分隔符
-- **JSON 文件合并** - 支持深合并、列表拼接/去重策略
-- **CSV 文件合并** - 自动对齐不同表头、支持去重
-- **二进制文件合并** - 适用于图片、音频等
-- **自动检测合并** - 根据扩展名自动选择策略
-- **文件夹合并** - 合并多个文件夹，同名文件智能合并
+`inference_api.py` 把「任意 OpenAI 兼容推理端点」收敛成一层：仓库里已有的 AI 研报、
+九章投研、Skills、快讯压缩自动复用，不用改代码；同时给 App 提供 HTTP 接口与网关。
 
-### 2. 归并算法 (`merge_algorithms.py`)
+| 能力 | 说明 |
+|---|---|
+| 一个客户端 | `chat` / `chat_stream`（SSE 流式）/ `list_models` / `health` |
+| 十三个预设 | DeepSeek、OpenAI、硅基流动、Moonshot、智谱、百炼 DashScope、Ollama、vLLM、LM Studio、Hugging Face（Router / 专用 Endpoint / Serverless）、自定义 |
+| 容错 | 超时、指数退避重试（429/5xx）、`config/auth/rate_limit/http/network/timeout/format` 错误分类 |
+| 安全 | Key 只留服务端；配置摘要永远脱敏；网关支持 `INFERENCE_GATEWAY_TOKEN` |
+| 离线联调 | `--mock-server` 自带 OpenAI 兼容 Mock（流式 + 故障注入），无 Key 也能跑通全链路 |
 
-- **合并两个有序数组** - O(n+m)
-- **合并 K 个有序数组** - 最小堆实现 O(N log K)
-- **归并排序** - 稳定排序 O(n log n)
-- **合并区间** - 经典算法题
+### 三个环境变量接任意模型
+
+```bash
+export INFERENCE_BASE_URL=https://api.siliconflow.cn/v1
+export INFERENCE_API_KEY=sk-xxx
+export INFERENCE_MODEL=Qwen/Qwen2.5-7B-Instruct
+
+python inference_api.py --check          # 连通性自检
+python inference_api.py -p "用一句话解释港股通"
+python inference_api.py -p "写一句开盘提示" --stream
+```
+
+也可只用预设：`INFERENCE_PROVIDER=deepseek`（配合 `DEEPSEEK_API_KEY`）或
+`INFERENCE_PROVIDER=ollama`（本地、无需 Key）。完整列表：`python inference_api.py --list-providers`。
+
+### 🤗 Hugging Face 推理 API 对接
+
+三种官方接入方式都已适配。Token 读取顺序：`HF_TOKEN` → `HUGGINGFACE_API_KEY` →
+`HUGGINGFACEHUB_API_TOKEN` → `INFERENCE_API_KEY`（只需 Read 权限：
+[huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)）。
+
+| 模式 | Provider | 端点 | 协议 |
+|---|---|---|---|
+| 推理路由（推荐） | `huggingface` / `hf` | `https://router.huggingface.co/v1` | OpenAI 兼容，支持流式 |
+| 专用 Inference Endpoint | `huggingface-endpoint` | `HF_ENDPOINT_URL=https://xxx.endpoints.huggingface.cloud/v1` | OpenAI 兼容 |
+| Serverless Task API | `huggingface-serverless` | `https://api-inference.huggingface.co/models/<model>` | `inputs` → `generated_text`（已适配流式） |
+
+```bash
+# 1) 推理路由（任意聊天模型，推荐）
+export HF_TOKEN=hf_xxx
+export INFERENCE_PROVIDER=huggingface
+export INFERENCE_MODEL=Qwen/Qwen2.5-7B-Instruct
+python inference_api.py --check
+python inference_api.py -p "把这条快讯做 3 条摘要：港股科技股午后走强"
+
+# 2) 专用 Inference Endpoint（TGI / vLLM 镜像）
+export INFERENCE_PROVIDER=huggingface-endpoint
+export HF_ENDPOINT_URL=https://xxxx.endpoints.huggingface.cloud/v1
+export HF_MODEL=Qwen/Qwen2.5-7B-Instruct
+python inference_api.py --check
+
+# 3) 经典 Serverless task API（inputs / generated_text）
+export INFERENCE_PROVIDER=huggingface-serverless
+export INFERENCE_MODEL=bigscience/bloom-560m
+python inference_api.py -p "Hello"
+```
+
+只设置 `HF_TOKEN` 时 `auto` 也会自动选中 Hugging Face；研报、九章投研、Skills、
+大屏面板会自动切到 HF。App 端仍调同一套接口（`/api/inference/chat` 或网关），
+网关会把 HF task 协议自动转成 OpenAI 格式，手机端无需感知。
+
+```bash
+# 爬虫 / 量化脚本直接复用
+HF_TOKEN=hf_xxx INFERENCE_PROVIDER=huggingface \
+  python examples/inference_quickstart.py
+```
+
+### 已自动接入的位置（无需改代码）
+
+设置 `INFERENCE_*` 后，以下链路会自动走你的推理端点：
+
+- `stock_report.py`（AI 研报）· `equity_research_column.py`（九章投研）
+- `skills_hub.py`（rollingSirius + Anthropic 官方 9 技能）
+- `pushplus_deepseek.py` 的正文生成、差异化重试与 AI 分节压缩
+- 大屏「🔌 推理 API」面板（测试连接 / 直接对话）
+
+### App 直接调用（大屏 / 网关）
+
+```bash
+python server_dashboard.py 8080
+curl http://localhost:8080/api/inference/config            # 脱敏配置
+curl http://localhost:8080/api/inference/health            # 连通性
+curl -X POST http://localhost:8080/api/inference/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"把这段爬虫快讯做 3 条摘要：...","max_tokens":600}'
+```
+
+给手机 / 前端一个稳定入口（Key 不下发客户端，OpenAI 协议可直接用官方 SDK）：
+
+```bash
+INFERENCE_GATEWAY_TOKEN=app-token python inference_api.py --serve 8090
+# POST http://<server>:8090/v1/chat/completions
+```
+
+### 量化 / 爬虫项目对接
+
+`examples/inference_quickstart.py` 演示三个场景：爬虫快讯 → 摘要、量化因子 → 多空解读、SSE 流式：
+
+```bash
+python examples/inference_quickstart.py          # 无 Key 自动启动 Mock
+python examples/inference_quickstart.py --mock   # 强制离线
+```
+
+### 自检
+
+```bash
+python inference_api.py --selftest     # 46 项离线自检（Mock 端点 + HF 双协议 + 网关 + 重试/鉴权）
+python test_inference_api.py           # 39 项单元测试（含 HF 双协议、网关与大屏接口）
+```
+
+---
 
 ## 🚀 快速开始
 
-### 安装
-
 ```bash
-# 无需外部依赖，纯 Python 实现
-git clone https://github.com/k-macao/04.git
-cd 04
+# 纯标准库实现，无需 requirements / pip install
+git clone https://github.com/k-macao/273.git
+cd 273
+python -m compileall -q .                          # 语法自检
+python -m unittest discover -s . -p "test_*.py" -v # 离线单元测试
 ```
 
-### 基本使用
-
-#### Python API
-
-```python
-from merge import merge_text_files, merge_json_files, merge_csv_files, merge_files
-
-# 文本合并
-merge_text_files(["a.txt", "b.txt"], "merged.txt", deduplicate=True, add_filename_header=True)
-
-# JSON 深合并
-merge_json_files(["data1.json", "data2.json"], "merged.json", deep_merge=True)
-
-# CSV 合并，自动对齐表头
-merge_csv_files(["a.csv", "b.csv"], "merged.csv", deduplicate=True)
-
-# 自动检测
-merge_files(["a.txt", "b.txt"], "out.txt", strategy="auto")
-
-# 文件夹合并
-from merge import merge_folders
-merge_folders(["folder1", "folder2"], "merged_folder", conflict_strategy="merge")
-```
-
-#### 合并算法
-
-```python
-from merge_algorithms import merge_two_sorted, merge_k_sorted, merge_sort, merge_intervals
-
-merge_two_sorted([1,3,5], [2,4,6])  # [1,2,3,4,5,6]
-merge_k_sorted([[1,4,7],[2,5,8],[3,6,9]])  # [1,2,3,4,5,6,7,8,9]
-merge_sort([5,2,8,1,9])
-merge_intervals([[1,3],[2,6],[8,10]])
-```
-
-### CLI 命令行
-
-```bash
-# 文本合并
-python merge.py text file1.txt file2.txt -o merged.txt --deduplicate --header --sort
-
-# JSON 合并
-python merge.py json data1.json data2.json -o merged.json --deep-merge --list-strategy unique
-
-# CSV 合并
-python merge.py csv a.csv b.csv -o merged.csv --deduplicate
-
-# 自动检测
-python merge.py auto file1 file2 file3 -o output --strategy auto
-
-# 文件夹合并
-python merge.py folder dir1 dir2 -o merged_dir --conflict merge
-```
+各模块的详细用法见下文「📲 GitHub Actions 工作流」「📈 免费港股实时行情」
+「🧠 股票研报生成与推送」等章节。
 
 ## 📁 项目结构
 
 ```
 273/
-├── merge.py                  # 核心文件合并工具
-├── merge_algorithms.py       # 归并算法实现
-├── test_merge.py             # 合并测试用例（unittest）
+├── inference_api.py          # 统一推理 API 接入层（客户端 / 网关 / Mock / 自检）
+├── test_inference_api.py     # 推理 API 离线测试（Mock 端点，不联网）
 ├── test_hk_quote.py          # 港股行情解析测试（内置真实抓包样本，离线可跑）
 ├── pushplus_deepseek.py      # 微信推送主流程（DeepSeek/OpenAI/rule + 多通道）
 ├── stock_report.py           # 股票研报统一入口（港股/A股 + 九章投研 + Skills Hub）
@@ -164,7 +211,6 @@ python merge.py folder dir1 dir2 -o merged_dir --conflict merge
 ├── source_check_db.py        # 数据源检查验证数据库（SQLite 落库）
 ├── deepseek_search.py        # DeepSeek 联网搜索源（第 18 平台，扫描数按源动态计）
 ├── extract_feeds.py          # 全市场快讯提取
-├── demo.py                   # 合并工具演示
 ├── server_dashboard.py       # 大屏监控（行情 / 研报 / 投研栏目）
 ├── server_monitor.html       # 大屏前端（由 server_dashboard.py::export_static_files() 生成）
 ├── DATA_SOURCES.md           # 数据源配置说明（17 源 / Cookie / 校验库）
@@ -177,7 +223,7 @@ python merge.py folder dir1 dir2 -o merged_dir --conflict merge
 ├── equity_research/          # 机构级投研 skill 资源（SKILL/references/industries/scripts）
 ├── skills/                   # Skills Hub（catalog + NOTICE + skill 安装）
 ├── .claude/skills/           # Claude Agent 可直接读取的 skill
-├── examples/                 # 示例文件 + 主题预览 HTML
+├── examples/                 # 主题预览 HTML + 推理接入示例
 └── README.md
 ```
 
@@ -186,23 +232,22 @@ python merge.py folder dir1 dir2 -o merged_dir --conflict merge
 一条命令跑完仓库全部离线单元测试（`unittest` 自动发现 `test_*.py`，无需 pytest）：
 
 ```bash
-python -m unittest discover -s . -p "test_*.py" -v   # 31 项：合并工具 + 归并算法 + 港股行情解析
+python -m unittest discover -s . -p "test_*.py" -v   # 58 项：推理 API + 港股行情解析（断网可跑）
 python -m compileall -q .                            # 全仓语法门禁（含超大模块）
 ```
 
-单个文件也可以直接跑（`test_merge.py` / `test_hk_quote.py` 均为 `unittest` 脚本）：
+单个文件也可以直接跑（`test_hk_quote.py` 是 `unittest` 脚本）：
 
 ```bash
-python test_merge.py        # 文件合并 + 归并算法（未装 PyYAML 时自动跳过 YAML 用例）
 python test_hk_quote.py     # 三源行情解析（内置真实抓包样本，断网也能跑）
-python merge_algorithms.py  # 归并算法 demo
+python test_inference_api.py  # 推理 API + 网关 + 大屏接口（Mock 端点，断网可跑）
 ```
 
-此外 **12 个业务模块自带 `--selftest`** 离线自检（解析器 + 模板 + 栏目 + 推送降级），
+此外 **12 个业务模块自带 `--selftest`** 离线自检（推理 API + 解析器 + 模板 + 栏目 + 推送降级），
 返回失败项计数作为退出码，可直接当门禁用：
 
 ```bash
-for m in deepseek_search equity_research_column foreign_institution_weekly hk_brokers \
+for m in inference_api deepseek_search equity_research_column foreign_institution_weekly hk_brokers \
          newsnow_sources pushplus_deepseek skills_hub source_check_db stock_news_scan \
          stock_report us_quote; do python "$m.py" --selftest || echo "❌ $m"; done
 ```
@@ -210,32 +255,9 @@ for m in deepseek_search equity_research_column foreign_institution_weekly hk_br
 > `hk_quote.py --selftest` 例外：它是**联网数据源打分基准**（真抓取三源后输出成功率/耗时表），
 > 三源全挂时仍 exit 0，不适合当断言门禁；hk_quote 的离线覆盖由 `test_hk_quote.py` 承担。
 
-上述三步（`compileall` + `unittest discover` + 11 个模块 `--selftest`）已由
+上述三步（`compileall` + `unittest discover` + 12 个模块 `--selftest`）已由
 **`ci.yml`（CI - Offline Gate）在每次 push / PR 上自动执行**，详见下文工作流表格。
 自检全程屏蔽 AI Key，结果与仓库是否配置 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` 无关。
-
-## 🔧 高级特性
-
-### 深合并示例
-
-```python
-from merge import deep_merge_dicts
-
-base = {"a": 1, "b": {"x": 10}, "c": [1,2]}
-incoming = {"b": {"y": 20}, "c": [3,4], "d": 2}
-result = deep_merge_dicts(base, incoming)
-# {"a": 1, "b": {"x": 10, "y": 20}, "c": [1,2,3,4], "d": 2}
-```
-
-### CSV 表头对齐
-
-输入:
-- a.csv: id,name,age
-- b.csv: id,name,city
-
-输出自动合并为: id,name,age,city，并补全缺失字段
-
----
 
 ## 📲 GitHub Actions 工作流（定时全市场简报 + 手动个股研报）
 
@@ -243,7 +265,7 @@ result = deep_merge_dicts(base, incoming)
 
 | Actions 名称 | 文件 | 入口脚本 | 用途 |
 |---|---|---|---|
-| **CI - Offline Gate (离线自检门禁)** | `ci.yml` | `unittest` + 11 个模块 `--selftest` | **push / PR 自动触发**：语法编译 + 31 项单元测试 + 离线自检，零依赖零 Secret |
+| **CI - Offline Gate (离线自检门禁)** | `ci.yml` | `unittest` + 12 个模块 `--selftest` | **push / PR 自动触发**：语法编译 + 58 项单元测试 + 离线自检，零依赖零 Secret |
 | **Scheduled Market Brief (DOS Monitor)** | `market-brief.yml` | `pushplus_deepseek.py` | 每日澳门/香港 09:00 / 17:00 推送 24h 全市场快讯与板块情报（含香港券商、国外投行两栏目） |
 | **Manual Run - Stock Report (HK/A-share/US)** | `stock-report.yml` | `stock_report.py` | 手动输入代码生成单标的研报；默认仅预览 |
 | **Manual Run - Broker Columns** | `broker-columns.yml` | `pushplus_deepseek.py` | 手动单独运行香港券商（`hk_brokers`）或国外投行研报（`foreign_weekly`）栏目；默认仅预览 |
@@ -252,7 +274,7 @@ result = deep_merge_dicts(base, incoming)
 即代码合并进 `main` 之前没有任何自动校验，`--selftest` 与 `test_*.py` 只能靠人手动跑。
 `ci.yml` 在每次 push 到 `main` 与每个 PR 上跑三步：① `python -m compileall -q .`（语法，含
 `server_dashboard.py` / `pushplus_deepseek.py` 等超大模块）；② `python -m unittest discover
--s . -p "test_*.py"`（31 项）；③ 11 个模块 `--selftest`（逐个跑完再汇总，一个坏掉时其余结果
+-s . -p "test_*.py"`（58 项）；③ 12 个模块 `--selftest`（逐个跑完再汇总，一个坏掉时其余结果
 仍有诊断价值）。约束与既有工作流一致：纯离线、无第三方依赖（**不加 `cache: 'pip'`**）、
 job 级屏蔽两个 AI Key、action pin 到 commit SHA、`permissions: contents: read`、
 `timeout-minutes: 15`、PR 上 `concurrency` 取消旧运行。实测全套约 1.5 分钟。
@@ -569,16 +591,6 @@ curl -X POST http://localhost:8080/api/report \
 
 > 未内置演示档案的标的（A 股 / 任意港股代码）在大屏会生成**中性占位档案**：价格/估值来自实时行情，
 > 七大因子与快讯标注为演示占位，正式分析以「🧠 AI 研报」输出为准。
-
-## 📝 Git 合并演示
-
-本项目最初是一个文件合并工具，主分支为 `main`；新功能开发在 `arena/*` 分支完成，可随时通过 PR 合并：
-
-```bash
-git checkout main
-git pull
-# 通过 GitHub PR 将 arena 分支合并回 main（建议走 PR 评审流程）
-```
 
 ## License
 
