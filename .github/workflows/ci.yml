@@ -126,19 +126,24 @@ jobs:
   #   ② Hub 检索 / datasets-server 取数通不通（公开数据，不需要 Key）
   #   ③ 有 Key 时，FinBERT / 中文 tone 模型能不能真跑起来（engine=hf 强制走模型）
   #
+  # 2026-10-22 实测结论（本仓库当前 Token）：
+  #   whoami-v2 → 200（用户 kmacao，fine-grained token「273」，含
+  #   inference.serverless.write）说明 **Token 有效**；但任务推理返回
+  #   402 {"error":"You have no remaining credits..."，即 **账户无推理额度**。
+  #   二者要分开看：402 不是 Key 错，auto 引擎会据此降级到本地词典。
+  #
   # 写法上的两个刻意选择（避免 GitHub 校验失败）：
   #   · job 级 if 用 github.event.inputs，不用 inputs 上下文；
   #   · 不把 secrets 写进 if 条件，改为在 shell 里判断环境变量是否为空。
   # ==========================================================================
   hf-probe:
     name: HF Token probe (手动勾选 probe_hf 才跑)
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.probe_hf == 'true')
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.probe_hf == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     permissions:
       contents: read
-      pull-requests: write
 
     env:
       PYTHONUNBUFFERED: '1'
@@ -177,36 +182,21 @@ jobs:
             echo "⏭ 未配置 HF_TOKEN，跳过模型调用（上面 --check 已验证公开端点）"
           fi
 
-      - name: Post probe result as PR comment
+      - name: Write job summary
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          set +e
-          # ① whoami-v2：Token 本身有没有被接受（只打印用户名/类型，不打印其它字段）
-          : > whoami.txt
-          if [ -n "$HF_TOKEN" ]; then
-            curl -s -o w.json -w "http=%{http_code}\n" \
-              -H "Authorization: Bearer $HF_TOKEN" \
-              https://huggingface.co/api/whoami-v2 >> whoami.txt 2>&1
-            python -c "import json;d=json.load(open('w.json'));print('name:',d.get('name'));print('type:',d.get('type'));print('auth:',json.dumps(d.get('auth',{}),ensure_ascii=False))" >> whoami.txt 2>&1
-            echo "--- task API 原始响应（402 到底说什么）---" >> whoami.txt
-            curl -s -o t.json -w "http=%{http_code}\n" -X POST \
-              -H "Authorization: Bearer $HF_TOKEN" -H "Content-Type: application/json" \
-              -d '{"inputs":"Revenue surges 38%, beats estimates"}' \
-              https://router.huggingface.co/hf-inference/models/ProsusAI/finbert >> whoami.txt 2>&1
-            head -c 600 t.json >> whoami.txt
-            echo ""
-          else
-            echo "HF_TOKEN 为空" >> whoami.txt
-          fi
           {
-            echo "### 🤗 Token 鉴权判定（whoami + 402 原文）"
+            echo "## 🤗 Hugging Face 探活结果"
             echo ""
-            echo "\`\`\`"
-            cat whoami.txt
-            echo "\`\`\`"
-          } > report.md
-          gh pr comment "$PR_NUMBER" --body-file report.md
+            echo "- 分支：\`${{ github.ref_name }}\` · 提交 \`${GITHUB_SHA::7}\`"
+            if [ -n "$HF_TOKEN" ]; then
+              echo "- HF_TOKEN：✅ 已配置（长度 ${#HF_TOKEN}，脱敏 ${HF_TOKEN:0:4}…${HF_TOKEN: -4}）"
+            else
+              echo "- HF_TOKEN：⚠️ 未配置（公开数据集可用，模型调用降级为本地词典）"
+            fi
+            echo ""
+            echo "判定口径：\`--check\` 里前四项全绿 = Hub + datasets-server 通；"
+            echo "模型调用能出 JSON = Token 有效且**有推理额度**（402 = 额度用尽，不是 Key 错）。"
+          } >> "$GITHUB_STEP_SUMMARY"

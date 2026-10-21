@@ -150,6 +150,12 @@ python hf_hub.py --size Duxiaoman-DI/FinCorpus
 | `lexicon` | 显式指定 | 只跑内置中英双语金融词典，零网络、毫秒级，CI 可跑 |
 | `hf` | 显式指定 | 只跑 HF 模型；缺 Token 或失败直接抛 `HFError`（kind=auth/http/...），不隐藏问题 |
 
+> **402 不等于 Key 错。** Token 有效但账户没有推理额度时，router 返回
+> `402 {"error":"You have no remaining credits. Purchase pre-paid credits ..."}`
+> ——此时 `/api/whoami-v2` 仍然 200，`hf_hub` 会把它归为 `kind=payment`，
+> `auto` 引擎降级到本地词典，**公开数据集取数完全不受影响**。
+> 想确认到底是哪种，跑 `python hf_hub.py --check`：前四项绿、只有模型推理红，就是额度问题。
+
 本地词典（`hf_hub.py` 内）包含约 200 个中英文金融情感词，带三类处理：
 
 - **否定翻转**：「未出现增长」「failed to beat」会把极性翻过来（打 0.8 折）；

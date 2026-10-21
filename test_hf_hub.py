@@ -428,6 +428,9 @@ class TestErrors(EnvMixin):
         self.assertEqual(hh._error_from_http(403, "", "u").kind, "auth")
         self.assertEqual(hh._error_from_http(404, "", "u").kind, "not_found")
         self.assertEqual(hh._error_from_http(429, "", "u").kind, "rate_limit")
+        err = hh._error_from_http(402, '{"error":"You have no remaining credits"}', "u")
+        self.assertEqual(err.kind, "payment")
+        self.assertIn("额度", str(err))
         self.assertEqual(hh._error_from_http(500, "", "u").kind, "http")
         self.assertEqual(hh._error_from_http(418, "", "u").kind, "http")
 

@@ -103,7 +103,9 @@ DEFAULT_SENTIMENT_MODEL_ZH = "yiyanghkust/finbert-tone-chinese"
 class HFError(RuntimeError):
     """Hub / datasets-server / 推理调用失败；kind 供 App 端分支处理。"""
 
-    KINDS = ("config", "auth", "rate_limit", "http", "network",
+    # payment：HF 推理额度用尽（HTTP 402）。这不是 Token 无效——whoami 仍会 200，
+    # 只有 Inference Providers 的任务调用会被拒。auto 引擎会据此降级到本地词典。
+    KINDS = ("config", "auth", "payment", "rate_limit", "http", "network",
              "timeout", "format", "not_found")
 
     def __init__(self, kind: str, message: str, *, status: int = 0,
@@ -183,6 +185,12 @@ def _error_from_http(status: int, body: str, url: str) -> HFError:
     if status in (401, 403):
         kind = "auth"
         msg = "HF Token 无效或权限不足（需 Read / Inference Providers）"
+    elif status == 402:
+        # 2026-10-22 实测：Token 有效但账户无额度时，router 返回
+        # {"error":"You have no remaining credits. Purchase pre-paid credits ... "}
+        kind = "payment"
+        msg = ("HF 推理额度已用尽（账户无 credits）：需购买 pre-paid credits "
+               "或订阅 PRO；Token 本身仍然有效，公开数据集与本地词典不受影响")
     elif status == 404:
         kind = "not_found"
         msg = "资源不存在（仓库名拼写？数据集未公开 / 被 gated？）"
@@ -1849,6 +1857,9 @@ def selftest(verbose: bool = True) -> int:
               _error_from_http(404, "", "https://huggingface.co/x").kind == "not_found")
         check("429 映射为 rate_limit",
               _error_from_http(429, "", "https://huggingface.co/x").kind == "rate_limit")
+        check("402 映射为 payment（额度用尽，不是 Token 无效）",
+              _error_from_http(402, '{"error":"You have no remaining credits"}',
+                               "https://router.huggingface.co/x").kind == "payment")
         check("冷启动提示", "冷启动" in _error_from_http(
             503, '{"error":"Model is currently loading"}', "").args[0])
         check("Key 不发往非 HF 域名", _token_allowed("https://evil.example.com") is False)
