@@ -132,7 +132,7 @@ jobs:
   # ==========================================================================
   hf-probe:
     name: HF Token probe (手动勾选 probe_hf 才跑)
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.probe_hf == 'true')
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.probe_hf == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
