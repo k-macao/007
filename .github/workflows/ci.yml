@@ -17,7 +17,7 @@
 #
 # 覆盖范围：
 #   ① 全部 .py 字节编译（含 server_dashboard.py / pushplus_deepseek.py 等超大模块）
-#   ② unittest 发现并运行 test_*.py（test_merge.py 31 项 / test_hk_quote.py 离线解析）
+#   ② unittest 发现并运行 test_*.py（test_hk_quote.py 19 项，离线解析）
 #   ③ 11 个模块的 --selftest（解析器 + 模板 + 栏目 + 推送降级）
 #
 # 有意排除：`hk_quote.py --selftest` 是**联网数据源打分基准**（三源真抓取后
