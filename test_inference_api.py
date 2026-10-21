@@ -24,6 +24,10 @@ import inference_api as ia
 ENV_KEYS = list(ia.INFERENCE_ENV_NAMES) + [
     "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
     "INFERENCE_GATEWAY_TOKEN",
+    "HF_TOKEN", "HUGGINGFACE_API_KEY", "HUGGINGFACEHUB_API_TOKEN",
+    "HF_ENDPOINT_URL", "HF_MODEL",
+    "SILICONFLOW_API_KEY", "MOONSHOT_API_KEY", "ZHIPU_API_KEY",
+    "DASHSCOPE_API_KEY",
 ]
 
 
@@ -57,11 +61,17 @@ class EnvMixin:
 
 class ConfigTests(EnvMixin, unittest.TestCase):
     def test_presets_complete(self):
-        self.assertGreaterEqual(len(ia.PRESETS), 8)
+        self.assertGreaterEqual(len(ia.PRESETS), 10)
         for preset in ia.PRESETS.values():
             self.assertTrue(preset.label)
             self.assertTrue(preset.model)
             self.assertIn(preset.name, ia.PRESETS)
+        for name in ("huggingface", "huggingface-endpoint",
+                     "huggingface-serverless"):
+            self.assertIn(name, ia.PRESETS)
+        self.assertEqual(ia.PRESETS["huggingface"].api_style, "openai")
+        self.assertEqual(ia.PRESETS["huggingface-serverless"].api_style,
+                         "hf-inference")
 
     def test_unconfigured(self):
         cfg = ia.resolve_config()
@@ -269,6 +279,133 @@ class GatewayTests(EnvMixin, unittest.TestCase):
         status, _ = self.post({"messages": [{"role": "user", "content": "x"}]},
                               token="gw-secret")
         self.assertEqual(status, 200)
+
+
+# ================================================================ Hugging Face
+
+
+class HuggingFaceTests(EnvMixin, unittest.TestCase):
+    """Hugging Face 三种接入方式：Router / 专用 Endpoint / Serverless task API。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ia.MockServerHandle().start()
+        cls.root = cls.server.base_url.rsplit("/v1", 1)[0]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.stop()
+
+    def client(self, **env):
+        for name, value in env.items():
+            os.environ[name] = value
+        return ia.InferenceClient(
+            ia.replace(ia.resolve_config(), retry_backoff=0.01))
+
+    def test_hf_token_preset(self):
+        os.environ["HF_TOKEN"] = "hf_test_123456"
+        cfg = ia.resolve_config()
+        self.assertEqual(cfg.provider, "huggingface")
+        self.assertEqual(cfg.base_url, "https://router.huggingface.co/v1")
+        self.assertEqual(cfg.api_style, "openai")
+        self.assertTrue(cfg.configured)
+        self.assertIn("hugging face", cfg.label.lower())
+
+    def test_hf_key_aliases(self):
+        os.environ["HUGGINGFACEHUB_API_TOKEN"] = "hf_alias_123456"
+        cfg = ia.resolve_config()
+        self.assertEqual(cfg.provider, "huggingface")
+        self.assertEqual(cfg.api_key, "hf_alias_123456")
+
+    def test_hf_provider_aliases(self):
+        for alias, canonical in (("hf", "huggingface"),
+                                 ("hf-serverless", "huggingface-serverless"),
+                                 ("hf-endpoint", "huggingface-endpoint")):
+            cfg = ia.resolve_config(provider=alias, api_key="hf_x",
+                                    base_url="https://example.com/v1")
+            self.assertEqual(cfg.provider, canonical)
+
+    def test_hf_serverless_endpoint(self):
+        cfg = self.client(INFERENCE_PROVIDER="huggingface-serverless",
+                          HF_TOKEN="hf_test_123456").config
+        self.assertEqual(cfg.api_style, "hf-inference")
+        self.assertEqual(
+            cfg.endpoint(),
+            "https://api-inference.huggingface.co/models/Qwen/Qwen2.5-7B-Instruct")
+
+    def test_hf_dedicated_endpoint(self):
+        cfg = ia.resolve_config(
+            provider="huggingface-endpoint", api_key="hf_test_123456",
+            base_url="https://abc.endpoints.huggingface.cloud/v1",
+            model="Qwen/Qwen2.5-7B-Instruct")
+        self.assertEqual(cfg.endpoint(),
+                         "https://abc.endpoints.huggingface.cloud/v1/chat/completions")
+        self.assertEqual(cfg.api_style, "openai")
+
+    def test_hf_router_chat(self):
+        client = self.client(INFERENCE_PROVIDER="huggingface",
+                             HF_TOKEN="hf_test_123456",
+                             INFERENCE_BASE_URL=self.server.base_url,
+                             INFERENCE_MODEL="mock-inference-1")
+        result = client.chat_result("HF Router 摘要")
+        self.assertTrue(result["ok"])
+        self.assertIn("MOCK", result["content"])
+        self.assertTrue(result["usage"]["total_tokens"])
+
+    def test_hf_serverless_chat(self):
+        client = self.client(INFERENCE_PROVIDER="huggingface-serverless",
+                             HF_TOKEN="hf_test_123456",
+                             INFERENCE_BASE_URL=self.root,
+                             INFERENCE_MODEL="mock-inference-1")
+        result = client.chat_result("HF Serverless 量化解读")
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertIn("MOCK", result["content"])
+
+    def test_hf_serverless_stream(self):
+        client = self.client(INFERENCE_PROVIDER="huggingface-serverless",
+                             HF_TOKEN="hf_test_123456",
+                             INFERENCE_BASE_URL=self.root,
+                             INFERENCE_MODEL="mock-inference-1")
+        chunks = list(client.chat_stream("HF 流式"))
+        self.assertGreaterEqual(len(chunks), 2)
+        self.assertIn("MOCK", "".join(chunks))
+
+    def test_hf_serverless_health(self):
+        client = self.client(INFERENCE_PROVIDER="huggingface-serverless",
+                             HF_TOKEN="hf_test_123456",
+                             INFERENCE_BASE_URL=self.root,
+                             INFERENCE_MODEL="mock-inference-1")
+        report = client.health()
+        self.assertTrue(report["ok"], report.get("error"))
+        self.assertEqual(report["mode"], "chat-ping")
+
+    def test_hf_gateway_protocol_bridge(self):
+        """网关把 HF task 协议转成 OpenAI 协议，App 无需感知。"""
+        os.environ.update({
+            "INFERENCE_PROVIDER": "huggingface-serverless",
+            "HF_TOKEN": "hf_test_123456",
+            "INFERENCE_BASE_URL": self.root,
+            "INFERENCE_MODEL": "mock-inference-1",
+        })
+        gateway = ia.start_gateway("127.0.0.1", 0)
+        thread = threading.Thread(target=gateway.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{gateway.server_address[1]}/v1/chat/completions",
+                data=json.dumps({"messages": [{"role": "user",
+                                               "content": "网关 HF 摘要"}]}).encode(),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(request, timeout=10) as response:
+                data = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertIn("MOCK",
+                          data["choices"][0]["message"]["content"])
+            self.assertEqual(data["object"], "chat.completion")
+        finally:
+            gateway.shutdown()
+            gateway.server_close()
+            thread.join(timeout=2)
 
 
 # ================================================================ 既有 AI 链路接入

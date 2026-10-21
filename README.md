@@ -71,7 +71,7 @@ python server_dashboard.py 8080   # GET /api/skills · POST /api/skills
 | 能力 | 说明 |
 |---|---|
 | 一个客户端 | `chat` / `chat_stream`（SSE 流式）/ `list_models` / `health` |
-| 十个预设 | DeepSeek、OpenAI、硅基流动、Moonshot、智谱、百炼 DashScope、Ollama、vLLM、LM Studio、自定义 |
+| 十三个预设 | DeepSeek、OpenAI、硅基流动、Moonshot、智谱、百炼 DashScope、Ollama、vLLM、LM Studio、Hugging Face（Router / 专用 Endpoint / Serverless）、自定义 |
 | 容错 | 超时、指数退避重试（429/5xx）、`config/auth/rate_limit/http/network/timeout/format` 错误分类 |
 | 安全 | Key 只留服务端；配置摘要永远脱敏；网关支持 `INFERENCE_GATEWAY_TOKEN` |
 | 离线联调 | `--mock-server` 自带 OpenAI 兼容 Mock（流式 + 故障注入），无 Key 也能跑通全链路 |
@@ -90,6 +90,48 @@ python inference_api.py -p "写一句开盘提示" --stream
 
 也可只用预设：`INFERENCE_PROVIDER=deepseek`（配合 `DEEPSEEK_API_KEY`）或
 `INFERENCE_PROVIDER=ollama`（本地、无需 Key）。完整列表：`python inference_api.py --list-providers`。
+
+### 🤗 Hugging Face 推理 API 对接
+
+三种官方接入方式都已适配。Token 读取顺序：`HF_TOKEN` → `HUGGINGFACE_API_KEY` →
+`HUGGINGFACEHUB_API_TOKEN` → `INFERENCE_API_KEY`（只需 Read 权限：
+[huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)）。
+
+| 模式 | Provider | 端点 | 协议 |
+|---|---|---|---|
+| 推理路由（推荐） | `huggingface` / `hf` | `https://router.huggingface.co/v1` | OpenAI 兼容，支持流式 |
+| 专用 Inference Endpoint | `huggingface-endpoint` | `HF_ENDPOINT_URL=https://xxx.endpoints.huggingface.cloud/v1` | OpenAI 兼容 |
+| Serverless Task API | `huggingface-serverless` | `https://api-inference.huggingface.co/models/<model>` | `inputs` → `generated_text`（已适配流式） |
+
+```bash
+# 1) 推理路由（任意聊天模型，推荐）
+export HF_TOKEN=hf_xxx
+export INFERENCE_PROVIDER=huggingface
+export INFERENCE_MODEL=Qwen/Qwen2.5-7B-Instruct
+python inference_api.py --check
+python inference_api.py -p "把这条快讯做 3 条摘要：港股科技股午后走强"
+
+# 2) 专用 Inference Endpoint（TGI / vLLM 镜像）
+export INFERENCE_PROVIDER=huggingface-endpoint
+export HF_ENDPOINT_URL=https://xxxx.endpoints.huggingface.cloud/v1
+export HF_MODEL=Qwen/Qwen2.5-7B-Instruct
+python inference_api.py --check
+
+# 3) 经典 Serverless task API（inputs / generated_text）
+export INFERENCE_PROVIDER=huggingface-serverless
+export INFERENCE_MODEL=bigscience/bloom-560m
+python inference_api.py -p "Hello"
+```
+
+只设置 `HF_TOKEN` 时 `auto` 也会自动选中 Hugging Face；研报、九章投研、Skills、
+大屏面板会自动切到 HF。App 端仍调同一套接口（`/api/inference/chat` 或网关），
+网关会把 HF task 协议自动转成 OpenAI 格式，手机端无需感知。
+
+```bash
+# 爬虫 / 量化脚本直接复用
+HF_TOKEN=hf_xxx INFERENCE_PROVIDER=huggingface \
+  python examples/inference_quickstart.py
+```
 
 ### 已自动接入的位置（无需改代码）
 
@@ -130,8 +172,8 @@ python examples/inference_quickstart.py --mock   # 强制离线
 ### 自检
 
 ```bash
-python inference_api.py --selftest     # 39 项离线自检（Mock 端点 + 网关 + 重试/鉴权）
-python test_inference_api.py           # 29 项单元测试（含大屏 /api/inference/*）
+python inference_api.py --selftest     # 46 项离线自检（Mock 端点 + HF 双协议 + 网关 + 重试/鉴权）
+python test_inference_api.py           # 39 项单元测试（含 HF 双协议、网关与大屏接口）
 ```
 
 ---
@@ -190,7 +232,7 @@ python -m unittest discover -s . -p "test_*.py" -v # 离线单元测试
 一条命令跑完仓库全部离线单元测试（`unittest` 自动发现 `test_*.py`，无需 pytest）：
 
 ```bash
-python -m unittest discover -s . -p "test_*.py" -v   # 48 项：推理 API + 港股行情解析（断网可跑）
+python -m unittest discover -s . -p "test_*.py" -v   # 58 项：推理 API + 港股行情解析（断网可跑）
 python -m compileall -q .                            # 全仓语法门禁（含超大模块）
 ```
 
@@ -223,7 +265,7 @@ for m in inference_api deepseek_search equity_research_column foreign_institutio
 
 | Actions 名称 | 文件 | 入口脚本 | 用途 |
 |---|---|---|---|
-| **CI - Offline Gate (离线自检门禁)** | `ci.yml` | `unittest` + 12 个模块 `--selftest` | **push / PR 自动触发**：语法编译 + 48 项单元测试 + 离线自检，零依赖零 Secret |
+| **CI - Offline Gate (离线自检门禁)** | `ci.yml` | `unittest` + 12 个模块 `--selftest` | **push / PR 自动触发**：语法编译 + 58 项单元测试 + 离线自检，零依赖零 Secret |
 | **Scheduled Market Brief (DOS Monitor)** | `market-brief.yml` | `pushplus_deepseek.py` | 每日澳门/香港 09:00 / 17:00 推送 24h 全市场快讯与板块情报（含香港券商、国外投行两栏目） |
 | **Manual Run - Stock Report (HK/A-share/US)** | `stock-report.yml` | `stock_report.py` | 手动输入代码生成单标的研报；默认仅预览 |
 | **Manual Run - Broker Columns** | `broker-columns.yml` | `pushplus_deepseek.py` | 手动单独运行香港券商（`hk_brokers`）或国外投行研报（`foreign_weekly`）栏目；默认仅预览 |
@@ -232,7 +274,7 @@ for m in inference_api deepseek_search equity_research_column foreign_institutio
 即代码合并进 `main` 之前没有任何自动校验，`--selftest` 与 `test_*.py` 只能靠人手动跑。
 `ci.yml` 在每次 push 到 `main` 与每个 PR 上跑三步：① `python -m compileall -q .`（语法，含
 `server_dashboard.py` / `pushplus_deepseek.py` 等超大模块）；② `python -m unittest discover
--s . -p "test_*.py"`（48 项）；③ 12 个模块 `--selftest`（逐个跑完再汇总，一个坏掉时其余结果
+-s . -p "test_*.py"`（58 项）；③ 12 个模块 `--selftest`（逐个跑完再汇总，一个坏掉时其余结果
 仍有诊断价值）。约束与既有工作流一致：纯离线、无第三方依赖（**不加 `cache: 'pip'`**）、
 job 级屏蔽两个 AI Key、action pin 到 commit SHA、`permissions: contents: read`、
 `timeout-minutes: 15`、PR 上 `concurrency` 取消旧运行。实测全套约 1.5 分钟。

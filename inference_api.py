@@ -74,6 +74,18 @@ INFERENCE_ENV_NAMES = (
     "INFERENCE_MAX_RETRIES",
 )
 
+# 这些提供方的专用 Key 只要出现，就视为「显式接入统一推理 API」。
+# 老配置 DEEPSEEK_API_KEY / OPENAI_API_KEY 不在此列：保持原有兼容行为。
+EXTRA_PROVIDER_KEYS = (
+    "HF_TOKEN",
+    "HUGGINGFACE_API_KEY",
+    "HUGGINGFACEHUB_API_TOKEN",
+    "SILICONFLOW_API_KEY",
+    "MOONSHOT_API_KEY",
+    "ZHIPU_API_KEY",
+    "DASHSCOPE_API_KEY",
+)
+
 
 # ================================================================ 错误类型
 
@@ -108,6 +120,10 @@ class Preset:
     key_env: str = ""
     requires_key: bool = True
     docs: str = ""
+    # OpenAI 兼容（默认）或 Hugging Face 经典 task 协议（inputs / generated_text）
+    api_style: str = "openai"
+    # 同一提供方的备选 Key 环境变量（按顺序取第一个非空值）
+    key_envs: tuple[str, ...] = ()
 
 
 PRESETS: dict[str, Preset] = {
@@ -147,11 +163,51 @@ PRESETS: dict[str, Preset] = {
         "lmstudio", "本地 LM Studio", "http://localhost:1234/v1",
         "local-model", "", False,
         docs="https://lmstudio.ai"),
+    "huggingface": Preset(
+        "huggingface", "Hugging Face Inference Providers",
+        "https://router.huggingface.co/v1",
+        "Qwen/Qwen2.5-7B-Instruct", "HF_TOKEN", True,
+        docs="https://huggingface.co/docs/inference-providers",
+        key_envs=("HUGGINGFACE_API_KEY", "HUGGINGFACEHUB_API_TOKEN")),
+    "huggingface-endpoint": Preset(
+        "huggingface-endpoint", "Hugging Face 专用 Inference Endpoint",
+        "", "tgi", "HF_TOKEN", True,
+        docs="https://huggingface.co/docs/inference-endpoints",
+        key_envs=("HUGGINGFACE_API_KEY", "HUGGINGFACEHUB_API_TOKEN")),
+    "huggingface-serverless": Preset(
+        "huggingface-serverless", "Hugging Face Serverless (Task API)",
+        "https://api-inference.huggingface.co",
+        "Qwen/Qwen2.5-7B-Instruct", "HF_TOKEN", True,
+        docs="https://huggingface.co/docs/api-inference",
+        api_style="hf-inference",
+        key_envs=("HUGGINGFACE_API_KEY", "HUGGINGFACEHUB_API_TOKEN")),
     "custom": Preset(
         "custom", "自定义 OpenAI 兼容端点", "", "default",
         "INFERENCE_API_KEY", True,
         docs="任意兼容 /v1/chat/completions 的服务"),
 }
+
+# 常用别名（CLI / 环境变量均可使用）
+PROVIDER_ALIASES: dict[str, str] = {
+    "hf": "huggingface",
+    "hugging-face": "huggingface",
+    "huggingface_hub": "huggingface",
+    "hf-router": "huggingface",
+    "hf-inference": "huggingface-serverless",
+    "huggingface-inference": "huggingface-serverless",
+    "hf-serverless": "huggingface-serverless",
+    "hf-endpoint": "huggingface-endpoint",
+}
+
+
+def _preset_key(preset: Preset) -> str:
+    """按 key_env + key_envs 顺序取第一个已配置的 Key。"""
+    names = ([preset.key_env] if preset.key_env else []) + list(preset.key_envs)
+    for name in names:
+        value = _env(name)
+        if value:
+            return value
+    return ""
 
 
 def _env(name: str) -> str:
@@ -211,6 +267,7 @@ class InferenceConfig:
     temperature: float = 0.7
     requires_key: bool = True
     explicit: bool = False
+    api_style: str = "openai"
     extra_headers: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -227,6 +284,10 @@ class InferenceConfig:
         base = (self.base_url or "").rstrip("/")
         if not base:
             return ""
+        if self.api_style == "hf-inference":
+            if "/models/" in base:
+                return base
+            return f"{base}/models/{self.model.lstrip('/')}"
         if base.endswith("/chat/completions"):
             return base
         return f"{base}/{path.lstrip('/')}"
@@ -244,6 +305,7 @@ class InferenceConfig:
             "requires_key": self.requires_key,
             "configured": self.configured,
             "explicit": self.explicit,
+            "api_style": self.api_style,
             "timeout": self.timeout,
             "max_retries": self.max_retries,
         }
@@ -270,19 +332,21 @@ def resolve_config(provider: str | None = None, *, base_url: str | None = None,
 
     explicit = bool(provider or base_url or api_key or model
                     or env_provider or env_base or env_key or env_model
-                    or _env("INFERENCE_TIMEOUT") or _env("INFERENCE_MAX_RETRIES"))
+                    or _env("INFERENCE_TIMEOUT") or _env("INFERENCE_MAX_RETRIES")
+                    or any(_env(name) for name in EXTRA_PROVIDER_KEYS))
     if require_explicit and not explicit:
         return InferenceConfig(provider="unset", label="未配置", base_url="",
                                model="", requires_key=False, explicit=False)
 
     name = (provider or env_provider or "auto").strip().lower()
+    name = PROVIDER_ALIASES.get(name, name)
     if name in ("", "auto"):
         if env_base:
             name = "custom"
         else:
             name = "custom"
             for pname, preset in PRESETS.items():
-                if preset.requires_key and preset.key_env and _env(preset.key_env):
+                if preset.requires_key and _preset_key(preset):
                     name = pname
                     break
 
@@ -300,13 +364,16 @@ def resolve_config(provider: str | None = None, *, base_url: str | None = None,
     preset_base = preset.base_url
     if name == "openai" and _env("OPENAI_BASE_URL"):
         preset_base = _env("OPENAI_BASE_URL")
+    if name == "huggingface-endpoint" and _env("HF_ENDPOINT_URL"):
+        preset_base = _env("HF_ENDPOINT_URL")
 
+    alias_model = _env("HF_MODEL") if name.startswith("huggingface") else ""
     final_base = (base_url if base_url is not None else
                   (env_base or preset_base)).strip()
     final_model = (model if model is not None else
-                   (env_model or preset.model)).strip()
+                   (env_model or alias_model or preset.model)).strip()
     final_key = (api_key if api_key is not None else
-                 (env_key or (_env(preset.key_env) if preset.key_env else ""))).strip()
+                 (env_key or _preset_key(preset))).strip()
 
     requires_key = bool(preset.requires_key) and not is_local_url(final_base)
     if name == "custom" and is_local_url(final_base):
@@ -328,6 +395,7 @@ def resolve_config(provider: str | None = None, *, base_url: str | None = None,
         temperature=0.7 if temperature is None else float(temperature),
         requires_key=requires_key,
         explicit=explicit,
+        api_style=preset.api_style,
     )
 
 
@@ -354,6 +422,7 @@ def describe_config(provider: str | None = None) -> dict:
     payload["presets"] = [
         {"name": p.name, "label": p.label, "base_url": p.base_url,
          "model": p.model, "key_env": p.key_env,
+         "key_envs": list(p.key_envs), "api_style": p.api_style,
          "requires_key": p.requires_key, "docs": p.docs}
         for p in PRESETS.values()
     ]
@@ -440,6 +509,50 @@ def _content_text(content: Any) -> str:
                 parts.append(part)
         return "".join(parts)
     return "" if content is None else str(content)
+
+
+def _messages_to_prompt(messages: Sequence[dict]) -> str:
+    """把 OpenAI 消息格式压平成 Hugging Face task API 需要的单段 prompt。"""
+    lines: list[str] = []
+    for item in messages:
+        role = item.get("role") or "user"
+        text = _content_text(item.get("content")).strip()
+        if not text:
+            continue
+        prefix = {"system": "System", "assistant": "Assistant",
+                  "tool": "Tool", "user": "User"}.get(role, role.title())
+        lines.append(f"{prefix}: {text}")
+    lines.append("Assistant:")
+    return "\n\n".join(lines)
+
+
+def _hf_extract_text(data: Any) -> str:
+    """解析 Hugging Face 经典推理 API 的返回（generated_text / choices）。"""
+    if isinstance(data, str):
+        return data
+    if isinstance(data, list):
+        for item in data:
+            text = _hf_extract_text(item)
+            if text:
+                return text
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    if isinstance(data.get("generated_text"), str):
+        return data["generated_text"]
+    if isinstance(data.get("summary_text"), str):
+        return data["summary_text"]
+    if isinstance(data.get("text"), str):
+        return data["text"]
+    outputs = data.get("outputs")
+    if isinstance(outputs, list):
+        return _hf_extract_text(outputs)
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        message = first.get("message") or {}
+        return _content_text(message.get("content"))
+    return ""
 
 
 class InferenceClient:
@@ -554,6 +667,10 @@ class InferenceClient:
                     timeout: float | None = None,
                     extra: dict | None = None) -> dict:
         """一次对话，返回结构化结果（content / usage / model / latency）。"""
+        if self.config.api_style == "hf-inference":
+            return self._hf_chat_result(
+                messages, model=model, temperature=temperature,
+                max_tokens=max_tokens, timeout=timeout)
         payload: dict[str, Any] = {
             "model": model or self.config.model,
             "messages": normalize_messages(messages),
@@ -614,6 +731,11 @@ class InferenceClient:
                     timeout: float | None = None,
                     extra: dict | None = None) -> Iterator[str]:
         """SSE 流式对话，逐段 yield 文本增量（App 可边收边渲染）。"""
+        if self.config.api_style == "hf-inference":
+            yield from self._hf_chat_stream(
+                messages, model=model, temperature=temperature,
+                max_tokens=max_tokens, timeout=timeout)
+            return
         self._ensure()
         url = self.config.endpoint("chat/completions")
         payload: dict[str, Any] = {
@@ -670,8 +792,142 @@ class InferenceClient:
                     if text:
                         yield text
 
+    # —— Hugging Face 经典 task 协议（inputs → generated_text）——
+
+    def _hf_payload(self, messages: str | Sequence[dict], *,
+                    max_tokens: int | None = None,
+                    temperature: float | None = None,
+                    stream: bool = False) -> dict:
+        prompt = _messages_to_prompt(normalize_messages(messages))
+        parameters: dict[str, Any] = {"return_full_text": False}
+        if max_tokens:
+            parameters["max_new_tokens"] = int(max_tokens)
+        if temperature is not None:
+            parameters["temperature"] = float(temperature)
+        payload: dict[str, Any] = {"inputs": prompt, "parameters": parameters}
+        if stream:
+            payload["stream"] = True
+        return payload
+
+    def _hf_chat_result(self, messages: str | Sequence[dict], *,
+                        model: str | None = None,
+                        temperature: float | None = None,
+                        max_tokens: int | None = None,
+                        timeout: float | None = None) -> dict:
+        self._ensure()
+        payload = self._hf_payload(
+            messages, max_tokens=max_tokens, temperature=temperature)
+        url = self.config.endpoint()
+        started = time.time()
+        status, body = self._post("chat/completions", payload, timeout)
+        latency_ms = int((time.time() - started) * 1000)
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise InferenceError(
+                "format", f"Hugging Face 返回非 JSON（HTTP {status}）：{body[:200]}",
+                status=status, body=body[:1000], url=url) from exc
+        if isinstance(data, dict) and data.get("error"):
+            err = data["error"]
+            message = err.get("message") if isinstance(err, dict) else str(err)
+            raise InferenceError(
+                "http", f"Hugging Face 返回错误：{message}", status=status,
+                body=body[:1000], url=url)
+        content = _hf_extract_text(data).strip()
+        if not content:
+            raise InferenceError(
+                "format", f"Hugging Face 响应缺少 generated_text：{body[:200]}",
+                status=status, body=body[:1000], url=url)
+        prompt_tokens = max(1, len(payload["inputs"]) // 4)
+        completion_tokens = max(1, len(content) // 4)
+        return {
+            "ok": True,
+            "content": content,
+            "model": model or self.config.model,
+            "provider": self.config.provider,
+            "usage": {"prompt_tokens": prompt_tokens,
+                      "completion_tokens": completion_tokens,
+                      "total_tokens": prompt_tokens + completion_tokens},
+            "finish_reason": "stop",
+            "latency_ms": latency_ms,
+            "raw": data,
+        }
+
+    def _hf_chat_stream(self, messages: str | Sequence[dict], *,
+                        model: str | None = None,
+                        temperature: float | None = None,
+                        max_tokens: int | None = None,
+                        timeout: float | None = None) -> Iterator[str]:
+        self._ensure()
+        url = self.config.endpoint()
+        payload = self._hf_payload(
+            messages, max_tokens=max_tokens, temperature=temperature, stream=True)
+        request = urllib.request.Request(
+            url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=self._headers(accept="text/event-stream"), method="POST")
+        try:
+            response = urllib.request.urlopen(
+                request, timeout=timeout or self.config.timeout)
+        except urllib.error.HTTPError as exc:
+            text = exc.read().decode("utf-8", "replace")
+            raise _error_from_http(exc.code, text, url) from exc
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            raise _network_error(exc, url) from exc
+
+        accumulated = ""
+        with response:
+            for raw_line in response:
+                line = raw_line.decode("utf-8", "replace").strip()
+                if not line or line.startswith(":"):
+                    continue
+                if line.startswith("data:"):
+                    data_text = line[5:].strip()
+                elif line.startswith("{"):
+                    data_text = line
+                else:
+                    continue
+                if data_text == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_text)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(chunk, dict):
+                    continue
+                if chunk.get("error"):
+                    err = chunk["error"]
+                    message = err.get("message") if isinstance(err, dict) else str(err)
+                    raise InferenceError(
+                        "http", f"Hugging Face 流式返回错误：{message}",
+                        status=0, body=data_text[:500], url=url)
+                token = chunk.get("token")
+                if isinstance(token, dict) and token.get("text"):
+                    text = _content_text(token.get("text"))
+                    accumulated += text
+                    yield text
+                    continue
+                full = chunk.get("generated_text")
+                if isinstance(full, str):
+                    delta = (full[len(accumulated):]
+                             if full.startswith(accumulated) else full)
+                    accumulated = full
+                    if delta:
+                        yield delta
+                    continue
+                choices = chunk.get("choices")
+                if isinstance(choices, list) and choices:
+                    delta_obj = (choices[0] or {}).get("delta") or {}
+                    text = _content_text(delta_obj.get("content"))
+                    if text:
+                        accumulated += text
+                        yield text
+
     def list_models(self, timeout: float | None = None) -> list[str]:
         """GET /models；不支持该端点的服务会抛 404，交给 health() 降级。"""
+        if self.config.api_style != "openai":
+            raise InferenceError(
+                "http", "Hugging Face task 协议不支持 /models，请用 health() 或直接对话",
+                status=405, url=self.config.endpoint())
         data = self._get_json("models", timeout=timeout)
         items = data.get("data") or data.get("models") or []
         models: list[str] = []
@@ -703,6 +959,18 @@ class InferenceClient:
             return info
 
         probe_timeout = min(timeout or self.config.timeout, 15.0)
+        if self.config.api_style != "openai":
+            try:
+                result = self.chat_result(
+                    "ping", max_tokens=8, temperature=0, timeout=probe_timeout)
+                info.update({"ok": True, "mode": "chat-ping",
+                             "echo": (result.get("content") or "")[:40],
+                             "latency_ms": int((time.time() - started) * 1000)})
+            except InferenceError as exc:
+                info.update({"kind": exc.kind, "status": exc.status,
+                             "error": str(exc),
+                             "latency_ms": int((time.time() - started) * 1000)})
+            return info
         try:
             models = self.list_models(timeout=probe_timeout)
             info.update({"ok": True, "mode": "models", "models": models[:30],
@@ -766,9 +1034,10 @@ def render_presets_table() -> str:
     lines = ["可用推理提供方（INFERENCE_PROVIDER）：", ""]
     for preset in PRESETS.values():
         key = f"key_env={preset.key_env}" if preset.key_env else "无需 Key"
-        lines.append(f"  {preset.name:<12} {preset.label:<24} "
+        style = "" if preset.api_style == "openai" else f" style={preset.api_style}"
+        lines.append(f"  {preset.name:<22} {preset.label:<34} "
                      f"{preset.base_url or '（需自填 BASE_URL）':<48} "
-                     f"model={preset.model:<24} {key}")
+                     f"model={preset.model:<26} {key}{style}")
     lines.append("")
     lines.append("任意 OpenAI 兼容端点都可用 INFERENCE_BASE_URL 直接接入。")
     return "\n".join(lines)
@@ -870,7 +1139,8 @@ class _MockHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self._path()
-        if path not in ("/v1/chat/completions", "/chat/completions"):
+        hf_style = path.startswith("/models/")
+        if not hf_style and path not in ("/v1/chat/completions", "/chat/completions"):
             self._json(404, {"error": {"message": f"mock 未实现 POST {path}"}})
             return
 
@@ -898,16 +1168,30 @@ class _MockHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": {"message": "mock: payload must be object"}})
             return
 
-        model = str(payload.get("model") or "mock-inference-1")
-        messages = payload.get("messages") or []
-        user_text = ""
-        for item in messages:
-            if isinstance(item, dict) and item.get("role") == "user":
-                user_text = _content_text(item.get("content"))
+        if hf_style:
+            model = path.split("/models/", 1)[1] or "mock-inference-1"
+            user_text = str(payload.get("inputs") or "")
+        else:
+            model = str(payload.get("model") or "mock-inference-1")
+            messages = payload.get("messages") or []
+            user_text = ""
+            for item in messages:
+                if isinstance(item, dict) and item.get("role") == "user":
+                    user_text = _content_text(item.get("content"))
         reply = mock_reply(user_text, model)
 
-        if payload.get("stream"):
-            self._stream_reply(reply, model)
+        parameters = payload.get("parameters") or {}
+        stream = bool(payload.get("stream")
+                      or (isinstance(parameters, dict) and parameters.get("stream")))
+        if stream:
+            if hf_style:
+                self._stream_reply_hf(reply)
+            else:
+                self._stream_reply(reply, model)
+            return
+
+        if hf_style:
+            self._json(200, [{"generated_text": reply}])
             return
 
         prompt_tokens = max(1, len(user_text) // 4)
@@ -951,6 +1235,24 @@ class _MockHandler(BaseHTTPRequestHandler):
             time.sleep(0.003)
         send({**base, "choices": [{"index": 0, "delta": {},
                                    "finish_reason": "stop"}]})
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+
+    def _stream_reply_hf(self, reply: str) -> None:
+        """Hugging Face task API 的 SSE：data: {"token": {"text": ...}}。"""
+        self.send_response(200)
+        self._cors()
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        for i in range(0, len(reply), 8):
+            chunk = {"token": {"text": reply[i:i + 8], "special": False},
+                     "generated_text": None, "details": None}
+            self.wfile.write(
+                ("data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n").encode("utf-8"))
+            self.wfile.flush()
+            time.sleep(0.003)
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
 
@@ -1051,6 +1353,16 @@ class _GatewayHandler(BaseHTTPRequestHandler):
                              "upstream": cfg.describe()})
             return
         if path in ("/v1/models", "/models"):
+            try:
+                cfg = resolve_config()
+            except InferenceError as exc:
+                self._json(500, exc.to_dict())
+                return
+            if cfg.api_style != "openai":
+                self._json(200, {"object": "list",
+                                 "data": [{"id": cfg.model, "object": "model",
+                                           "owned_by": cfg.provider}]})
+                return
             self._proxy("GET", "models", b"", "")
             return
         self._json(404, {"error": {"message": f"gateway 未实现 GET {path}"}})
@@ -1067,6 +1379,75 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         self._proxy("POST", "chat/completions", body,
                     self.headers.get("Accept") or "application/json")
 
+    def _proxy_hf(self, cfg: InferenceConfig, body: bytes) -> None:
+        """把 HF task 协议适配成 OpenAI 协议，App 端无感。"""
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        messages = payload.get("messages") or []
+        model = payload.get("model") or cfg.model
+        max_tokens = payload.get("max_tokens")
+        temperature = payload.get("temperature")
+        client = InferenceClient(cfg)
+        created = int(time.time())
+        base = {"id": f"chatcmpl-hf-{created}", "object": "chat.completion.chunk",
+                "created": created, "model": model}
+
+        if payload.get("stream"):
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            try:
+                for text in client.chat_stream(
+                        messages, model=model, max_tokens=max_tokens,
+                        temperature=temperature):
+                    chunk = {**base, "choices": [{
+                        "index": 0, "delta": {"content": text},
+                        "finish_reason": None}]}
+                    self.wfile.write(
+                        ("data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n").encode())
+                    self.wfile.flush()
+                done = {**base, "choices": [{
+                    "index": 0, "delta": {}, "finish_reason": "stop"}]}
+                self.wfile.write(
+                    ("data: " + json.dumps(done, ensure_ascii=False) + "\n\ndata: [DONE]\n\n").encode())
+                self.wfile.flush()
+            except InferenceError as exc:
+                err = {"error": {"message": str(exc), "type": exc.kind}}
+                try:
+                    self.wfile.write(
+                        ("data: " + json.dumps(err, ensure_ascii=False) + "\n\n").encode())
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            return
+
+        try:
+            result = client.chat_result(
+                messages, model=model, max_tokens=max_tokens,
+                temperature=temperature)
+        except InferenceError as exc:
+            status = 401 if exc.kind == "auth" else 429 if exc.kind == "rate_limit" else 502
+            self._json(status, exc.to_dict())
+            return
+        self._json(200, {
+            "id": f"chatcmpl-hf-{created}",
+            "object": "chat.completion",
+            "created": created,
+            "model": result.get("model") or model,
+            "choices": [{"index": 0,
+                         "message": {"role": "assistant",
+                                     "content": result.get("content") or ""},
+                         "finish_reason": result.get("finish_reason") or "stop"}],
+            "usage": result.get("usage") or {},
+        })
+
     def _proxy(self, method: str, path: str, body: bytes, accept: str) -> None:
         try:
             cfg = resolve_config()
@@ -1076,6 +1457,9 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         if not cfg.configured:
             self._json(503, {"ok": False, "kind": "config",
                              "error": "上游推理 API 未配置"})
+            return
+        if cfg.api_style != "openai" and method == "POST":
+            self._proxy_hf(cfg, body)
             return
 
         headers = {"Content-Type": "application/json",
@@ -1276,6 +1660,32 @@ def selftest(verbose: bool = True) -> int:
             check("health() 失败时 ok=False",
                   InferenceClient(cfg).health()["ok"] is False)
 
+        print("②b Hugging Face 双协议（Mock）")
+        server_root = base.rsplit("/v1", 1)[0]
+        hf_env = dict(env)
+        hf_env.pop("INFERENCE_API_KEY", None)
+        with _EnvSandbox(**dict(hf_env, INFERENCE_PROVIDER="huggingface",
+                                HF_TOKEN="hf_selftest_123456")):
+            client = InferenceClient(replace(resolve_config(), retry_backoff=0.01))
+            result = client.chat_result("HF Router 摘要")
+            check("HF Router 对话（OpenAI 协议）",
+                  result["ok"] and "MOCK" in result["content"])
+
+        with _EnvSandbox(**dict(hf_env,
+                                INFERENCE_PROVIDER="huggingface-serverless",
+                                INFERENCE_BASE_URL=server_root,
+                                HF_TOKEN="hf_selftest_123456")):
+            client = InferenceClient(replace(resolve_config(), retry_backoff=0.01))
+            result = client.chat_result("HF Serverless 量化解读")
+            check("HF Serverless 对话（inputs → generated_text）",
+                  result["ok"] and "MOCK" in result["content"], result["content"][:40])
+            chunks = list(client.chat_stream("HF 流式"))
+            check("HF Serverless 流式 SSE 可逐段接收",
+                  len(chunks) >= 2 and "MOCK" in "".join(chunks),
+                  f"{len(chunks)} chunks")
+            check("HF Serverless health 走 chat ping",
+                  client.health().get("mode") == "chat-ping")
+
         print("③ OpenAI 兼容网关")
         gateway = start_gateway("127.0.0.1", 0)
         gateway_thread = threading.Thread(target=gateway.serve_forever,
@@ -1366,7 +1776,9 @@ def build_parser() -> argparse.ArgumentParser:
             "  python inference_api.py --mock-server 18080 # 无 Key 离线联调\n"
         ),
     )
-    parser.add_argument("--provider", choices=["auto", *PRESETS], default=None,
+    parser.add_argument("--provider",
+                        choices=["auto", *PRESETS, *PROVIDER_ALIASES],
+                        default=None,
                         help="推理提供方（默认读 INFERENCE_PROVIDER，否则自动探测）")
     parser.add_argument("--base-url", default=None, help="OpenAI 兼容端点，如 https://api.x.com/v1")
     parser.add_argument("--api-key", default=None, help="API Key（更推荐用环境变量）")

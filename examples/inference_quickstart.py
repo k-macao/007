@@ -17,6 +17,11 @@ examples/inference_quickstart.py — 把推理 API 接进你自己的项目
     # 3) 接本地 Ollama / vLLM（无需 Key）
     INFERENCE_PROVIDER=ollama python examples/inference_quickstart.py
 
+    # 4) 接 Hugging Face（Router / 专用 Endpoint / Serverless 均可）
+    HF_TOKEN=hf_xxx INFERENCE_PROVIDER=huggingface \
+    INFERENCE_MODEL=Qwen/Qwen2.5-7B-Instruct \
+    python examples/inference_quickstart.py
+
 代码里的 demo_crawler / demo_quant 就是「你自己的爬虫 / 量化模块」的替身：
 把 CRAWL_ITEMS / QUANT_FACTORS 换成你项目里的真实输出即可，其余不用改。
 """

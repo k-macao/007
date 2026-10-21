@@ -2250,7 +2250,7 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
         <!-- 🔌 推理 API：统一接入（OpenAI 兼容） -->
         <div class="section-header" id="inference-section">
             <span>🔌 推理 API · 统一接入 (INFERENCE GATEWAY)</span>
-            <span class="section-tag">OpenAI 兼容 · DeepSeek / 硅基流动 / 百炼 / Ollama / vLLM · Key 不出服务端</span>
+            <span class="section-tag">Hugging Face / DeepSeek / 硅基流动 / 百炼 / Ollama / vLLM · Key 不出服务端</span>
         </div>
         <div class="equity-column-panel" id="inference-panel" style="border-color:rgba(92,255,92,0.35);box-shadow:0 0 18px rgba(92,255,92,0.10);">
             <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
