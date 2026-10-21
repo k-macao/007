@@ -32,6 +32,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      probe_hf:
+        description: '额外跑一次 Hugging Face 探活（需外网；只打印脱敏结果，不打印明文 Key）'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -110,3 +116,71 @@ jobs:
             exit 1
           fi
           echo "✅ 全部 13 个模块自检通过"
+
+  # ==========================================================================
+  # 🤗 Hugging Face 探活（仅 workflow_dispatch 且勾选 probe_hf 时运行）
+  #
+  # 为什么单独开一个 job：上面的离线门禁是**零网络**的，它永远测不出
+  # 「HF_TOKEN 配没配、配了能不能用」。这一 job 只在手动勾选时跑，
+  # 用真实外网回答三个问题：
+  #   ① 仓库里有没有 HF_TOKEN（只打印是否配置，不打印明文）
+  #   ② Hub 检索 / datasets-server 取数通不通（公开数据，不需要 Key）
+  #   ③ 有 Key 时，FinBERT 文本分类能不能真跑起来（engine=hf 强制走模型）
+  # 结论写进 $GITHUB_STEP_SUMMARY，一眼可看；Key 全程不落盘、不回显。
+  # ==========================================================================
+  hf-probe:
+    name: HF Token probe (手动勾选 probe_hf 才跑)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.probe_hf }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    env:
+      PYTHONUNBUFFERED: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Show token presence (不打印任何 Secret)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          echo "HF_TOKEN 是否配置: ${{ secrets.HF_TOKEN != '' }}"
+          echo "HUGGINGFACE_API_KEY 是否配置: ${{ secrets.HUGGINGFACE_API_KEY != '' }}"
+          python hf_hub.py --check || echo "（上面有失败项，见分类）"
+
+      - name: Probe model inference (有 Key 才真正调用模型)
+        if: ${{ secrets.HF_TOKEN != '' }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          echo "—— 强制 engine=hf：能出结果说明 Token 有效且模型可调用 ——"
+          python hf_hub.py --sentiment "Revenue surges 38% year over year, beats estimates" \
+                           --engine hf --json || echo "❌ engine=hf 调用失败（见上面的 kind/http status）"
+          echo "—— 中文 tone 模型 ——"
+          python hf_hub.py --sentiment "公司三季度净利润同比增长 42%，大幅超市场预期" \
+                           --engine hf --model yiyanghkust/finbert-tone-chinese --json \
+                           || echo "❌ 中文 tone 模型调用失败（该模型可能未在 Inference Providers 上架）"
+
+      - name: Write job summary
+        if: always()
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          {
+            echo "## 🤗 Hugging Face 探活结果"
+            echo ""
+            echo "- 分支/提交：\`${{ github.ref_name }}\` · \`${GITHUB_SHA::7}\`"
+            echo "- HF_TOKEN：${{ secrets.HF_TOKEN != '' && '✅ 已配置' || '⚠️ 未配置（公开数据集仍可用，模型调用会降级为本地词典）' }}"
+            echo ""
+            echo "判定口径：\`--check\` 里 4 项全绿 = Hub + datasets-server 通；"
+            echo "「Probe model inference」能出 JSON = Token 有效且模型可调用。"
+          } >> "$GITHUB_STEP_SUMMARY"
