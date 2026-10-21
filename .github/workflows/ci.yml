@@ -120,17 +120,19 @@ jobs:
   # ==========================================================================
   # 🤗 Hugging Face 探活（仅 workflow_dispatch 且勾选 probe_hf 时运行）
   #
-  # 为什么单独开一个 job：上面的离线门禁是**零网络**的，它永远测不出
-  # 「HF_TOKEN 配没配、配了能不能用」。这一 job 只在手动勾选时跑，
-  # 用真实外网回答三个问题：
-  #   ① 仓库里有没有 HF_TOKEN（只打印是否配置，不打印明文）
+  # 为什么单独开一个 job：上面的离线门禁是**零网络**的，永远测不出
+  # 「HF_TOKEN 配没配、配了能不能用」。这一 job 只在手动勾选时跑，用真实外网回答：
+  #   ① 仓库里有没有 HF_TOKEN（只打印长度与脱敏片段，不打印明文）
   #   ② Hub 检索 / datasets-server 取数通不通（公开数据，不需要 Key）
-  #   ③ 有 Key 时，FinBERT 文本分类能不能真跑起来（engine=hf 强制走模型）
-  # 结论写进 $GITHUB_STEP_SUMMARY，一眼可看；Key 全程不落盘、不回显。
+  #   ③ 有 Key 时，FinBERT / 中文 tone 模型能不能真跑起来（engine=hf 强制走模型）
+  #
+  # 写法上的两个刻意选择（避免 GitHub 校验失败）：
+  #   · job 级 if 用 github.event.inputs，不用 inputs 上下文；
+  #   · 不把 secrets 写进 if 条件，改为在 shell 里判断环境变量是否为空。
   # ==========================================================================
   hf-probe:
     name: HF Token probe (手动勾选 probe_hf 才跑)
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.probe_hf }}
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.probe_hf == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -149,26 +151,30 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Show token presence (不打印任何 Secret)
+      - name: Probe Hub + datasets-server + model (不打印明文 Key)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          echo "HF_TOKEN 是否配置: ${{ secrets.HF_TOKEN != '' }}"
-          echo "HUGGINGFACE_API_KEY 是否配置: ${{ secrets.HUGGINGFACE_API_KEY != '' }}"
-          python hf_hub.py --check || echo "（上面有失败项，见分类）"
-
-      - name: Probe model inference (有 Key 才真正调用模型)
-        if: ${{ secrets.HF_TOKEN != '' }}
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          echo "—— 强制 engine=hf：能出结果说明 Token 有效且模型可调用 ——"
-          python hf_hub.py --sentiment "Revenue surges 38% year over year, beats estimates" \
-                           --engine hf --json || echo "❌ engine=hf 调用失败（见上面的 kind/http status）"
-          echo "—— 中文 tone 模型 ——"
-          python hf_hub.py --sentiment "公司三季度净利润同比增长 42%，大幅超市场预期" \
-                           --engine hf --model yiyanghkust/finbert-tone-chinese --json \
-                           || echo "❌ 中文 tone 模型调用失败（该模型可能未在 Inference Providers 上架）"
+          if [ -n "$HF_TOKEN" ]; then
+            echo "HF_TOKEN：已配置（长度 ${#HF_TOKEN}，脱敏：${HF_TOKEN:0:4}…${HF_TOKEN: -4}）"
+          else
+            echo "HF_TOKEN：未配置（公开数据集仍可用；模型调用会降级为本地词典）"
+          fi
+          echo ""
+          echo "—— ① 连通性：Hub / datasets-server / 模型推理 ——"
+          python hf_hub.py --check || echo "（上面有失败项，见 kind 分类）"
+          echo ""
+          if [ -n "$HF_TOKEN" ]; then
+            echo "—— ② 强制 engine=hf：能出 JSON 说明 Token 有效且模型可调用 ——"
+            python hf_hub.py --sentiment "Revenue surges 38% year over year, beats estimates" \
+                             --engine hf --json || echo "❌ 英文 FinBERT 调用失败"
+            echo "—— ③ 中文 tone 模型 ——"
+            python hf_hub.py --sentiment "公司三季度净利润同比增长 42%，大幅超市场预期" \
+                             --engine hf --model yiyanghkust/finbert-tone-chinese --json \
+                             || echo "❌ 中文 tone 模型调用失败（可能未在 Inference Providers 上架）"
+          else
+            echo "⏭ 未配置 HF_TOKEN，跳过模型调用（上面 --check 已验证公开端点）"
+          fi
 
       - name: Write job summary
         if: always()
@@ -178,9 +184,13 @@ jobs:
           {
             echo "## 🤗 Hugging Face 探活结果"
             echo ""
-            echo "- 分支/提交：\`${{ github.ref_name }}\` · \`${GITHUB_SHA::7}\`"
-            echo "- HF_TOKEN：${{ secrets.HF_TOKEN != '' && '✅ 已配置' || '⚠️ 未配置（公开数据集仍可用，模型调用会降级为本地词典）' }}"
+            echo "- 分支：\`${{ github.ref_name }}\` · 提交 \`${GITHUB_SHA::7}\`"
+            if [ -n "$HF_TOKEN" ]; then
+              echo "- HF_TOKEN：✅ 已配置（长度 ${#HF_TOKEN}）"
+            else
+              echo "- HF_TOKEN：⚠️ 未配置（公开数据集可用，模型调用降级为本地词典）"
+            fi
             echo ""
-            echo "判定口径：\`--check\` 里 4 项全绿 = Hub + datasets-server 通；"
-            echo "「Probe model inference」能出 JSON = Token 有效且模型可调用。"
+            echo "判定口径：\`--check\` 四项全绿 = Hub + datasets-server 通；"
+            echo "②③ 能出 JSON = Token 有效且模型可调用。"
           } >> "$GITHUB_STEP_SUMMARY"
