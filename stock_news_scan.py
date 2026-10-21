@@ -801,7 +801,7 @@ def _related_sector_lines(pack: ScanPack) -> list[str]:
 
 
 def hf_sentiment_block(pack: ScanPack, *, engine: str = "auto",
-                       model: str = "") -> dict | None:
+                       model: str = "", llm_model: str = "") -> dict | None:
     """用 Hugging Face 情绪引擎（hf_hub）给扫描结果再打一层分。
 
     与内置 score_text（简单正负面词表）互为补充：hf_hub 的词典覆盖更全、
@@ -820,7 +820,8 @@ def hf_sentiment_block(pack: ScanPack, *, engine: str = "auto",
     try:
         result = hf_hub.market_sentiment(
             titles, engine=engine,
-            model=model or hf_hub.DEFAULT_SENTIMENT_MODEL)
+            model=model or hf_hub.DEFAULT_SENTIMENT_MODEL,
+            llm_model=llm_model)
     except Exception:  # noqa: BLE001 —— 情绪引擎失败不能拖垮扫描主流程
         return None
     result["source"] = f"扫描 {len(titles)} 条（直接 {sum(len(v) for v in pack.direct.values())}"
@@ -1054,9 +1055,10 @@ def selftest_scan() -> int:
     """离线自检：解析器 + 156h 窗口 + 代码/板块匹配 + 动态板块 + 渲染，当前 18 平台含 DeepSeek。"""
     fails = 0
 
-    def check(name: str, cond: bool):
+    def check(name: str, cond: bool, detail: Any = ""):
         nonlocal fails
-        print(f"  {'✅' if cond else '❌'} {name}")
+        suffix = f"  ← {detail}" if (not cond and detail) else ""
+        print(f"  {'✅' if cond else '❌'} {name}{suffix}")
         if not cond:
             fails += 1
 
@@ -1169,6 +1171,28 @@ def selftest_scan() -> int:
         check("HF 情绪复核渲染章节", "Hugging Face 情绪复核" in hf_md)
         check("空包返回 None 不报错",
               hf_sentiment_block(ScanPack(hours=156), engine="lexicon") is None)
+        # llm 引擎：hf_hub 自带 OpenAI 兼容 Mock，离线也能验证整条链路
+        import os as _os
+        _keys = ("INFERENCE_BASE_URL", "INFERENCE_API_KEY", "INFERENCE_MODEL")
+        _saved = {k: _os.environ.get(k) for k in _keys}
+        _server = hf_hub.start_llm_mock_server()
+        try:
+            _os.environ.update(INFERENCE_BASE_URL=f"{_server.root}/v1",
+                               INFERENCE_API_KEY="mock-key-123456",
+                               INFERENCE_MODEL="mock-classifier")
+            llm_res = hf_sentiment_block(pack, engine="llm")
+            check("HF 情绪复核可走大模型端点（llm）",
+                  bool(llm_res) and llm_res.get("engine") == "llm",
+                  (llm_res or {}).get("engine"))
+            check("llm 引擎渲染章节同形",
+                  "Hugging Face 情绪复核" in render_hf_sentiment_md(llm_res or {}))
+        finally:
+            _server.close()
+            for k, v in _saved.items():
+                if v is None:
+                    _os.environ.pop(k, None)
+                else:
+                    _os.environ[k] = v
 
     print(f"\n{'✅ 十八平台扫描自检通过' if fails == 0 else f'❌ {fails} 项失败'}")
     return 1 if fails else 0
@@ -1189,8 +1213,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--timeout", type=int, default=12)
     p.add_argument("--hf-sentiment", action="store_true",
                    help="追加 Hugging Face 情绪复核章节（HF_TOKEN 存在时自动用 HF 模型）")
+    p.add_argument("--hf-engine", default="auto",
+                   choices=["auto", "lexicon", "hf", "llm"],
+                   help="HF 情绪复核引擎：auto（HF 模型→大模型端点→本地词典）/ "
+                        "lexicon（离线）/ hf（HF 模型）/ llm（DeepSeek 等聊天模型）")
     p.add_argument("--hf-model", default="",
                    help="指定 HF 分类模型（默认 ProsusAI/finbert）")
+    p.add_argument("--hf-llm-model", default="",
+                   help="--hf-engine llm 时用的聊天模型（留空用推理端点默认模型）")
     p.add_argument("--selftest", action="store_true", help="离线自检后退出")
     p.add_argument("--json", action="store_true", help="以 JSON 输出聚合结果")
     return p.parse_args(argv)
@@ -1204,7 +1234,9 @@ def main(argv: list[str] | None = None) -> int:
     extra = [s.strip() for s in re.split(r"[,，]", args.sectors) if s.strip()]
     pack = scan_stock(code=args.code, name=args.name, hours=args.hours,
                       timeout=args.timeout, extra_sectors=extra)
-    hf_result = hf_sentiment_block(pack, model=args.hf_model) \
+    hf_result = hf_sentiment_block(pack, engine=args.hf_engine,
+                                   model=args.hf_model,
+                                   llm_model=args.hf_llm_model) \
         if args.hf_sentiment else None
     if args.json:
         payload = {

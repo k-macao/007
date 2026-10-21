@@ -24,7 +24,7 @@ import hf_hub as hh
 
 ENV_KEYS = list(hh.HF_TOKEN_ENVS) + [
     "HF_HUB_BASE", "HF_DATASETS_SERVER", "HF_TASK_API",
-    "DEEPSEEK_API_KEY", "OPENAI_API_KEY",
+    "INFERENCE_PROVIDER", "DEEPSEEK_API_KEY", "OPENAI_API_KEY",
 ]
 
 
@@ -417,6 +417,146 @@ class TestHFEngine(MockMixin, EnvMixin):
 
     def test_hf_classify_empty_input(self):
         self.assertEqual(hh.hf_classify([]), [])
+
+
+# ================================================================ 大模型端点引擎（llm）
+
+
+class LLMMockMixin:
+    """OpenAI 兼容的分类器 Mock（hf_hub.start_llm_mock_server）。"""
+
+    server: hh.MockServerHandle
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.server = hh.start_llm_mock_server()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.close()
+
+    def llm_env(self, **extra: str) -> dict:
+        env = {
+            "INFERENCE_BASE_URL": f"{self.server.root}/v1",
+            "INFERENCE_API_KEY": "mock-key-123456",
+            "INFERENCE_MODEL": "mock-classifier",
+        }
+        env.update(extra)
+        return env
+
+
+class TestLLMEngine(LLMMockMixin, EnvMixin):
+    CASES = [
+        ("公司三季度净利润同比增长 42%，大幅超市场预期", "positive"),
+        ("控股股东拟减持不超过 2% 股份，套现约 3 亿元", "negative"),
+        ("公司将于下周四披露三季报", "neutral"),
+    ]
+
+    def test_llm_engine(self):
+        with hh._EnvSandbox(**self.llm_env()):
+            self.assertTrue(hh.llm_available())
+            result = hh.score_texts([t for t, _ in self.CASES], engine="llm")
+        self.assertEqual(result["engine"], "llm")
+        self.assertEqual(result["count"], 3)
+        self.assertEqual([i["label"] for i in result["items"]],
+                         [label for _, label in self.CASES])
+        for item in result["items"]:
+            self.assertGreaterEqual(item["score"], -1.0)
+            self.assertLessEqual(item["score"], 1.0)
+            self.assertTrue(str(item["engine"]).startswith("llm:"))
+
+    def test_llm_batching(self):
+        texts = [t for t, _, _ in hh._MOCK_CORPUS] * 3      # 36 条 → 至少 2 批
+        with hh._EnvSandbox(**self.llm_env()):
+            result = hh.score_texts(texts, engine="llm", llm_batch=12)
+        self.assertEqual(result["count"], len(texts))
+        self.assertTrue(all(i["engine"].startswith(("llm:", "lexicon"))
+                            for i in result["items"]))
+
+    def test_llm_render_and_aggregate(self):
+        with hh._EnvSandbox(**self.llm_env()):
+            result = hh.score_texts([t for t, _ in self.CASES], engine="llm")
+        self.assertIn("大模型端点", hh.render_sentiment_md(result))
+        self.assertIn("大模型端点", hh.render_sentiment_html(result))
+        agg = result["aggregate"]
+        self.assertEqual(agg["positive"] + agg["neutral"] + agg["negative"], 3)
+
+    def test_auto_picks_llm_without_hf_token(self):
+        with hh._EnvSandbox(**self.llm_env()):
+            result = hh.score_texts(["净利润增长超预期"], engine="auto")
+        self.assertEqual(result["engine"], "llm")
+        self.assertIn("HF_TOKEN", result["note"])
+
+    def test_auto_falls_back_to_llm_when_hf_dead(self):
+        """HF Token 有、但 task API 不可达 → 应由大模型端点接手。"""
+        env = self.llm_env(HF_TOKEN="hf_test_1234567890",
+                           HF_TASK_API="http://127.0.0.1:1/task/models")
+        with hh._EnvSandbox(**env):
+            result = hh.score_texts(["净利润增长超预期"], engine="auto")
+        self.assertEqual(result["engine"], "llm")
+        self.assertIn("HF 模型不可用", result["note"])
+
+    def test_explicit_llm_without_config_raises(self):
+        with hh._EnvSandbox(**hh._offline_env()):
+            self.assertFalse(hh.llm_available())
+            with self.assertRaises(hh.HFError) as ctx:
+                hh.score_texts(["净利润增长超预期"], engine="llm")
+        self.assertEqual(ctx.exception.kind, "config")
+
+    def test_unknown_engine_raises(self):
+        with self.assertRaises(hh.HFError) as ctx:
+            hh.score_texts(["测试"], engine="gpt5")
+        self.assertEqual(ctx.exception.kind, "config")
+
+    def test_llm_describe_masks_key(self):
+        with hh._EnvSandbox(**self.llm_env()):
+            info = hh.llm_describe()
+        self.assertTrue(info["configured"])
+        self.assertNotIn("mock-key-123456", info["key_masked"])
+        self.assertEqual(info["model"], "mock-classifier")
+
+    def test_unparsable_reply_degrades(self):
+        try:
+            import inference_api as ia
+        except Exception:  # noqa: BLE001
+            self.skipTest("inference_api 不可用")
+        plain = ia.MockServerHandle().start()
+        try:
+            env = {"INFERENCE_BASE_URL": plain.base_url,
+                   "INFERENCE_API_KEY": "mock-key-123456",
+                   "INFERENCE_MODEL": "mock-inference-1"}
+            with hh._EnvSandbox(**env):
+                with self.assertRaises(hh.HFError) as ctx:
+                    hh.score_texts(["净利润增长超预期"], engine="llm")
+                self.assertEqual(ctx.exception.kind, "format")
+                auto = hh.score_texts(["净利润增长超预期"], engine="auto")
+                self.assertEqual(auto["engine"], "lexicon")
+        finally:
+            plain.stop()
+
+    def test_parse_llm_labels_variants(self):
+        self.assertEqual(
+            hh.parse_llm_labels("1: positive 0.9\n2: negative\n3: neutral 0.6", 3),
+            {1: ("positive", 0.9), 2: ("negative", 0.8), 3: ("neutral", 0.6)})
+        self.assertEqual(hh.parse_llm_labels("1）正面\n2）看跌", 2)[1][0], "positive")
+        self.assertEqual(hh.parse_llm_labels("1）正面\n2）看跌", 2)[2][0], "negative")
+        self.assertEqual(hh.parse_llm_labels('{"1":"positive","2":"neutral"}', 2)[2][0],
+                         "neutral")
+        self.assertEqual(hh.parse_llm_labels('["positive","negative"]', 2)[2][0],
+                         "negative")
+        self.assertEqual(hh.parse_llm_labels("**1** positive\n**2** negative", 2)[1][0],
+                         "positive")
+        self.assertEqual(hh.parse_llm_labels("", 3), {})
+        # 序号超出范围要被裁掉
+        self.assertEqual(hh.parse_llm_labels("1: positive\n9: negative", 1),
+                         {1: ("positive", 0.8)})
+
+    def test_build_llm_prompt_is_numbered(self):
+        prompt = hh.build_llm_prompt(["第一条", "第二条"])
+        self.assertIn("1. 第一条", prompt)
+        self.assertIn("2. 第二条", prompt)
+        self.assertIn("positive", prompt)
+        self.assertLessEqual(len(hh.build_llm_prompt(["x" * 500])), 400)
 
 
 # ================================================================ 错误分类 / Key 安全

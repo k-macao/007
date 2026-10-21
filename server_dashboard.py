@@ -2296,6 +2296,8 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
                 <span id="hf-token" style="color:var(--text-muted);font-size:13px;">—</span>
                 <span class="selector-label">精选:</span>
                 <span id="hf-cat-count" style="color:var(--cyan);font-size:13px;">—</span>
+                <span class="selector-label">大模型端点:</span>
+                <span id="hf-llm" style="color:var(--text-muted);font-size:13px;">—</span>
                 <span class="selector-label">Task API:</span>
                 <span id="hf-task-api" style="color:var(--text-muted);font-size:12px;">—</span>
             </div>
@@ -2320,7 +2322,8 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
             <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
                 <span class="selector-label">⚙️ 引擎:</span>
                 <select id="hf-engine-pick" class="report-select">
-                    <option value="auto">auto（有 Token 走模型）</option>
+                    <option value="auto">auto（HF 模型→大模型→词典）</option>
+                    <option value="llm">llm（DeepSeek 等大模型端点）</option>
                     <option value="lexicon">lexicon（离线词典）</option>
                     <option value="hf">hf（强制 HF 模型）</option>
                 </select>
@@ -2945,6 +2948,10 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
                 if (cc) cc.textContent = (cfg.catalog_count || 0) + ' 项（6 类）';
                 const api = document.getElementById('hf-task-api');
                 if (api) api.textContent = cfg.task_api || '—';
+                const llm = document.getElementById('hf-llm');
+                if (llm) llm.textContent = cfg.llm_configured
+                    ? ((cfg.llm_provider || 'custom') + ' · ' + (cfg.llm_model || ''))
+                    : '未配置（INFERENCE_* / DEEPSEEK_API_KEY）';
             }} catch (e) {{ /* 静默 */ }}
         }}
 
@@ -3049,7 +3056,9 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
                 const agg = r.aggregate || {{}};
                 if (meta) meta.textContent = (r.engine === 'hf'
                         ? 'Hugging Face 模型 · ' + (r.model || '')
-                        : '本地金融词典（离线）')
+                        : (r.engine === 'llm'
+                            ? '大模型端点 · ' + (r.model || '')
+                            : '本地金融词典（离线）'))
                     + ' · ' + (r.count || 0) + ' 条 · ' + (agg.label || '') + ' ' + (agg.score || 0)
                     + (r.note ? ' · ' + r.note : '');
                 appendLog('HF.SENTIMENT', 'OK', (agg.label || '') + ' ' + (agg.score || 0));
@@ -3654,6 +3663,11 @@ def _api_hf_config() -> dict:
     payload = hf_mod.describe_config()
     payload["ok"] = True
     payload["available"] = True
+    # 推理端点（DeepSeek/OpenAI/…）是否可用：决定 auto 引擎会不会走大模型
+    llm = payload.get("llm") or {}
+    payload["llm_configured"] = bool(llm.get("configured"))
+    payload["llm_provider"] = llm.get("provider", "")
+    payload["llm_model"] = llm.get("model", "")
     return payload
 
 
@@ -3754,11 +3768,17 @@ def _api_hf_sentiment(params: dict) -> dict:
     if len(texts) > 200:
         texts = texts[:200]
     engine = str(params.get("engine") or "auto").strip().lower()
-    if engine not in ("auto", "lexicon", "hf"):
+    if engine not in ("auto", "lexicon", "hf", "llm"):
         engine = "auto"
     model = str(params.get("model") or "").strip() or hf_mod.DEFAULT_SENTIMENT_MODEL
+    llm_model = str(params.get("llm_model") or "").strip()
     try:
-        result = hf_mod.score_texts(texts, engine=engine, model=model)
+        batch = max(1, min(50, int(params.get("batch") or 0)))
+    except (TypeError, ValueError):
+        batch = hf_mod.DEFAULT_LLM_BATCH
+    try:
+        result = hf_mod.score_texts(texts, engine=engine, model=model,
+                                    llm_model=llm_model, llm_batch=batch)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "kind": getattr(e, "kind", "error"),
                 "error": f"{e.__class__.__name__}: {e}"}

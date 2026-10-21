@@ -56,6 +56,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -66,7 +67,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Iterable, Sequence
 
-VERSION = "1.0.0-hf-2026-10-22"
+VERSION = "1.1.0-hf-2026-10-22"
 USER_AGENT = f"octopus-hf-hub/{VERSION}"
 
 # ——— Hub 三类资源
@@ -149,8 +150,23 @@ def hf_token() -> str:
     return ""
 
 
+# 只有这三个才算「专门的 HF Token」；INFERENCE_API_KEY 是兜底，
+# 它可能指向 DeepSeek / Ollama 等别的端点，不该拿来猜 HF 可用。
+HF_STRICT_TOKEN_ENVS = ("HF_TOKEN", "HUGGINGFACE_API_KEY",
+                        "HUGGINGFACEHUB_API_TOKEN")
+
+
 def has_token() -> bool:
     return bool(hf_token())
+
+
+def has_hf_token() -> bool:
+    """是否配置了专门的 HF Token（不含 INFERENCE_API_KEY 兜底）。
+
+    auto 引擎用它决定「要不要先试 HF 模型」：只配了推理端点时直接走大模型，
+    避免拿 DeepSeek 的 Key 去撞 Hugging Face。
+    """
+    return any(_env(name) for name in HF_STRICT_TOKEN_ENVS)
 
 
 def mask_key(key: str) -> str:
@@ -974,15 +990,241 @@ def hf_classify(texts: Sequence[str], *, model: str = DEFAULT_SENTIMENT_MODEL,
     return results
 
 
+# ================================================================ 情绪引擎（大模型端点）
+#
+# HF 额度用尽（HTTP 402）或压根没有 HF Token 时，把分类交给**仓库已有的统一推理层**
+# inference_api.py：DeepSeek / OpenAI / 硅基流动 / Moonshot / 智谱 / 百炼 /
+# Ollama / vLLM / LM Studio / 自建网关……共用同一段代码，零新增依赖。
+#
+# 配置沿用 inference_api 的三个环境变量（或 DEEPSEEK_API_KEY 旧配置）：
+#     INFERENCE_BASE_URL / INFERENCE_API_KEY / INFERENCE_MODEL
+#     INFERENCE_PROVIDER=deepseek   +  DEEPSEEK_API_KEY=sk-xxx
+#
+# 口径与词典/FinBERT 一致：只判**标题语气**（positive/neutral/negative），不预测涨跌。
+
+DEFAULT_LLM_BATCH = 20      # 每批发给大模型的条数（省 token，也更好解析）
+LLM_MAX_CHARS = 180         # 单条文本截断长度（长快讯只取前 180 字即可判语气）
+LLM_DEFAULT_CONFIDENCE = 0.8
+
+LLM_SYSTEM_PROMPT = (
+    "你是金融文本情绪分类器。只判断文本的【语气】，不预测股价涨跌；"
+    "只输出判定结果，不要解释、不要多余文字。")
+LLM_OUTPUT_SPEC = ("输出格式：每行一条，形如「序号: 标签」，"
+                   "标签只能是 positive / neutral / negative。")
+
+# 容忍各种写法：「1: positive」「1）正面」「- 1. 看涨」「**2** neutral 0.9」
+_LLM_LINE_RE = re.compile(
+    r"(?<![\d.])(\d{1,3})\s*[\.:：、\-–—)）]?\s*\**\s*"
+    r"(positive|negative|neutral|正面|负面|中性|看涨|看跌|偏多|偏空)\b",
+    re.IGNORECASE)
+_LLM_SCORE_RE = re.compile(r"\b(0?\.\d+|1\.0+|[01])\b")
+_LLM_LABEL_WORDS = {
+    "正面": "positive", "看涨": "positive", "偏多": "positive", "利好": "positive",
+    "负面": "negative", "看跌": "negative", "偏空": "negative", "利空": "negative",
+    "中性": "neutral", "持平": "neutral",
+}
+
+
+def llm_available() -> bool:
+    """统一推理层是否已配置（有 Key 或免 Key 的本地端点）。"""
+    try:
+        import inference_api as ia
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        return bool(ia.is_configured())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def llm_describe() -> dict:
+    """推理端点摘要（脱敏，沿用 inference_api 的 mask_key）。"""
+    try:
+        import inference_api as ia
+        cfg = ia.describe_config()
+    except Exception as e:  # noqa: BLE001
+        return {"configured": False, "error": f"{e.__class__.__name__}: {e}"}
+    return {
+        "configured": bool(cfg.get("configured")),
+        "provider": cfg.get("provider", ""),
+        "model": cfg.get("model", ""),
+        "base_url": cfg.get("base_url", ""),
+        "key_masked": cfg.get("key_masked", ""),
+        "keyless": bool(cfg.get("keyless")),
+    }
+
+
+def build_llm_prompt(texts: Sequence[str]) -> str:
+    """把一批文本编成「编号 + 一行一条」的分类请求。"""
+    lines = [f"{i}. {str(t)[:LLM_MAX_CHARS]}" for i, t in enumerate(texts, 1)]
+    return ("判断下列财经文本的语气"
+            "（positive=利好/偏多，negative=利空/偏空，neutral=中性/无明确倾向）。\n"
+            + LLM_OUTPUT_SPEC + "\n\n" + "\n".join(lines))
+
+
+def parse_llm_labels(reply: str, count: int = 0) -> dict[int, tuple[str, float]]:
+    """从大模型回复里解析 {序号: (标签, 置信度)}。
+
+    容忍三类常见返回：
+      ① 纯文本行：``1: positive`` / ``2）负面`` / ``**3** neutral 0.9``
+      ② JSON 对象：``{"1": "positive", "2": "negative"}``
+      ③ JSON 数组：``["positive", "negative", "neutral"]``
+    解析不出就返回空字典，由调用方决定降级。
+    """
+    out: dict[int, tuple[str, float]] = {}
+    raw = (reply or "").strip()
+    if not raw:
+        return out
+
+    def _label(word: str) -> str:
+        low = word.lower()
+        if low in _LLM_LABEL_WORDS:
+            return _LLM_LABEL_WORDS[low]
+        return canonical_label(low)
+
+    # ① JSON
+    if raw[0] in "{[":
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            for key, value in data.items():
+                try:
+                    index = int(re.sub(r"\D", "", str(key)) or 0)
+                except ValueError:
+                    continue
+                if index:
+                    out[index] = (_label(str(value)), LLM_DEFAULT_CONFIDENCE)
+        elif isinstance(data, list):
+            for index, value in enumerate(data, 1):
+                if isinstance(value, dict):
+                    label = str(value.get("label", "")) 
+                    conf = value.get("confidence") or value.get("score")
+                    try:
+                        conf = float(conf)
+                    except (TypeError, ValueError):
+                        conf = LLM_DEFAULT_CONFIDENCE
+                    out[index] = (_label(label), max(0.0, min(1.0, conf)))
+                else:
+                    out[index] = (_label(str(value)), LLM_DEFAULT_CONFIDENCE)
+        if out:
+            return out
+
+    # ② 文本行
+    for line in raw.splitlines():
+        match = _LLM_LINE_RE.search(line)
+        if not match:
+            continue
+        index = int(match.group(1))
+        label = _label(match.group(2))
+        tail = line[match.end():]
+        conf_match = _LLM_SCORE_RE.search(tail)
+        conf = LLM_DEFAULT_CONFIDENCE
+        if conf_match:
+            try:
+                conf = max(0.0, min(1.0, float(conf_match.group(1))))
+            except ValueError:
+                conf = LLM_DEFAULT_CONFIDENCE
+        out[index] = (label, conf)
+    if count:
+        out = {k: v for k, v in out.items() if 1 <= k <= count}
+    return out
+
+
+def llm_classify(texts: Sequence[str], *, model: str = "", batch: int = DEFAULT_LLM_BATCH,
+                 timeout: float | None = None,
+                 system: str = LLM_SYSTEM_PROMPT) -> list[dict]:
+    """用统一推理层的聊天模型做批量情绪分类（零样本）。
+
+    返回结构与 hf_classify / lexicon_score 对齐，便于三种引擎互换：
+    label / score / confidence / probs / engine / text
+    """
+    items_src = [str(t).strip() for t in texts if str(t).strip()]
+    if not items_src:
+        return []
+    try:
+        import inference_api as ia
+    except Exception as exc:  # noqa: BLE001
+        raise HFError("config", f"未找到 inference_api.py：{exc}") from exc
+
+    try:
+        config = ia.resolve_config()
+    except ia.InferenceError as exc:
+        raise HFError(exc.kind if exc.kind in HFError.KINDS else "config",
+                      f"推理端点配置解析失败：{exc}", status=exc.status,
+                      url=getattr(exc, "url", "")) from exc
+    if not config.configured:
+        raise HFError("config",
+                      "推理端点未配置：设置 INFERENCE_BASE_URL / INFERENCE_API_KEY / "
+                      "INFERENCE_MODEL，或 INFERENCE_PROVIDER=deepseek + DEEPSEEK_API_KEY")
+
+    client = ia.InferenceClient(config)
+    used_model = model or config.model
+    size = max(1, int(batch))
+    results: list[dict] = []
+    parsed_total = 0
+
+    for start in range(0, len(items_src), size):
+        chunk = items_src[start:start + size]
+        messages = [{"role": "system", "content": system},
+                    {"role": "user", "content": build_llm_prompt(chunk)}]
+        try:
+            result = client.chat_result(
+                messages, model=model or None, temperature=0.0,
+                max_tokens=max(64, 32 * len(chunk)), timeout=timeout)
+        except ia.InferenceError as exc:
+            # 统一成 HFError，auto 引擎才能继续降级到本地词典
+            raise HFError(exc.kind if exc.kind in HFError.KINDS else "http",
+                          f"大模型端点调用失败：{exc}", status=exc.status,
+                          url=getattr(exc, "url", "")) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HFError("network", f"大模型端点调用失败：{exc}") from exc
+        used_model = result.get("model") or used_model
+        parsed = parse_llm_labels(result.get("content", ""), len(chunk))
+        parsed_total += len(parsed)
+        for offset, text in enumerate(chunk):
+            index = offset + 1
+            if index in parsed:
+                label, conf = parsed[index]
+                sign = {"positive": 1.0, "negative": -1.0}.get(label, 0.0)
+                probs = {"positive": 0.0, "neutral": 0.0, "negative": 0.0}
+                probs[label] = conf
+                probs["neutral"] = round(max(0.0, 1.0 - conf), 4) if label != "neutral" else conf
+                results.append({
+                    "text": text, "label": label,
+                    "score": round(sign * conf, 4),
+                    "confidence": round(conf, 3),
+                    "probs": {k: round(v, 4) for k, v in probs.items()},
+                    "engine": f"llm:{used_model}",
+                    "pos_hits": [], "neg_hits": [],
+                })
+            else:
+                # 该条没解析出来 → 用本地词典兜底，保证条数与输入一致
+                fallback = lexicon_score(text)
+                fallback["text"] = text
+                fallback["engine"] = f"lexicon(fallback):{used_model}"
+                results.append(fallback)
+
+    if not parsed_total:
+        raise HFError("format",
+                      "大模型返回内容无法解析为情绪标签（期望「序号: 标签」或 JSON）；"
+                      "可换用 --engine lexicon 或 --engine hf")
+    return results
+
+
 def score_texts(texts: Sequence[str] | str, *, engine: str = "auto",
-                model: str = DEFAULT_SENTIMENT_MODEL,
+                model: str = DEFAULT_SENTIMENT_MODEL, llm_model: str = "",
+                llm_batch: int = DEFAULT_LLM_BATCH,
                 timeout: float | None = None) -> dict:
     """给一批文本打情绪分，并给出聚合画像。
 
     engine:
-      auto    —— 有 HF Token 走模型，任何失败静默降级到词典
+      auto    —— 依次尝试：HF 模型（需 Token）→ 大模型端点（需推理配置）
+                 → 本地词典（永远可用）；任何一步失败都静默降级并写进 note
       lexicon —— 只用本地词典（零网络，CI 可跑）
-      hf      —— 只用 HF 模型（缺 Token / 报错直接抛 HFError）
+      hf      —— 只用 HF 上的分类模型（FinBERT / 中文 tone…），失败直接抛 HFError
+      llm     —— 只用统一推理层的聊天模型（DeepSeek/OpenAI/…），失败直接抛 HFError
     """
     if isinstance(texts, str):
         texts = [texts]
@@ -991,51 +1233,78 @@ def score_texts(texts: Sequence[str] | str, *, engine: str = "auto",
         return _empty_result(engine, model)
 
     engine = (engine or "auto").lower()
-    used_model = model
+    if engine not in ("auto", "lexicon", "hf", "llm"):
+        raise HFError("config", f"未知引擎：{engine}（可选 auto/lexicon/hf/llm）")
+
     items: list[dict] = []
-    used = "lexicon"
-    fallback_note = ""
+    used, used_model = "lexicon", ""
+    notes: list[str] = []
 
-    if engine in ("auto", "hf"):
-        if engine == "hf" or has_token():
-            try:
-                classified = hf_classify(items_src, model=model, timeout=timeout)
-                if len(classified) == len(items_src):
-                    for text, res in zip(items_src, classified):
-                        items.append({
-                            "text": text, "label": res["label"],
-                            "score": res["score"],
-                            "confidence": res["confidence"],
-                            "engine": res["engine"],
-                            "probs": res.get("probs", {}),
-                            "pos_hits": [], "neg_hits": [],
-                        })
-                    used = "hf"
-            except HFError as exc:
-                if engine == "hf":
-                    raise
-                fallback_note = f"{exc.kind}: {exc}"
-        elif engine == "hf":
-            raise HFError("auth", "engine=hf 需要 HF_TOKEN（或 HUGGINGFACE_API_KEY）")
+    def run_hf() -> None:
+        nonlocal items, used, used_model
+        classified = hf_classify(items_src, model=model, timeout=timeout)
+        if len(classified) != len(items_src):
+            raise HFError("format", "HF 模型返回条数与输入不一致")
+        items = [{**res, "text": text, "pos_hits": [], "neg_hits": []}
+                 for text, res in zip(items_src, classified)]
+        used, used_model = "hf", model
 
-    if used == "lexicon":
+    def run_llm() -> None:
+        nonlocal items, used, used_model
+        classified = llm_classify(items_src, model=llm_model, batch=llm_batch,
+                                  timeout=timeout)
+        if len(classified) != len(items_src):
+            raise HFError("format", "大模型返回条数与输入不一致")
+        items = classified
+        used = "llm"
+        used_model = next(
+            (str(it.get("engine", "")).split(":", 1)[1] for it in items
+             if str(it.get("engine", "")).startswith("llm:")), "")
+
+    def run_lexicon() -> None:
+        nonlocal items, used, used_model
+        items = []
         for text in items_src:
             res = lexicon_score(text)
             res["text"] = text
             res["probs"] = {}
             items.append(res)
-        if engine == "auto" and not has_token():
-            fallback_note = "未配置 HF_TOKEN，自动使用本地词典"
+        used, used_model = "lexicon", ""
+
+    if engine in ("hf", "llm"):
+        (run_hf if engine == "hf" else run_llm)()
+    elif engine == "lexicon":
+        run_lexicon()
+    else:  # auto：HF 模型 → 大模型端点 → 本地词典
+        # 只有专门的 HF Token 才先试 HF 模型（INFERENCE_API_KEY 不算）
+        if has_hf_token():
+            try:
+                run_hf()
+            except HFError as exc:
+                notes.append(f"HF 模型不可用（{exc.kind}），尝试下一个引擎")
+        else:
+            notes.append("未配置 HF Token（HF_TOKEN / HUGGINGFACE_API_KEY）")
+        if not items:
+            if llm_available():
+                try:
+                    run_llm()
+                except HFError as exc:
+                    notes.append(f"大模型端点不可用（{exc.kind}），降级本地词典")
+            else:
+                notes.append("未配置推理端点（INFERENCE_* 或 DEEPSEEK_API_KEY)")
+        if not items:
+            notes.append("已使用本地金融词典（离线）")
+            run_lexicon()
 
     return {
         "ok": True,
         "engine": used,
         "requested_engine": engine,
-        "model": used_model if used == "hf" else "",
+        "model": used_model,
         "count": len(items),
         "items": items,
         "aggregate": _aggregate(items, engine=used, model=used_model),
-        "note": fallback_note,
+        "note": "；".join(notes),
     }
 
 
@@ -1083,7 +1352,8 @@ def _aggregate(items: list[dict], *, engine: str = "lexicon",
 
 def market_sentiment(items: Iterable[Any], *, text_keys: Sequence[str] = (),
                      engine: str = "auto",
-                     model: str = DEFAULT_SENTIMENT_MODEL) -> dict:
+                     model: str = DEFAULT_SENTIMENT_MODEL,
+                     llm_model: str = "") -> dict:
     """把任意结构的新闻/快讯条目（dict 或 str）转成情绪画像。"""
     keys = tuple(text_keys) or ("title", "text", "content", "summary",
                                 "description", "news", "headline")
@@ -1101,7 +1371,19 @@ def market_sentiment(items: Iterable[Any], *, text_keys: Sequence[str] = (),
                     break
             if picked:
                 texts.append(picked)
-    return score_texts(texts, engine=engine, model=model)
+    return score_texts(texts, engine=engine, model=model,
+                       llm_model=llm_model)
+
+
+def _engine_label(result: dict) -> str:
+    """三种引擎给人看的显示名（渲染 Markdown / HTML / 大屏共用）。"""
+    engine = result.get("engine", "lexicon")
+    model = result.get("model") or ""
+    if engine == "hf":
+        return f"Hugging Face 模型 · {model}" if model else "Hugging Face 模型"
+    if engine == "llm":
+        return f"大模型端点 · {model}" if model else "大模型端点（inference_api）"
+    return "本地金融词典（离线）"
 
 
 def render_sentiment_md(result: dict, title: str = "🤗 Hugging Face 情绪引擎") -> str:
@@ -1111,8 +1393,7 @@ def render_sentiment_md(result: dict, title: str = "🤗 Hugging Face 情绪引�
         f"## {title}",
         "",
         f"**情绪判定：{agg.get('label', '中性')} · {agg.get('score', 0):+d}**"
-        f"（样本 {agg.get('count', 0)} 条 · 引擎 "
-        f"{'Hugging Face 模型 ' + result.get('model', '') if result.get('engine') == 'hf' else '本地金融词典'}）",
+        f"（样本 {agg.get('count', 0)} 条 · 引擎 {_engine_label(result)}）",
         "",
         f"- 🟢 正面：{agg.get('positive', 0)} 条",
         f"- ⚪ 中性：{agg.get('neutral', 0)} 条",
@@ -1141,8 +1422,7 @@ def render_sentiment_html(result: dict) -> str:
     neu = agg.get("neutral", 0)
     neg = agg.get("negative", 0)
     total = max(1, pos + neu + neg)
-    engine_txt = ("Hugging Face 模型 · " + str(result.get("model") or "")
-                  if result.get("engine") == "hf" else "本地金融词典（离线）")
+    engine_txt = _engine_label(result)
 
     def bar(value: int, color_: str) -> str:
         pct = value * 100.0 / total
@@ -1195,7 +1475,7 @@ def benchmark(dataset: str, *, text_field: str = "", label_field: str = "",
               group_field: str = "", config: str | None = None,
               split: str | None = None, where: str = "", length: int = 100,
               engine: str = "lexicon", model: str = DEFAULT_SENTIMENT_MODEL,
-              timeout: float | None = None) -> dict:
+              llm_model: str = "", timeout: float | None = None) -> dict:
     """用 HF 上带标注的数据集当黄金标签，给情绪引擎打分（准确率 / macro-F1）。
 
     默认 length=100（datasets-server 单次上限），配 --where 可只测某个子集，
@@ -1235,7 +1515,8 @@ def benchmark(dataset: str, *, text_field: str = "", label_field: str = "",
     if not gold_rows:
         raise HFError("format", "没有可用样本（标签无法识别为 positive/neutral/negative）")
 
-    result = score_texts([t for t, _, _ in gold_rows], engine=engine, model=model)
+    result = score_texts([t for t, _, _ in gold_rows], engine=engine,
+                         model=model, llm_model=llm_model)
     preds = [it["label"] for it in result["items"]]
     golds = [g for _, g, _ in gold_rows]
     return _classification_report(golds, preds, dataset=dataset,
@@ -1343,7 +1624,7 @@ def render_benchmark_md(report: dict) -> str:
 def digest(dataset: str, *, text_field: str = "", group_field: str = "",
            config: str | None = None, split: str | None = None,
            where: str = "", length: int = 100, engine: str = "auto",
-           model: str = DEFAULT_SENTIMENT_MODEL) -> dict:
+           model: str = DEFAULT_SENTIMENT_MODEL, llm_model: str = "") -> dict:
     """抓一个 HF 新闻/快讯数据集 → 直接出情绪画像（可 render_sentiment_md）。"""
     length = max(1, min(100, int(length)))
     if where:
@@ -1364,7 +1645,8 @@ def digest(dataset: str, *, text_field: str = "", group_field: str = "",
         if isinstance(value, str) and value.strip():
             texts.append(value.strip())
             groups.append(str(rec.get(group_field) or "") if group_field else "")
-    result = market_sentiment(texts, engine=engine, model=model)
+    result = market_sentiment(texts, engine=engine, model=model,
+                              llm_model=llm_model)
     result["dataset"] = dataset
     result["config"] = payload.get("config", "")
     result["split"] = payload.get("split", "")
@@ -1416,7 +1698,8 @@ def describe_config() -> dict:
         "default_model": DEFAULT_SENTIMENT_MODEL,
         "default_model_zh": DEFAULT_SENTIMENT_MODEL_ZH,
         "catalog_count": len(HF_CATALOG),
-        "engines": ["auto", "lexicon", "hf"],
+        "engines": ["auto", "lexicon", "hf", "llm"],
+        "llm": llm_describe(),
     }
 
 
@@ -1634,6 +1917,60 @@ class _MockHandler(BaseHTTPRequestHandler):
         return self._send(404, {"error": f"mock: no route {parsed.path}"})
 
 
+class _LLMMockHandler(BaseHTTPRequestHandler):
+    """OpenAI 兼容的分类器 Mock：按编号回「序号: 标签 0.9」。"""
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):  # 静音
+        return
+
+    def _send(self, status: int, payload: Any) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path.endswith("/models"):
+            return self._send(200, {"object": "list", "data": [
+                {"id": "mock-classifier", "object": "model", "owned_by": "hf-hub-mock"}]})
+        return self._send(404, {"error": f"llm-mock: no route {self.path}"})
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        content = ""
+        for message in (payload.get("messages") or []):
+            if isinstance(message, dict) and message.get("role") == "user":
+                content = str(message.get("content") or "")
+        lines = []
+        for match in re.finditer(r"(?m)^(\d+)\.\s*(.+)$", content):
+            index, text = int(match.group(1)), match.group(2)
+            label = lexicon_score(text)["label"]
+            conf = 0.9 if label != "neutral" else 0.7
+            lines.append(f"{index}: {label} {conf}")
+        reply = "\n".join(lines) or "1: neutral 0.6"
+        model = payload.get("model") or "mock-classifier"
+        prompt_tokens = max(1, len(content) // 4)
+        completion_tokens = max(1, len(reply) // 4)
+        self._send(200, {
+            "id": "chatcmpl-hf-hub-mock", "object": "chat.completion",
+            "created": int(time.time()), "model": model,
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": reply}}],
+            "usage": {"prompt_tokens": prompt_tokens,
+                      "completion_tokens": completion_tokens,
+                      "total_tokens": prompt_tokens + completion_tokens},
+        })
+
+
 class MockServerHandle:
     def __init__(self, server: ThreadingHTTPServer, thread: threading.Thread) -> None:
         self._server = server
@@ -1658,12 +1995,28 @@ class MockServerHandle:
             pass
 
 
-def start_mock_server(host: str = "127.0.0.1", port: int = 0) -> MockServerHandle:
-    server = ThreadingHTTPServer((host, port), _MockHandler)
-    thread = threading.Thread(target=server.serve_forever,
-                              name="hf-mock-server", daemon=True)
+def _serve(handler: type[BaseHTTPRequestHandler], host: str, port: int,
+           name: str) -> MockServerHandle:
+    server = ThreadingHTTPServer((host, port), handler)
+    thread = threading.Thread(target=server.serve_forever, name=name, daemon=True)
     thread.start()
     return MockServerHandle(server, thread)
+
+
+def start_mock_server(host: str = "127.0.0.1", port: int = 0) -> MockServerHandle:
+    """HF 三协议 Mock：Hub API + datasets-server + task API。"""
+    return _serve(_MockHandler, host, port, "hf-mock-server")
+
+
+def start_llm_mock_server(host: str = "127.0.0.1", port: int = 0) -> MockServerHandle:
+    """OpenAI 兼容 Mock（给 --engine llm / inference_api 用）。
+
+    它扮演「一个会按编号回标签的聊天模型」：收到 build_llm_prompt 的编号列表，
+    按本地词典的口径回 ``序号: 标签 0.9``——这样离线也能验证整条链路
+    （提示词 → 调用 → 解析 → 聚合），不需要真 Key。
+    用法：INFERENCE_BASE_URL=<root>/v1 INFERENCE_API_KEY=mock INFERENCE_MODEL=mock-classifier
+    """
+    return _serve(_LLMMockHandler, host, port, "hf-llm-mock-server")
 
 
 # ================================================================ 自检 / CLI
@@ -1695,7 +2048,9 @@ class _EnvSandbox:
 
 def _clear_hf_env() -> dict[str, str | None]:
     return {name: os.environ.get(name) for name in
-            (*HF_TOKEN_ENVS, "HF_HUB_BASE", "HF_DATASETS_SERVER", "HF_TASK_API")}
+            (*HF_TOKEN_ENVS, "HF_HUB_BASE", "HF_DATASETS_SERVER", "HF_TASK_API",
+             "INFERENCE_BASE_URL", "INFERENCE_API_KEY", "INFERENCE_MODEL",
+             "INFERENCE_PROVIDER")}
 
 
 def _offline_env() -> dict[str, str | None]:
@@ -1867,6 +2222,79 @@ def selftest(verbose: bool = True) -> int:
         check("Key 可发往本机 Mock", _token_allowed("http://127.0.0.1:18090/x") is True)
         check("mask_key 脱敏", mask_key("hf_abcdefgh1234") == "hf_a…1234")
 
+    print("⑥ 大模型端点（--engine llm，走 inference_api）")
+    llm_server = start_llm_mock_server()
+    try:
+        llm_root = llm_server.root
+        llm_env = dict(_offline_env(),
+                       INFERENCE_BASE_URL=f"{llm_root}/v1",
+                       INFERENCE_API_KEY="mock-key-123456",
+                       INFERENCE_MODEL="mock-classifier")
+        with _EnvSandbox(**llm_env):
+            check("推理端点被识别为已配置", llm_available() is True)
+            got = score_texts(["公司三季度净利润同比增长 42%，大幅超市场预期",
+                               "控股股东拟减持不超过 2% 股份",
+                               "公司将于下周四披露三季报"], engine="llm")
+            check("llm 引擎生效", got["engine"] == "llm", got["engine"])
+            check("llm 条数与输入一致", got["count"] == 3, got["count"])
+            labels = [i["label"] for i in got["items"]]
+            check("llm 三档判定正确",
+                  labels == ["positive", "negative", "neutral"], labels)
+            check("llm 分数落在 ±1 内",
+                  all(-1 <= i["score"] <= 1 for i in got["items"]))
+            check("llm 渲染带引擎名", "大模型端点" in render_sentiment_md(got))
+            many = score_texts([t for t, _, _ in _MOCK_CORPUS] * 2, engine="llm")
+            check("llm 分批（24 条 → 2 批）结果齐全", many["count"] == 24,
+                  many["count"])
+            # auto：没有 HF Token 时应自动选中大模型端点
+            auto = score_texts(["净利润增长超预期"], engine="auto")
+            check("auto 在无 HF Token 时走大模型端点", auto["engine"] == "llm",
+                  auto["engine"])
+            check("auto 降级说明可读", "本地金融词典" not in auto["note"],
+                  auto["note"])
+    finally:
+        llm_server.close()
+
+    # 返回内容无法解析 → 应降级，而不是把错误抛给用户
+    try:
+        import inference_api as ia
+    except Exception:  # noqa: BLE001
+        ia = None
+    if ia is not None:
+        plain = ia.MockServerHandle().start()
+        try:
+            with _EnvSandbox(**dict(_offline_env(),
+                                    INFERENCE_BASE_URL=plain.base_url,
+                                    INFERENCE_API_KEY="mock-key-123456",
+                                    INFERENCE_MODEL="mock-inference-1")):
+                try:
+                    score_texts(["净利润增长超预期"], engine="llm")
+                    check("不可解析时 engine=llm 报 format", False, "没有抛错")
+                except HFError as exc:
+                    check("不可解析时 engine=llm 报 format", exc.kind == "format",
+                          exc.kind)
+                fell = score_texts(["净利润增长超预期"], engine="auto")
+                check("不可解析时 auto 降级到本地词典",
+                      fell["engine"] == "lexicon", fell["engine"])
+        finally:
+            plain.stop()
+
+    with _EnvSandbox(**_offline_env()):
+        check("无推理端点时 llm_available=False", llm_available() is False)
+        try:
+            score_texts(["净利润增长超预期"], engine="llm")
+            check("无推理端点时 engine=llm 报 config", False, "没有抛错")
+        except HFError as exc:
+            check("无推理端点时 engine=llm 报 config", exc.kind == "config", exc.kind)
+        check("解析：序号+英文标签",
+              parse_llm_labels("1: positive\n2: negative 0.9", 2)
+              == {1: ("positive", 0.8), 2: ("negative", 0.9)})
+        check("解析：中文标签/全角括号",
+              parse_llm_labels("1）正面\n2）看跌", 2)[1][0] == "positive")
+        check("解析：JSON 数组",
+              parse_llm_labels('["positive","negative"]', 2)[2][0] == "negative")
+        check("空回复解析为空", parse_llm_labels("", 2) == {})
+
     failed = [name for name, ok, _ in checks if not ok]
     if verbose:
         print("-" * 64)
@@ -1911,7 +2339,14 @@ def _check_online() -> int:
         probe("HF 模型推理（FinBERT）",
               lambda: str(hf_classify(["profit surges, beats estimates"])[0]["label"]))
     else:
-        print("⏭ HF 模型推理：未配置 Token，跳过（本地词典可离线用）")
+        print("⏭ HF 模型推理：未配置 Token，跳过（--engine lexicon / llm 可用）")
+    llm = llm_describe()
+    if llm.get("configured"):
+        probe("大模型端点（inference_api）",
+              lambda: f"{llm.get('provider')} · {llm.get('model')} · "
+                      f"{llm.get('base_url')} · key {llm.get('key_masked') or 'keyless'}")
+    else:
+        print("⏭ 大模型端点：未配置（INFERENCE_* 或 DEEPSEEK_API_KEY）")
     print("-" * 64)
     print("✅ 全部连通" if not failed else f"❌ {failed} 项失败")
     return failed
@@ -2000,10 +2435,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sentiment", metavar="TEXT", help="给一段文本打情绪分")
     p.add_argument("--sentiment-file", metavar="PATH",
                    help="给文件里每一行打情绪分")
-    p.add_argument("--engine", default="auto", choices=["auto", "lexicon", "hf"],
-                   help="情绪引擎：auto（有 Token 走模型）/ lexicon（离线）/ hf（强制模型）")
+    p.add_argument("--engine", default="auto",
+                   choices=["auto", "lexicon", "hf", "llm"],
+                   help="情绪引擎：auto（HF 模型→大模型端点→本地词典）/ "
+                        "lexicon（离线）/ hf（HF 分类模型）/ llm（DeepSeek 等聊天模型）")
     p.add_argument("--model", default=DEFAULT_SENTIMENT_MODEL,
                    help=f"HF 分类模型（默认 {DEFAULT_SENTIMENT_MODEL}）")
+    p.add_argument("--llm-model", default="",
+                   help="--engine llm 时用的聊天模型（留空用推理端点默认模型）")
+    p.add_argument("--llm-batch", type=int, default=DEFAULT_LLM_BATCH,
+                   help=f"--engine llm 时每批条数（默认 {DEFAULT_LLM_BATCH}）")
     p.add_argument("--benchmark", metavar="DATASET",
                    help="用该数据集当黄金标签评估情绪引擎")
     p.add_argument("--text-field", default="", help="文本字段名（自动探测失败时用）")
@@ -2121,7 +2562,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                config=args.ds_config or None,
                                split=args.split or None, where=args.where,
                                length=args.length, engine=args.engine,
-                               model=args.model)
+                               model=args.model, llm_model=args.llm_model)
             print(json.dumps(report, ensure_ascii=False, indent=2) if args.json
                   else render_benchmark_md(report))
             return 0
@@ -2131,7 +2572,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                             group_field=args.group_field,
                             config=args.ds_config or None, split=args.split or None,
                             where=args.where, length=args.length,
-                            engine=args.engine, model=args.model)
+                            engine=args.engine, model=args.model,
+                            llm_model=args.llm_model)
             print(json.dumps(result, ensure_ascii=False, indent=2) if args.json
                   else render_digest_md(result))
             return 0
@@ -2139,14 +2581,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.sentiment_file:
             with open(args.sentiment_file, "r", encoding="utf-8") as fh:
                 texts = [line.strip() for line in fh if line.strip()]
-            result = score_texts(texts, engine=args.engine, model=args.model)
+            result = score_texts(texts, engine=args.engine, model=args.model,
+                                 llm_model=args.llm_model,
+                                 llm_batch=args.llm_batch)
             print(json.dumps(result, ensure_ascii=False, indent=2) if args.json
                   else render_sentiment_md(result))
             return 0
 
         if args.sentiment:
             result = score_texts([args.sentiment], engine=args.engine,
-                                 model=args.model)
+                                 model=args.model, llm_model=args.llm_model,
+                                 llm_batch=args.llm_batch)
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             else:

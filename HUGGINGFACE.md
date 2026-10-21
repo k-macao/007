@@ -26,6 +26,7 @@
 | 研报 / 生成语料 | `jinsong8/FinRpt`（中英研报基准） | `Duxiaoman-DI/FinCorpus`（60G 中文语料，只能切片读） | `--rows <id> --length 3` |
 | 新闻流（日频对齐） | `etfbench/etfbench_submission`（731 天 × 中美） | `NickyNicky/...rss-feed`（14.2 万条带 ticker） | `--digest <id>` |
 | 时序基座（概率预测） | `amazon/chronos-2`（Apache-2.0） | `google/timesfm-2.5-200m-pytorch`、`Salesforce/moirai-2.0-R-small` | 需 transformers 环境，本仓库目前只登记 |
+| **没有 HF 推理额度时** | `--engine llm`（DeepSeek 等大模型端点，走 `inference_api.py`） | `--engine lexicon`（纯离线） | 见 §7 |
 
 ---
 
@@ -142,32 +143,79 @@ python hf_hub.py --size Duxiaoman-DI/FinCorpus
 
 ---
 
-## 7. 情绪引擎的三种模式
+## 7. 情绪引擎的四种模式：lexicon / hf / llm / auto
 
-| 引擎 | 触发条件 | 行为 |
-|---|---|---|
-| `auto`（默认） | 有 `HF_TOKEN` | 走 HF 模型；任何失败（限流 / 冷启动 / 网络）**静默降级**到本地词典，并在返回里带 `note` 说明原因 |
-| `lexicon` | 显式指定 | 只跑内置中英双语金融词典，零网络、毫秒级，CI 可跑 |
-| `hf` | 显式指定 | 只跑 HF 模型；缺 Token 或失败直接抛 `HFError`（kind=auth/http/...），不隐藏问题 |
+```bash
+python hf_hub.py --sentiment "公司三季度净利润同比增长 42%，大幅超市场预期" --engine auto
+python hf_hub.py --sentiment "控股股东拟减持不超过 2% 股份" --engine llm      # 走 DeepSeek 等
+python hf_hub.py --sentiment-file news.txt --engine lexicon --json
+```
 
-> **402 不等于 Key 错。** Token 有效但账户没有推理额度时，router 返回
-> `402 {"error":"You have no remaining credits. Purchase pre-paid credits ..."}`
-> ——此时 `/api/whoami-v2` 仍然 200，`hf_hub` 会把它归为 `kind=payment`，
-> `auto` 引擎降级到本地词典，**公开数据集取数完全不受影响**。
-> 想确认到底是哪种，跑 `python hf_hub.py --check`：前四项绿、只有模型推理红，就是额度问题。
+| 引擎 | 谁来打标签 | 需要 Key | 速度 | 准确度 | 适用场景 |
+|---|---|---|---|---|---|
+| `lexicon` | 内置中英金融词典 + 否定/程度副词规则 | 不需要 | 毫秒/条 | 中 | 离线、CI、大批量兜底 |
+| `hf` | FinBERT / finbert-tone-chinese（`router.huggingface.co` 分类端点） | HF Token **且要有推理额度** | ~0.5–3s/批 | 高 | 英文新闻、中文研报语调 |
+| `llm` | **大模型端点**（走 `inference_api.py`，DeepSeek / OpenAI / 硅基流动 / Ollama…） | 对应厂商 Key | ~1–3s/批（20 条） | 高 | **HF 没额度时的首选**；中文口语、反讽、公告长句 |
+| `auto`（默认） | `hf` → `llm` → `lexicon` 依次降级 | 有哪个用哪个 | — | — | 生产默认 |
 
-本地词典（`hf_hub.py` 内）包含约 200 个中英文金融情感词，带三类处理：
+### 7.1 为什么多了一个 `llm`
 
-- **否定翻转**：「未出现增长」「failed to beat」会把极性翻过来（打 0.8 折）；
-- **程度副词**：「大幅 / 显著 / sharply / record」加权 1.5 倍；
-- **最长匹配优先**：先匹配「业绩预增」，再匹配「增长」，避免重复计分。
+2026-10-22 实测：本仓库配置的 HF Token **有效但没有推理额度**，所有
+`router.huggingface.co/hf-inference` 调用返回 **HTTP 402**（`You have no remaining credits`）。
+402 不是 Key 错——`whoami-v2` 返回 200，检索/下载/datasets-server 全都正常。
+所以与其买预付费额度，不如让情绪引擎复用仓库里已有的 `inference_api.py`：
 
-分数落在 `[-1, 1]`（阈值 ±0.18 判正负），聚合后映射成 `-100 ~ +100` 的「偏多 / 中性 / 偏空」。
+- 13 个推理预设共用一个入口（DeepSeek / OpenAI / 硅基流动 / Moonshot / 智谱 / 阿里百炼 / Ollama / vLLM / LM Studio …）；
+- 纯标准库，不新增依赖；
+- 换厂商只改环境变量，不动代码。
 
-> ⚠️ 词典判的是**语气**，不是价格方向。`HuangYiYang/...` 的模型卡里那句提醒值得抄在这里：
-> *The label describes the tone of the headline, not where a price will go.*
+### 7.2 怎么开（以 DeepSeek 为例）
 
----
+```bash
+export DEEPSEEK_API_KEY=sk-xxxxxxxxxxxx        # 或通用写法，二选一
+export INFERENCE_PROVIDER=deepseek             # 指定预设
+export INFERENCE_MODEL=deepseek-chat           # 可选，留空用预设默认模型
+
+# 通用写法（任何 OpenAI 兼容端点）
+export INFERENCE_BASE_URL=https://api.deepseek.com/v1
+export INFERENCE_API_KEY=sk-xxxxxxxxxxxx
+export INFERENCE_MODEL=deepseek-chat
+
+python hf_hub.py --check                       # 看「大模型端点」那一行是否 ✅
+python hf_hub.py --sentiment "业绩大超预期，上调全年指引" --engine llm
+```
+
+预设与环境变量对照：`python inference_api.py --list`。本地 Ollama 那类
+`keyless` 端点不需要 Key，`llm_available()` 照样返回 `True`。
+
+### 7.3 `llm` 引擎怎么保证口径一致
+
+提示词只问**语气**，不问涨跌（避免把模型变成"预测股价"，那是另一回事）：
+
+1. 系统提示：三选一 `positive / neutral / negative`，只输出编号与标签；
+2. 用户提示：每行 `序号. 正文`，正文截断到 180 字，一批最多 20 条；
+3. `temperature=0.0`，减少随机漂移；
+4. 解析容错：`1: positive 0.9`、`2）负面`、`**3** neutral`、`{"1":"positive"}`、
+   `["positive","negative"]` 都能解析；整批解析不出 → 该批降级本地词典；
+   显式 `--engine llm` 且一条都解析不出 → 报 `format` 错误（不静默糊弄）；
+5. 输出结构与 `hf` / `lexicon` **完全一致**：`label / score / confidence / probs`，
+   下游 `render_sentiment_md`、`market_sentiment`、`benchmark`、大屏面板无需改动。
+
+### 7.4 离线也能跑
+
+`hf_hub.start_llm_mock_server()` 起一个 OpenAI 兼容的"分类器 Mock"：它按编号回
+`序号: 标签 0.9`（标签口径就是本地词典），所以**没有 Key 也能验证整条链路**
+（提示词 → 调用 → 解析 → 聚合）。自检第 ⑥ 段和 `test_hf_hub.py` 的
+`TestLLMEngine` 都用它，CI 全程离线。
+
+```python
+import os, hf_hub as hh
+server = hh.start_llm_mock_server()
+os.environ.update(INFERENCE_BASE_URL=f"{server.root}/v1",
+                  INFERENCE_API_KEY="mock-key", INFERENCE_MODEL="mock-classifier")
+print(hh.score_texts(["净利润增长超预期"], engine="llm")["aggregate"])
+server.close()
+```
 
 ## 8. 端点与 Key 安全
 
@@ -193,6 +241,14 @@ python hf_hub.py --search finbert --kind model     # 全程离线
 
 Token 只需 **Read** 权限（Inference Providers 调用需要带 inference 权限的 fine-grained token）：
 [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)。
+
+**推理端点（DeepSeek / OpenAI / 硅基流动 / Ollama …）是另一套 Key**，与 HF Token 互不通用：
+
+- 只发往 `INFERENCE_BASE_URL` 指向的主机（或预设厂商域名），Host 白名单由
+  `inference_api.py` 的 `allow_outbound_hosts` 控制，默认只放行预设域名与 localhost；
+- 日志与 `--check` 只打印脱敏形态（长度 + `前4…后4`），从不打印明文；
+- 无 Key 的本地端点（`keyless`，如 Ollama）不会带 `Authorization` 头；
+- **HF 402（额度用尽）≠ Key 无效**：`--check` 会区分，`auto` 会自动改走 `llm`。
 
 ---
 

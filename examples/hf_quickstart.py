@@ -16,6 +16,7 @@ examples/hf_quickstart.py — 把 Hugging Face 数据集与情绪引擎接进你
 
     # 4) 强制离线 Mock（CI / 演示）
     python examples/hf_quickstart.py --mock
+    python examples/hf_quickstart.py --no-llm
 
 代码里的 CRAWL_ITEMS 就是「你自己的爬虫 / 快讯模块」的替身：
 换成 stock_news_scan / newsnow_sources 的真实输出即可，其余不用改。
@@ -129,6 +130,44 @@ def demo_search() -> None:
                   f"♥{item.get('likes', 0)}  {item.get('pipeline_tag') or ''}")
 
 
+def demo_llm_engine() -> None:
+    """场景五：--engine llm —— 用大模型端点（DeepSeek 等）做零样本情绪判别。
+
+    没有真 Key 也能跑：hf_hub 自带一个 OpenAI 兼容的「分类器 Mock」，
+    它会按编号回标签，方便离线验证「提示词 → 调用 → 解析 → 聚合」全链路。
+    有真 Key 时（INFERENCE_* / DEEPSEEK_API_KEY）直接用真端点。
+    """
+    print("\n" + "=" * 64)
+    print("⑤ 大模型端点引擎（--engine llm，走 inference_api.py）")
+    print("=" * 64)
+    server = None
+    real = hh.llm_available()
+    if not real:
+        server = hh.start_llm_mock_server()
+        os.environ["INFERENCE_BASE_URL"] = f"{server.root}/v1"
+        os.environ["INFERENCE_API_KEY"] = "mock-key-123456"
+        os.environ["INFERENCE_MODEL"] = "mock-classifier"
+        print("🧪 未检测到推理端点，已启动 OpenAI 兼容 Mock（配置 "
+              "DEEPSEEK_API_KEY / INFERENCE_* 后这里会直连真端点）")
+    else:
+        info = hh.llm_describe()
+        print(f"🌐 推理端点：{info.get('provider')} · {info.get('model')} · "
+              f"{info.get('base_url')} · key {info.get('key_masked')}")
+    try:
+        result = hh.market_sentiment(CRAWL_ITEMS, engine="llm")
+        print(hh.render_sentiment_md(result))
+        print(f"\n引擎：{result['engine']} · 模型 {result.get('model')}")
+        lex = hh.market_sentiment(CRAWL_ITEMS, engine="lexicon")
+        print(f"对照 · 本地词典：{lex['aggregate']['label']}"
+              f"（{lex['aggregate']['score']:+.2f}）")
+    finally:
+        if server:
+            server.close()
+            for key in ("INFERENCE_BASE_URL", "INFERENCE_API_KEY",
+                        "INFERENCE_MODEL"):
+                os.environ.pop(key, None)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -138,6 +177,8 @@ def main() -> int:
     parser.add_argument("--mock", action="store_true", help="强制使用本地 Mock")
     parser.add_argument("--skip-network", action="store_true",
                         help="跳过需要联网的场景（只跑情绪画像）")
+    parser.add_argument("--no-llm", action="store_true",
+                        help="跳过场景五（大模型端点引擎）")
     args = parser.parse_args()
 
     server = None
@@ -153,6 +194,8 @@ def main() -> int:
             demo_dataset_rows()
             demo_benchmark()
             demo_search()
+        if not args.no_llm:
+            demo_llm_engine()
     finally:
         if server:
             server.close()

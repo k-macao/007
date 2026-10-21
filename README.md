@@ -191,16 +191,17 @@ python test_inference_api.py           # 39 项单元测试（含 HF 双协议�
 
 | 模块 | 负责 |
 |---|---|
-| `inference_api.py` | **生成**：把任意 OpenAI 兼容端点（含 HF Router）当聊天/补全模型用 |
-| `hf_hub.py` | **取数 + 判别**：Hub 检索、datasets-server 免下载取数、文本分类（FinBERT 等） |
+| `inference_api.py` | **生成**：把任意 OpenAI 兼容端点（DeepSeek / OpenAI / 硅基流动 / Ollama / HF Router …）当聊天模型用 |
+| `hf_hub.py` | **取数 + 判别**：Hub 检索、datasets-server 免下载取数、文本分类（FinBERT 等）；`--engine llm` 时复用 `inference_api.py` 调大模型做零样本情绪判别 |
 
 | 能力 | 说明 |
 |---|---|
 | Hub 检索 | 模型 / 数据集 / Spaces 搜索与详情，输出下载量、点赞、许可、pipeline_tag |
 | 免下载取数 | `datasets-server` 的 `/is-valid` `/splits` `/rows` `/search` `/filter` `/parquet` `/size`，GB 级数据集也能只读 100 行 |
-| 情绪引擎 | `lexicon`（内置中英金融词典，零网络）/ `hf`（真跑 HF 上的 FinBERT、中文 tone 模型）/ `auto`（有 Token 走模型，失败自动降级） |
+| 情绪引擎 | 四选一：`lexicon`（内置中英金融词典，零网络）/ `hf`（真跑 HF 上的 FinBERT、中文 tone 模型）/ **`llm`（DeepSeek 等大模型端点，走 `inference_api.py`）** / `auto`（`hf` → `llm` → `lexicon` 依次降级） |
 | 基线评估 | 抓 HF 上带标注的公开数据集当黄金标签，算准确率 / macro-F1 / 分组准确率——词典或模型退化会立刻看出来 |
-| 精选目录 | 20 个已核对存在的 HF 金融资源（情绪模型、情绪数据集、研报语料、行情新闻流、时序基座、参考 Space），附接入理由与命令 |
+| 离线联调 | `start_mock_server()` 模拟 Hub + datasets-server + task API；`start_llm_mock_server()` 模拟 OpenAI 兼容端点——**没有 Key 也能验证 llm 引擎全链路** |
+| 精选目录 | 21 个已核对存在的 HF 金融资源（情绪模型、情绪数据集、研报语料、行情新闻流、时序基座、参考 Space），附接入理由与命令 |
 
 ```bash
 # ① 看精选目录（含中文金融、时序基座、研报语料三类）
@@ -213,12 +214,18 @@ python hf_hub.py --ds-search zeroshot/twitter-financial-news-sentiment -q "Nvidi
 python hf_hub.py --ds-filter Kenpache/multilingual-financial-sentiment \
                  --where "language='zh'" --length 10
 
-# ③ 情绪打分（无 Token 走本地词典；有 Token 自动切 HF 模型）
-export HF_TOKEN=hf_xxx                       # 可选，只需 Read 权限
+# ③ 情绪打分（四个引擎：auto / lexicon / hf / llm）
+export HF_TOKEN=hf_xxx                       # 可选，只需 Read 权限（且要有推理额度）
 python hf_hub.py --sentiment "公司三季度净利润同比增长 42%，大幅超市场预期"
 python hf_hub.py --sentiment "Revenue surges 38%, beats estimates" --json
 python hf_hub.py --sentiment-file news.txt --engine hf \
                  --model yiyanghkust/finbert-tone-chinese      # 强制中文 tone 模型
+
+# ③-b HF 没推理额度时：让大模型端点来判（DeepSeek 为例，零新增依赖）
+export DEEPSEEK_API_KEY=sk-xxx               # 或 INFERENCE_BASE_URL/API_KEY/MODEL 通用写法
+export INFERENCE_PROVIDER=deepseek
+python hf_hub.py --sentiment "业绩大超预期，上调全年指引" --engine llm
+python hf_hub.py --sentiment-file news.txt --engine llm --llm-model deepseek-chat --llm-batch 20
 
 # ④ 用 HF 公开数据集给情绪引擎打基线
 python hf_hub.py --benchmark Kenpache/multilingual-financial-sentiment \
@@ -231,7 +238,7 @@ python hf_hub.py --digest NickyNicky/finance-financialmodelingprep-stock-news-se
 # ⑥ 检索 + 连通性 + 离线自检
 python hf_hub.py --search "financial sentiment" --kind dataset --limit 8
 python hf_hub.py --check
-python hf_hub.py --selftest        # 56 项离线自检（Mock 三个协议，CI 门禁）
+python hf_hub.py --selftest        # 74 项离线自检（Mock 四个协议，CI 门禁）
 python hf_hub.py --mock-server 18090   # 无 Key 也能联调：Hub + datasets-server + task API
 ```
 
@@ -243,8 +250,10 @@ python hf_hub.py --mock-server 18090   # 无 Key 也能联调：Hub + datasets-s
   `GET /api/hf/dataset?dataset=&length=` · `POST /api/hf/sentiment`
 - **扫描** `python stock_news_scan.py 09988 --hf-sentiment`
   → 在十八平台扫描报告末尾追加「🤗 Hugging Face 情绪复核」章节
-  （`--hf-model` 可指定模型，`--json` 输出里带 `hf_sentiment` 字段）
-- **CI**：`.github/workflows/ci.yml` 增加 `hf_hub --selftest`（第 13 个自检模块）
+  （`--hf-engine auto|lexicon|hf|llm`、`--hf-model`、`--hf-llm-model` 可配，
+   `--json` 输出里带 `hf_sentiment` 字段）
+- **CI**：`.github/workflows/ci.yml` 增加 `hf_hub --selftest`（第 13 个自检模块）；
+  `hf-sentiment.yml` 周更基线支持 `engine = llm`（用 `DEEPSEEK_API_KEY`）
 - **周更**：`.github/workflows/hf-sentiment.yml` 每周一自动跑一次基线评估，
   也支持手动跑 `benchmark` / `digest`
 

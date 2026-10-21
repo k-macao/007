@@ -1158,11 +1158,11 @@
             <div class="hud-clocks">
                 <div class="clock-badge">
                     <span class="pulse-dot"></span>
-                    <span id="cst-clock">2026-10-22 06:15:26 CST (北京时间)</span>
+                    <span id="cst-clock">2026-10-22 07:00:35 CST (北京时间)</span>
                 </div>
                 <div class="clock-badge">
                     <span style="color:var(--text-dim);">UTC</span>
-                    <span id="utc-clock">2026-10-21 22:15:26 UTC</span>
+                    <span id="utc-clock">2026-10-21 23:00:35 UTC</span>
                 </div>
                 <div class="clock-badge" style="border-color:var(--red);color:var(--red);">
                     <span>● REC LIVE 60 FPS</span>
@@ -1192,7 +1192,7 @@
             <span class="dsb-icon" id="q-banner-icon">⚠️</span>
             <span class="dsb-strong" id="q-banner-strong">演示数据 (STATIC DEMO)</span>
             <span class="dsb-hint" id="q-banner-hint">实时行情暂不可用（网络不可达或数据源失败），当前展示内置示例价格，不随市场更新。点击 ⚡ 实时刷新重试。</span>
-            <span class="dsb-time" id="q-banner-time">快照生成: 2026-10-22 06:15:26 CST (北京时间)</span>
+            <span class="dsb-time" id="q-banner-time">快照生成: 2026-10-22 07:00:35 CST (北京时间)</span>
         </div>
 
         <!-- 标的切换栏 (横排) -->
@@ -1472,6 +1472,8 @@
                 <span id="hf-token" style="color:var(--text-muted);font-size:13px;">—</span>
                 <span class="selector-label">精选:</span>
                 <span id="hf-cat-count" style="color:var(--cyan);font-size:13px;">—</span>
+                <span class="selector-label">大模型端点:</span>
+                <span id="hf-llm" style="color:var(--text-muted);font-size:13px;">—</span>
                 <span class="selector-label">Task API:</span>
                 <span id="hf-task-api" style="color:var(--text-muted);font-size:12px;">—</span>
             </div>
@@ -1496,7 +1498,8 @@
             <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
                 <span class="selector-label">⚙️ 引擎:</span>
                 <select id="hf-engine-pick" class="report-select">
-                    <option value="auto">auto（有 Token 走模型）</option>
+                    <option value="auto">auto（HF 模型→大模型→词典）</option>
+                    <option value="llm">llm（DeepSeek 等大模型端点）</option>
                     <option value="lexicon">lexicon（离线词典）</option>
                     <option value="hf">hf（强制 HF 模型）</option>
                 </select>
@@ -2613,6 +2616,10 @@
                 if (cc) cc.textContent = (cfg.catalog_count || 0) + ' 项（6 类）';
                 const api = document.getElementById('hf-task-api');
                 if (api) api.textContent = cfg.task_api || '—';
+                const llm = document.getElementById('hf-llm');
+                if (llm) llm.textContent = cfg.llm_configured
+                    ? ((cfg.llm_provider || 'custom') + ' · ' + (cfg.llm_model || ''))
+                    : '未配置（INFERENCE_* / DEEPSEEK_API_KEY）';
             } catch (e) { /* 静默 */ }
         }
 
@@ -2717,7 +2724,9 @@
                 const agg = r.aggregate || {};
                 if (meta) meta.textContent = (r.engine === 'hf'
                         ? 'Hugging Face 模型 · ' + (r.model || '')
-                        : '本地金融词典（离线）')
+                        : (r.engine === 'llm'
+                            ? '大模型端点 · ' + (r.model || '')
+                            : '本地金融词典（离线）'))
                     + ' · ' + (r.count || 0) + ' 条 · ' + (agg.label || '') + ' ' + (agg.score || 0)
                     + (r.note ? ' · ' + r.note : '');
                 appendLog('HF.SENTIMENT', 'OK', (agg.label || '') + ' ' + (agg.score || 0));
