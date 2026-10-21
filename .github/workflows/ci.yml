@@ -138,6 +138,7 @@ jobs:
 
     permissions:
       contents: read
+      pull-requests: write
 
     env:
       PYTHONUNBUFFERED: '1'
@@ -176,21 +177,47 @@ jobs:
             echo "⏭ 未配置 HF_TOKEN，跳过模型调用（上面 --check 已验证公开端点）"
           fi
 
-      - name: Write job summary
+      - name: Post probe result as PR comment
         if: always()
         env:
+          GH_TOKEN: ${{ github.token }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          set +e
+          python hf_hub.py --check > check.txt 2>&1
+          echo "=== check exit: $? ===" >> check.txt
+          : > model.txt
+          if [ -n "$HF_TOKEN" ]; then
+            echo "--- engine=hf · ProsusAI/finbert ---" >> model.txt
+            python hf_hub.py --sentiment "Revenue surges 38% year over year, beats estimates" \
+                             --engine hf --json >> model.txt 2>&1
+            echo "exit=$?" >> model.txt
+            echo "--- engine=hf · yiyanghkust/finbert-tone-chinese ---" >> model.txt
+            python hf_hub.py --sentiment "\u516c\u53f8\u4e09\u5b63\u5ea6\u51c0\u5229\u6da6\u540c\u6bd4\u589e\u957f 42%\uff0c\u5927\u5e45\u8d85\u5e02\u573a\u9884\u671f" \
+                             --engine hf --model yiyanghkust/finbert-tone-chinese --json >> model.txt 2>&1
+            echo "exit=$?" >> model.txt
+          fi
           {
-            echo "## 🤗 Hugging Face 探活结果"
+            echo "### 🤗 Hugging Face Token 探活（CI \u4e00\u6b21\u6027\uff0c\u6d4b\u5b8c\u5373\u5220\uff09"
             echo ""
-            echo "- 分支：\`${{ github.ref_name }}\` · 提交 \`${GITHUB_SHA::7}\`"
+            echo "- 提交：\`${GITHUB_SHA::7}\` · \`$(date -u +%Y-%m-%dT%H:%M:%SZ)\`"
             if [ -n "$HF_TOKEN" ]; then
-              echo "- HF_TOKEN：✅ 已配置（长度 ${#HF_TOKEN}）"
+              echo "- HF_TOKEN：✅ 已配置 · 长度 ${#HF_TOKEN} · 脱敏 \`${HF_TOKEN:0:4}\u2026${HF_TOKEN: -4}\`"
             else
-              echo "- HF_TOKEN：⚠️ 未配置（公开数据集可用，模型调用降级为本地词典）"
+              echo "- HF_TOKEN：⚠️ **未配置**（公开数据集仍可用，模型调用会降级为本地词典）"
             fi
             echo ""
-            echo "判定口径：\`--check\` 四项全绿 = Hub + datasets-server 通；"
-            echo "②③ 能出 JSON = Token 有效且模型可调用。"
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo "#### \`hf_hub.py --check\`"
+            echo '```'
+            cat check.txt
+            echo '```'
+            if [ -n "$HF_TOKEN" ]; then
+              echo ""
+              echo "#### \`engine=hf\` 模型调用"
+              echo '```'
+              cat model.txt
+              echo '```'
+            fi
+          } > report.md
+          gh pr comment "$PR_NUMBER" --body-file report.md
