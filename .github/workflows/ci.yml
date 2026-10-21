@@ -185,39 +185,28 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set +e
-          python hf_hub.py --check > check.txt 2>&1
-          echo "=== check exit: $? ===" >> check.txt
-          : > model.txt
+          # ① whoami-v2：Token 本身有没有被接受（只打印用户名/类型，不打印其它字段）
+          : > whoami.txt
           if [ -n "$HF_TOKEN" ]; then
-            echo "--- engine=hf · ProsusAI/finbert ---" >> model.txt
-            python hf_hub.py --sentiment "Revenue surges 38% year over year, beats estimates" \
-                             --engine hf --json >> model.txt 2>&1
-            echo "exit=$?" >> model.txt
-            echo "--- engine=hf · yiyanghkust/finbert-tone-chinese ---" >> model.txt
-            python hf_hub.py --sentiment "\u516c\u53f8\u4e09\u5b63\u5ea6\u51c0\u5229\u6da6\u540c\u6bd4\u589e\u957f 42%\uff0c\u5927\u5e45\u8d85\u5e02\u573a\u9884\u671f" \
-                             --engine hf --model yiyanghkust/finbert-tone-chinese --json >> model.txt 2>&1
-            echo "exit=$?" >> model.txt
+            curl -s -o w.json -w "http=%{http_code}\n" \
+              -H "Authorization: Bearer $HF_TOKEN" \
+              https://huggingface.co/api/whoami-v2 >> whoami.txt 2>&1
+            python -c "import json;d=json.load(open('w.json'));print('name:',d.get('name'));print('type:',d.get('type'));print('auth:',json.dumps(d.get('auth',{}),ensure_ascii=False))" >> whoami.txt 2>&1
+            echo "--- task API 原始响应（402 到底说什么）---" >> whoami.txt
+            curl -s -o t.json -w "http=%{http_code}\n" -X POST \
+              -H "Authorization: Bearer $HF_TOKEN" -H "Content-Type: application/json" \
+              -d '{"inputs":"Revenue surges 38%, beats estimates"}' \
+              https://router.huggingface.co/hf-inference/models/ProsusAI/finbert >> whoami.txt 2>&1
+            head -c 600 t.json >> whoami.txt
+            echo ""
+          else
+            echo "HF_TOKEN 为空" >> whoami.txt
           fi
           {
-            echo "### 🤗 Hugging Face Token 探活（CI \u4e00\u6b21\u6027\uff0c\u6d4b\u5b8c\u5373\u5220\uff09"
+            echo "### 🤗 Token 鉴权判定（whoami + 402 原文）"
             echo ""
-            echo "- 提交：\`${GITHUB_SHA::7}\` · \`$(date -u +%Y-%m-%dT%H:%M:%SZ)\`"
-            if [ -n "$HF_TOKEN" ]; then
-              echo "- HF_TOKEN：✅ 已配置 · 长度 ${#HF_TOKEN} · 脱敏 \`${HF_TOKEN:0:4}\u2026${HF_TOKEN: -4}\`"
-            else
-              echo "- HF_TOKEN：⚠️ **未配置**（公开数据集仍可用，模型调用会降级为本地词典）"
-            fi
-            echo ""
-            echo "#### \`hf_hub.py --check\`"
-            echo '```'
-            cat check.txt
-            echo '```'
-            if [ -n "$HF_TOKEN" ]; then
-              echo ""
-              echo "#### \`engine=hf\` 模型调用"
-              echo '```'
-              cat model.txt
-              echo '```'
-            fi
+            echo "\`\`\`"
+            cat whoami.txt
+            echo "\`\`\`"
           } > report.md
           gh pr comment "$PR_NUMBER" --body-file report.md
