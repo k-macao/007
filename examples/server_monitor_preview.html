@@ -1158,11 +1158,11 @@
             <div class="hud-clocks">
                 <div class="clock-badge">
                     <span class="pulse-dot"></span>
-                    <span id="cst-clock">2026-10-22 07:00:35 CST (北京时间)</span>
+                    <span id="cst-clock">2026-10-22 10:29:42 CST (北京时间)</span>
                 </div>
                 <div class="clock-badge">
                     <span style="color:var(--text-dim);">UTC</span>
-                    <span id="utc-clock">2026-10-21 23:00:35 UTC</span>
+                    <span id="utc-clock">2026-10-22 02:29:42 UTC</span>
                 </div>
                 <div class="clock-badge" style="border-color:var(--red);color:var(--red);">
                     <span>● REC LIVE 60 FPS</span>
@@ -1192,7 +1192,7 @@
             <span class="dsb-icon" id="q-banner-icon">⚠️</span>
             <span class="dsb-strong" id="q-banner-strong">演示数据 (STATIC DEMO)</span>
             <span class="dsb-hint" id="q-banner-hint">实时行情暂不可用（网络不可达或数据源失败），当前展示内置示例价格，不随市场更新。点击 ⚡ 实时刷新重试。</span>
-            <span class="dsb-time" id="q-banner-time">快照生成: 2026-10-22 07:00:35 CST (北京时间)</span>
+            <span class="dsb-time" id="q-banner-time">快照生成: 2026-10-22 10:29:42 CST (北京时间)</span>
         </div>
 
         <!-- 标的切换栏 (横排) -->
@@ -1375,7 +1375,7 @@
         <!-- 🧩 Skills Hub：官方 + 社区最新技能 -->
         <div class="section-header" id="skills-section">
             <span>🧩 Skills Hub · 最新投研技能目录 (AGENT SKILLS)</span>
-            <span class="section-tag">rollingSirius v3 + Anthropic financial-services 官方 9 技能 · Apache-2.0 / MIT</span>
+            <span class="section-tag">社区投研技能 v3 + 机构投研 9 技能 · Apache-2.0 / MIT</span>
         </div>
         <div class="equity-column-panel" id="skills-hub-panel" style="border-color:rgba(167,139,250,0.4);box-shadow:0 0 18px rgba(167,139,250,0.12);">
             <div class="equity-hero">
@@ -1383,14 +1383,10 @@
                     <div class="equity-kicker" style="color:var(--purple);">SKILLS UPDATED · 2026-08-13</div>
                     <div class="equity-title">最新 Skills 已接入</div>
                     <div class="equity-sub">按 Agent Skills 标准安装，大屏 / CLI / Actions 可直接跑</div>
-                    <div class="equity-links">
-                        <a class="equity-link" href="https://github.com/anthropics/financial-services" target="_blank" rel="noopener">📦 Anthropic equity-research 9 skills</a>
-                        <a class="equity-link" href="https://github.com/rollingSirius/equity-research-skill" target="_blank" rel="noopener">⬆ equity-research v3.0.0</a>
-                    </div>
                 </div>
                 <div class="equity-hero-side">
                     <div class="equity-stat"><span class="equity-stat-n" id="sk-total">10</span><span class="equity-stat-l">已安装 Skills</span></div>
-                    <div class="equity-stat"><span class="equity-stat-n" id="sk-anth">9</span><span class="equity-stat-l">Anthropic 官方</span></div>
+                    <div class="equity-stat"><span class="equity-stat-n" id="sk-anth">9</span><span class="equity-stat-l">机构投研标准</span></div>
                     <div class="equity-stat"><span class="equity-stat-n" id="sk-status">—</span><span class="equity-stat-l">Hub 状态</span></div>
                 </div>
             </div>
@@ -1431,7 +1427,7 @@
         <!-- 🔌 推理 API：统一接入（OpenAI 兼容） -->
         <div class="section-header" id="inference-section">
             <span>🔌 推理 API · 统一接入 (INFERENCE GATEWAY)</span>
-            <span class="section-tag">Hugging Face / DeepSeek / 硅基流动 / 百炼 / Ollama / vLLM · Key 不出服务端</span>
+            <span class="section-tag">云端推理网关 / 本地推理服务 · Key 不出服务端</span>
         </div>
         <div class="equity-column-panel" id="inference-panel" style="border-color:rgba(92,255,92,0.35);box-shadow:0 0 18px rgba(92,255,92,0.10);">
             <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
@@ -1459,10 +1455,10 @@
             <pre id="inf-output" style="margin-top:10px;padding:12px;border:1px dashed rgba(92,255,92,0.3);background:rgba(0,0,0,0.35);color:var(--text);white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.7;max-height:280px;overflow:auto;">等待调用…</pre>
         </div>
 
-        <!-- 🤗 Hugging Face：精选目录 / Hub 检索 / 金融情绪引擎 -->
+        <!-- 金融数据集与情绪引擎 -->
         <div class="section-header" id="hf-section">
-            <span>🤗 Hugging Face · 数据集与金融情绪引擎 (HF HUB &amp; SENTIMENT ENGINE)</span>
-            <span class="section-tag">datasets-server 免下载取数 · FinBERT / 中文 tone 模型 · 无 Token 自动降级本地词典</span>
+            <span>🧠 金融数据集与情绪引擎 (DATASET &amp; SENTIMENT ENGINE)</span>
+            <span class="section-tag">在线免下载取数 · 金融情绪模型 · 无 Token 自动降级本地词典</span>
         </div>
         <div class="equity-column-panel" id="hf-panel" style="border-color:rgba(255,153,0,0.35);box-shadow:0 0 18px rgba(255,153,0,0.10);">
             <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
@@ -1498,10 +1494,10 @@
             <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
                 <span class="selector-label">⚙️ 引擎:</span>
                 <select id="hf-engine-pick" class="report-select">
-                    <option value="auto">auto（HF 模型→大模型→词典）</option>
-                    <option value="llm">llm（DeepSeek 等大模型端点）</option>
+                    <option value="auto">auto（金融情绪模型→大模型→词典）</option>
+                    <option value="llm">llm（大模型推理端点）</option>
                     <option value="lexicon">lexicon（离线词典）</option>
-                    <option value="hf">hf（强制 HF 模型）</option>
+                    <option value="hf">hf（金融情绪模型）</option>
                 </select>
                 <button class="report-btn" onclick="fillHF('公司三季度净利润同比增长 42%，大幅超市场预期' + String.fromCharCode(10) + '控股股东拟减持不超过 2% 股份，套现约 3 亿元' + String.fromCharCode(10) + '公司将于下周四披露三季报')">📝 示例</button>
                 <button class="report-btn" onclick="fillHF('Revenue surges 38% year over year, beats estimates' + String.fromCharCode(10) + 'Quarterly results miss estimates; cuts full-year guidance')">🌐 英文示例</button>
@@ -1540,14 +1536,14 @@
     <div class="node-pill">
         <span class="node-dot"></span>
         <span class="node-id">AI-Node-04</span>
-        <span class="node-role">DeepSeek 推理执行集群</span>
+        <span class="node-role">大模型推理执行集群</span>
         <span class="node-stat">ACTIVE · 5ms · 负载 68%</span>
     </div>
     
     <div class="node-pill">
         <span class="node-dot"></span>
         <span class="node-id">TS-Database-05</span>
-        <span class="node-role">十七源时序与情绪数据库</span>
+        <span class="node-role">多源时序与情绪数据库</span>
         <span class="node-stat">SYNCED · 1ms · 负载 19%</span>
     </div>
     
@@ -2356,7 +2352,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         topic: topic, hours: 168, channel: channel,
-                        dry_run: channel === 'console', use_deepseek: true
+                        dry_run: channel === 'console', use_ai_search: true
                     })
                 });
                 const r = await resp.json();
@@ -2598,7 +2594,7 @@
         }
         setTimeout(refreshInferenceConfig, 400);
 
-        // —— Hugging Face：精选目录 / Hub 检索 / 金融情绪引擎 ——
+        // —— 金融模型与数据集：精选目录 / 目录检索 / 金融情绪引擎 ——
         async function refreshHFConfig() {
             try {
                 const resp = await fetch('/api/hf/config');
@@ -2663,7 +2659,7 @@
             const kind = (document.getElementById('hf-kind') || {}).value || 'model';
             const box = document.getElementById('hf-list');
             const meta = document.getElementById('hf-list-meta');
-            if (box) box.innerHTML = '<div style="color:var(--text-muted);">⏳ 正在检索 Hugging Face Hub…</div>';
+            if (box) box.innerHTML = '<div style="color:var(--text-muted);">⏳ 正在检索金融模型与数据集目录…</div>';
             appendLog('HF.SEARCH', 'QUERY', kind + ' · ' + (q || '(全部)'));
             try {
                 const resp = await fetch('/api/hf/search?q=' + encodeURIComponent(q)
@@ -2723,7 +2719,7 @@
                 if (out) out.innerHTML = r.html || '';
                 const agg = r.aggregate || {};
                 if (meta) meta.textContent = (r.engine === 'hf'
-                        ? 'Hugging Face 模型 · ' + (r.model || '')
+                        ? '金融情绪模型 · ' + (r.model || '')
                         : (r.engine === 'llm'
                             ? '大模型端点 · ' + (r.model || '')
                             : '本地金融词典（离线）'))
@@ -2774,7 +2770,7 @@
                 if (el('q-vol')) el('q-vol').textContent = q.vol;
                 if (el('q-pe')) el('q-pe').textContent = q.pe;
                 if (el('q-pe-foot') && q.pe && q.pe.indexOf('—') === -1) {
-                    el('q-pe-foot').textContent = '市盈率来自实时行情（腾讯财经）';
+                    el('q-pe-foot').textContent = '市盈率来自实时行情（实时行情主源）';
                 }
                 if (el('q-source-foot')) el('q-source-foot').textContent = '行情数据源: ' + q.source_label + (q.time ? ' · 行情时间 ' + q.time : '');
                 if (el('q-banner-icon')) el('q-banner-icon').textContent = '🟢';
@@ -3076,7 +3072,7 @@
         // 模拟遥测日志滚动
         const logSamples = [
             ["HEARTBEAT", "TICK", "Node HK-Master-01 reported 0 packet loss (latency 2.1ms)"],
-            ["AI.INFERENCE", "OK", "DeepSeek sentiment embedding batch completed in 18ms"],
+            ["AI.INFERENCE", "OK", "LLM sentiment embedding batch completed in 18ms"],
             ["MARKET.DATA", "FLOW", "Cross-checking price quotes across 3 quote feeds... OK"],
             ["RADAR.SCAN", "PULSE", "18 platforms active. No anomalous divergence detected."],
             ["FOREIGN.WEEKLY", "PULSE", "12 foreign institutions · 168H window · dual-feed active."]

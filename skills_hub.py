@@ -370,17 +370,17 @@ def gen_rule_skill(
             pe = str(quote["pe"])
         if quote.get("name"):
             name = quote["name"]
-        src = quote.get("source_label") or quote.get("source") or "未获取到"
+        from source_names import generalize_source
+        src = generalize_source(quote.get("source_label") or quote.get("source") or "未获取到")
         qtime = quote.get("time") or quote.get("fetched_at") or stamp
 
     head = [
         f"# {name}（{code or topic}）· {meta['title']}",
         "",
         f"**撰写：{stamp}｜行情：{price} {currency}（{chg}）PE {pe}**",
-        f"**Skill：`{meta['id']}` · 模板 `{tmpl}` · 来源 Anthropic financial-services**",
+        f"**Skill：`{meta['id']}` · 模板 `{tmpl}` · 机构级投研框架**",
         "",
-        "> 本篇为 **rule 骨架**（未调用大模型）。正式观点请用 `ai_provider=deepseek`。",
-        "> 缺失数据一律写「未获取到」，不把演示假设当作一手披露。",
+        "> 本篇为 **rule 骨架**（未调用大模型）。缺失数据一律写「未获取到」，不把演示假设当作一手披露。",
         "",
         f"> {meta.get('note') or '按 skill 工作流输出结构化备忘录。'}",
         "",
@@ -424,8 +424,7 @@ def gen_rule_skill(
         "## 来源与时间戳",
         "",
         f"- 实时行情：{src} · {qtime}",
-        f"- Skill：skills/anthropic-equity-research/{meta['id']}/SKILL.md",
-        "- 上游：https://github.com/anthropics/financial-services （Apache-2.0）",
+        f"- 研究模板：{meta['id']}",
         f"- 栏目版本 `{VERSION}`",
         "",
         "---",
@@ -513,7 +512,6 @@ def run_skill(
         f"### 📎 Skill 元数据\n\n"
         f"- skill：`{meta['id']}`（{meta['title']}）\n"
         f"- 模板：`{tmpl}`\n"
-        f"- 上游：https://github.com/anthropics/financial-services\n"
         f"- 生成说明：{gen_note}\n"
     )
     body = report_md.rstrip() + "\n\n" + "\n\n".join(extras)

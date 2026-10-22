@@ -105,13 +105,17 @@ def quote_to_context(market: str, code: str, q: dict) -> str:
     if q.get("high_52w") or q.get("low_52w"):
         lines.append(f"52周区间 {q.get('high_52w') or '—'} / {q.get('low_52w') or '—'}")
     lines.append(f"成交量 {_fmt_vol(q.get('volume'))} 股 · 成交额约 {_fmt_amount(q.get('amount'))} {cur}")
-    lines.append(f"数据源：{q.get('source_label')}（{q.get('source')}）"
+    from source_names import generalize_source
+    src_disp = generalize_source(q.get("source_label") or q.get("source"))
+    lines.append(f"数据源：{src_disp}"
                  f" · 行情时间 {q.get('time') or q.get('fetched_at') or '—'}")
     return "\n".join(lines)
 
 
 def quote_to_md(market: str, code: str, q: dict) -> str:
     """把标准化行情 dict 转成研报正文顶部的行情核验块（Markdown）。"""
+    from source_names import generalize_source
+    src_disp = generalize_source(q.get("source_label") or q.get("source"))
     label = MARKET_LABELS.get(market, market)
     cur = q.get("currency") or ("USD" if market == "us"
                                 else "HKD" if market == "hk" else "CNY")
@@ -128,7 +132,7 @@ def quote_to_md(market: str, code: str, q: dict) -> str:
         f"| 总市值 | {_fmt_amount(q.get('market_cap'))} {cur} | 流通市值 | {_fmt_amount(q.get('float_cap'))} {cur} |",
         f"| 成交量 | {_fmt_vol(q.get('volume'))} 股 | 成交额 | {_fmt_amount(q.get('amount'))} {cur} |",
         "",
-        f"> 数据源：{q.get('source_label')}（{q.get('source')}，免 Key）· "
+        f"> 数据源：{src_disp} · "
         f"行情时间 {q.get('time') or q.get('fetched_at') or '—'}",
     ]
     return "\n".join(lines)
@@ -136,10 +140,11 @@ def quote_to_md(market: str, code: str, q: dict) -> str:
 
 def quote_to_pp_quotes(quote: dict | None) -> list:
     """把 hk_quote 标准化行情转成 pushplus_deepseek.Quote 列表（供字符图/新鲜度复用）。"""
+    from source_names import generalize_source
     if not quote or quote.get("price") is None:
         return []
     return [pp.Quote(
-        source=quote.get("source_label") or quote.get("source") or "行情",
+        source=generalize_source(quote.get("source_label") or quote.get("source") or "行情"),
         ok=True,
         name=quote.get("name") or "",
         price=quote.get("price"),
@@ -364,8 +369,8 @@ def run_report(raw_code: str, *, channel: str = "console",
         context, market_md = quote_with_context(market, code, quote, cross_pack)
         quote_error = None
     else:
-        src_hint = ("腾讯美股/东财美股/Yahoo/Stooq 四源"
-                    if market == "us" else "腾讯财经/东方财富")
+        src_hint = ("境外四路行情源"
+                    if market == "us" else "双路实时行情源")
         context = (f"标的：{topic}（{label}）。\n"
                    f"注意：实时行情暂不可用（网络受限或数据源失败），"
                    f"凡涉及具体点位/估值的地方请标注 *（推断）。")
@@ -539,7 +544,7 @@ def _selftest_impl() -> int:
     ctx = quote_to_context("sh", "600519", q)
     check("沪A 上下文含价格/PE/币种", ("1720.000" in ctx and "25.6" in ctx and "CNY" in ctx))
     md = quote_to_md("sh", "600519", q)
-    check("沪A 行情块含价格与源", ("1720.000" in md and "腾讯财经" in md))
+    check("沪A 行情块含价格与泛化源", ("1720.000" in md and "实时行情主源" in md))
     q2 = hk_quote._parse_tencent(hk_quote.FIXTURES["tencent_00700"], "00700", "hk")
     check("港股上下文币种 HKD", "HKD" in quote_to_context("hk", "00700", q2))
 

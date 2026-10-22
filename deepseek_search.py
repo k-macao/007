@@ -182,10 +182,12 @@ def parse_deepseek_response(content: str, fallback_query: str = "") -> list[dict
         if len(title) < 4:
             continue
         url = str(r.get("url") or r.get("link") or "").strip()
-        # 清理标题中的 HTML
-        title = re.sub(r"<[^>]+>", "", title).strip()
+        # 清理标题中的 HTML 与渠道导语前缀
+        from source_names import clean_wire_prefix, generalize_source
+        title = clean_wire_prefix(re.sub(r"<[^>]+>", "", title).strip())
         summary = str(r.get("summary") or r.get("digest") or "").strip()
-        src = str(r.get("source") or r.get("platform") or "").strip()
+        raw_src = str(r.get("source") or r.get("platform") or "").strip()
+        src = generalize_source(raw_src, default="AI 智能检索") if raw_src else "AI 智能检索"
         ts_raw = r.get("date") or r.get("time") or r.get("pub_date") or r.get("published_at")
         ts = parse_any_time(ts_raw)
         out.append({
@@ -219,18 +221,18 @@ def _http_post_json(url: str, payload: dict, api_key: str, timeout: int) -> tupl
             b = str(e)
         return e.code, b
     except Exception as e:
-        raise RuntimeError(f"DeepSeek 网络失败: {e}") from e
+        raise RuntimeError(f"智能检索网络失败: {e}") from e
 
 
 def build_messages(query: str, hours: int) -> list[dict]:
     """
-    构造 DeepSeek Chat 提示词，明确要求返回 JSON 数组，避免自由文本。
+    构造检索提示词，明确要求返回 JSON 数组，避免自由文本。
     """
     system = (
         "你是专业的金融信息搜索引擎，专注于港股、A股、美股的实时新闻检索。"
         "你必须只返回 JSON 数组，不要任何解释、前言或代码围栏外的文字。"
         "每条包含 title(标题, 中文, 4-60字)、url(可验证的真实新闻链接，若无则空字符串)、"
-        "summary(1句摘要)、source(来源，如 财联社/华尔街见闻/格隆汇/Google新闻)、"
+        "summary(1句摘要)、source(泛化来源名，如 财经电报源/宏观快讯源/港美股快讯源/公开新闻检索)、"
         "date(ISO时间，如 2026-08-06T10:00:00+08:00)。"
         "优先返回近期的、与查询直接相关的新闻，若无相关则返回空数组 []。"
     )
@@ -238,7 +240,7 @@ def build_messages(query: str, hours: int) -> list[dict]:
         f"请搜索与“{query}”相关的最新财经新闻，时间窗口最近 {hours} 小时。"
         f"要求：\n"
         f"1) 返回 5-10 条，JSON 数组格式，如：\n"
-        f'[{{"title":"...","url":"https://...","summary":"...","source":"财联社","date":"2026-08-06T10:00:00+08:00"}}]\n'
+        f'[{{"title":"...","url":"https://...","summary":"...","source":"财经电报源","date":"2026-08-06T10:00:00+08:00"}}]\n'
         f"2) 只返回 JSON 数组，不要任何其他文字\n"
         f"3) 标题必须包含查询关键词或其别名\n"
         f"4) url 尽量给出真实可访问链接，若无法确定则留空\n"
@@ -254,12 +256,12 @@ def build_messages(query: str, hours: int) -> list[dict]:
 def fetch_deepseek_search(query: str, timeout: int = TIMEOUT_DEFAULT,
                           hours: int = 48) -> list[dict]:
     """
-    在线调用 DeepSeek API 搜索，返回 [{title,url,ts}] 列表。
+    在线调用智能检索 API 搜索，返回 [{title,url,ts}] 列表。
     无 Key 时抛 RuntimeError，由上层记为数据缺口。
     """
     api_key = _env("DEEPSEEK_API_KEY")
     if not api_key:
-        raise RuntimeError("缺少 DEEPSEEK_API_KEY，无法使用 DeepSeek 搜索")
+        raise RuntimeError("未配置检索密钥，已跳过智能检索")
     if not query or not query.strip():
         raise RuntimeError("搜索关键词为空")
 
@@ -324,7 +326,7 @@ def selftest() -> int:
         if not cond:
             fails += 1
 
-    print("🔍 DeepSeek 搜索（离线自检，不触网）")
+    print("🔍 AI 智能检索（离线自检，不触网）")
 
     # 1) JSON 提取
     content = json.loads(DEEPSEEK_SAMPLE_JSON)["choices"][0]["message"]["content"]
@@ -353,24 +355,24 @@ def selftest() -> int:
     msgs = build_messages("09988 阿里巴巴", 48)
     check("消息构造含 system/user", len(msgs) == 2 and "搜索引擎" in msgs[0]["content"])
 
-    # 7) 无 Key 时抛错（隔离）
+    # 7) 无 Key 时抛错（隔离，且错误信息不泄露环境变量密钥名）
     old = os.environ.pop("DEEPSEEK_API_KEY", None)
     try:
         fetch_deepseek_search("test", timeout=1)
         check("无 Key 应抛错", False)
     except RuntimeError as e:
-        check("无 Key 抛错且提示", "DEEPSEEK_API_KEY" in str(e))
+        check("无 Key 抛错且脱敏提示", "检索密钥" in str(e) and "DEEPSEEK" not in str(e))
     finally:
         if old is not None:
             os.environ["DEEPSEEK_API_KEY"] = old
 
-    print(f"\n{'✅ DeepSeek 搜索自检通过' if fails == 0 else f'❌ {fails} 项失败'}")
+    print(f"\n{'✅ AI 智能检索自检通过' if fails == 0 else f'❌ {fails} 项失败'}")
     return 1 if fails else 0
 
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
-    p = argparse.ArgumentParser(description="DeepSeek API 作为搜索引擎")
+    p = argparse.ArgumentParser(description="AI 智能搜索引擎")
     p.add_argument("--query", default="", help="搜索关键词，如 09988 阿里巴巴")
     p.add_argument("--hours", type=int, default=48, help="时间窗口小时数")
     p.add_argument("--timeout", type=int, default=TIMEOUT_DEFAULT)
@@ -398,9 +400,9 @@ def main(argv: list[str] | None = None) -> int:
             ensure_ascii=False, indent=2))
     else:
         if not items:
-            print(f"（DeepSeek 搜索 “{q}” 在 {args.hours}h 内未命中）")
+            print(f"（AI 智能检索 “{q}” 在 {args.hours}h 内未命中）")
         else:
-            print(f"🔍 DeepSeek 搜索 “{q}” · {args.hours}h · {len(items)} 条：")
+            print(f"🔍 AI 智能检索 “{q}” · {args.hours}h · {len(items)} 条：")
             for idx, it in enumerate(items, 1):
                 ts = it["ts"].strftime("%Y-%m-%d %H:%M") if it.get("ts") else "实时"
                 print(f"{idx}. {it['title']} — {it.get('source','')} · {ts}")

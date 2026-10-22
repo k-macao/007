@@ -188,7 +188,7 @@ class TestTradeViewIntegration(unittest.TestCase):
         self.assertTrue("generateDefaultChartBars" in html or "generateDefaultKlineBars" in html)
 
     def test_feed_source_hidden_toggle(self):
-        """源头信息默认隐藏：快讯卡片不渲染来源标签；SHOW_SOURCE_INFO=1 时恢复"""
+        """源头信息默认隐藏：快讯卡片不渲染来源标签；SHOW_SOURCE_INFO=1 时恢复泛化来源名"""
         import server_dashboard as sd
         from unittest import mock
         with mock.patch.object(sd, "SHOW_SOURCE_INFO", False):
@@ -197,8 +197,9 @@ class TestTradeViewIntegration(unittest.TestCase):
             shown = sd.render_server_monitor_html("09988")
         self.assertNotIn('<span class="feed-src">', hidden)
         self.assertNotIn("Google 新闻", hidden)
-        self.assertIn('<span class="feed-src">Google 新闻</span>', shown)
-        # 数据层仍保留 source 字段（供情绪归因 / 去重 / 后台统计），只是前端不展示
+        self.assertNotIn("Google 新闻", shown)
+        self.assertIn('<span class="feed-src">公开新闻检索</span>', shown)
+        # 数据层仍保留泛化 source 字段（供情绪归因 / 去重 / 后台统计），默认前端不展示
         self.assertTrue(sd.STOCKS["09988"]["feeds"][0]["source"])
 
 

@@ -562,7 +562,8 @@ def gen_rule_report(
     r_hi = (dcf_summary or {}).get("range_high")
     rng = (f"{r_lo} – {r_hi}" if r_lo is not None and r_hi is not None
            else "见估值脚本输出")
-    src = (quote or {}).get("source_label") or (quote or {}).get("source") or "未获取到"
+    from source_names import generalize_source
+    src = generalize_source((quote or {}).get("source_label") or (quote or {}).get("source") or "未获取到")
     qtime = (quote or {}).get("time") or (quote or {}).get("fetched_at") or stamp
 
     title_code = code or topic.split()[0]
@@ -572,13 +573,11 @@ def gen_rule_report(
         f"**撰写日期：{stamp}｜数据截止：{qtime}｜报告币种：{currency}**",
         f"**行业附录: {industry}**",
         f"**栏目：{COLUMN_TITLE} · {MODE_TITLES.get(mode, mode)}**",
-        f"**Skill：[{COLUMN_SKILL_URL}]({COLUMN_SKILL_URL})**",
         "",
         "> 本报告区分「事实」与「我的判断」。事实尽量标注来源和时间；"
         "模型估值属于情景推演，不是确定结果。本报告仅供研究，不构成个性化投资建议。",
         "",
         f"> ⚙️ 生成模式：**rule 骨架**（未调用大模型）。"
-        f"正式深度结论请使用 `ai_provider=deepseek` 并补齐一手财务数据。"
         f"当前估值假设标记为**演示/占位**，不可直接用于投资决策。",
         "",
     ]
@@ -642,7 +641,7 @@ def gen_rule_report(
         "3. **预期差不可证伪**：在 Gap 表关键行仍为「未获取到」时，按 skill 纪律不得给出买入动作。",
         "",
         f"**我的判断：** 在 rule 骨架与演示假设下，对 {name} 维持**观望**；"
-        f"待 DeepSeek/完整财务接入后，按标定规则重映射标签与动作。",
+        f"待完整财务接入后，按标定规则重映射标签与动作。",
         "",
     ]
 

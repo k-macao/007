@@ -94,7 +94,8 @@ def _load_file_cache(market: str, code: str) -> dict | None:
         q = dict(q)
         q["stale"] = age > FILE_CACHE_TTL
         q["stale_age_s"] = int(age)
-        q["source_label"] = (q.get("source_label") or q.get("source") or "") + (" (文件缓存)" if not q.get("stale") else " (文件缓存-过期)")
+        base_lbl = generalize_source(q.get("source_label") or q.get("source") or "")
+        q["source_label"] = base_lbl + (" (文件缓存)" if not q.get("stale") else " (文件缓存-过期)")
         q["from_file_cache"] = True
         return q
     except Exception:
@@ -108,12 +109,14 @@ DEFAULT_CHAIN = tuple(
 
 NO_LIVE = os.environ.get("HK_QUOTE_NO_LIVE", "") not in ("", "0", "false", "False")
 
+from source_names import generalize_source
+
 SOURCES = {
-    "tencent":   {"label": "腾讯财经",  "url_tpl": "https://qt.gtimg.cn/q=hk{code}",
+    "tencent":   {"label": "实时行情主源",  "url_tpl": "https://qt.gtimg.cn/q=hk{code}",
                   "encoding": "gbk"},
-    "eastmoney": {"label": "东方财富",  "url_tpl": "https://push2.eastmoney.com/api/qt/stock/get?secid=116.{code}&fields=f43,f44,f45,f46,f47,f48,f50,f57,f58,f60,f107,f116,f117,f162,f167,f168,f169,f170,f171",
+    "eastmoney": {"label": "实时行情备源",  "url_tpl": "https://push2.eastmoney.com/api/qt/stock/get?secid=116.{code}&fields=f43,f44,f45,f46,f47,f48,f50,f57,f58,f60,f107,f116,f117,f162,f167,f168,f169,f170,f171",
                   "encoding": "utf-8"},
-    "yahoo":     {"label": "Yahoo Finance",
+    "yahoo":     {"label": "国际行情源",
                   "url_tpl": "https://query1.finance.yahoo.com/v8/finance/chart/{code}.HK?interval=1d&range=5d",
                   "encoding": "utf-8"},
 }

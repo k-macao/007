@@ -2,6 +2,8 @@
 
 港股 / A 股 / 美股实时行情、多通道推送、定时全市场简报，以及**机构级个股投研独立栏目**。
 
+> **🏷️ 来源泛化名（`source_names.py`）**：全仓库行情核验表、十二源快讯、全网热榜、十八平台扫描、香港券商与外资机构周报、AI 提示词及监控大屏统一采用分类泛化源名（不暴露底层抓取平台品牌、电头署名、原始域名或环境变量密钥名，同时完整保留股票与被研究机构主体名）。验证门禁：`python source_names.py --selftest && python -m unittest test_source_names -v`。
+
 ## 🏛 机构级个股投研独立栏目（新增）
 
 基于 [equity-research-skill](https://github.com/k-macao/equity-research-skill)（上游 [rollingSirius/equity-research-skill](https://github.com/rollingSirius/equity-research-skill)）落地的独立研究栏目：

@@ -77,7 +77,7 @@ def _load_file_cache_us(code: str) -> dict | None:
         q = dict(q)
         q["stale"] = age > FILE_CACHE_TTL
         q["stale_age_s"] = int(age)
-        q["source_label"] = (q.get("source_label") or q.get("source") or "") + (" (文件缓存)" if not q.get("stale") else " (文件缓存-过期)")
+        q["source_label"] = generalize_source(q.get("source_label") or q.get("source") or "") + (" (文件缓存)" if not q.get("stale") else " (文件缓存-过期)")
         q["from_file_cache"] = True
         return q
     except Exception:
@@ -88,22 +88,24 @@ EM_US_MARKET_IDS = ("105", "106", "107")   # 105=NASDAQ 106=NYSE 107=AMEX，未�
 EM_HOSTS = ("push2.eastmoney.com", "push2delay.eastmoney.com")
 YAHOO_HOSTS = ("query1.finance.yahoo.com", "query2.finance.yahoo.com")
 
+from source_names import generalize_source, sanitize_error
+
 # 交叉验证阈值：±0.8% 内视为一致（覆盖汇率/微小延迟抖动），±2% 内基本一致
 CROSS_TOL_OK = 0.008
 CROSS_TOL_LOOSE = 0.02
 
 US_SOURCES = {
-    "tencent":   {"label": "腾讯财经(美股)",
+    "tencent":   {"label": "美股行情主源",
                   "url_tpl": "https://qt.gtimg.cn/q=us{code}", "encoding": "gbk"},
-    "eastmoney": {"label": "东方财富(美股)",
+    "eastmoney": {"label": "美股行情备源",
                   "url_tpl": ("https://push2.eastmoney.com/api/qt/stock/get"
                               "?secid={secid}&fields=f43,f44,f45,f46,f47,f48,f57,"
                               "f58,f60,f107,f116,f117,f152,f169,f170,f171"),
                   "encoding": "utf-8"},
-    "yahoo":     {"label": "Yahoo Finance",
+    "yahoo":     {"label": "国际行情核验源",
                   "url_tpl": ("https://query1.finance.yahoo.com/v8/finance/chart/"
                               "{code}?interval=1d&range=5d"), "encoding": "utf-8"},
-    "stooq":     {"label": "Stooq(延迟)",
+    "stooq":     {"label": "延迟核验源",
                   "url_tpl": "https://stooq.com/q/l/?s={lower}.us&f=sd2t2ohlcv&h&e=csv",
                   "encoding": "utf-8"},
 }
@@ -569,11 +571,13 @@ def us_cross_md(pack: dict) -> str:
         note.append(f"{lat.get(q.get('source'), 0)}ms")
         pct = f"{q['change_pct']:+.2f}%" if q.get("change_pct") is not None else "—"
         lines.append(
-            f"| {q.get('source_label')} | "
+            f"| {generalize_source(q.get('source_label'))} | "
             f"**{price:.3f}** {q.get('currency', 'USD')} | {pct} | {dev or '—'} | "
             f"{q.get('time') or '—'} | {' · '.join(note)} |")
     for e in pack.get("errors", []):
-        lines.append(f"| {e.split('：')[0]} | — | — | — | — | ❌ {e.split('：')[-1][:30]} |")
+        e_clean = sanitize_error(e)
+        lines.append(
+            f"| {generalize_source(e_clean.split('：')[0])} | — | — | — | — | ❌ {e_clean.split('：')[-1][:30]} |")
     if cross.get("consensus") is not None:
         lines += [
             "",
@@ -590,10 +594,10 @@ def us_context_line(pack: dict) -> str:
     cross = pack.get("cross") or {}
     if not cross.get("ok"):
         return "境外行情交叉验证：全部行情源失败（见数据缺口）。"
-    srcs = "、".join(s["label"] for s in cross.get("per_source", [])[:4])
+    srcs = "、".join(generalize_source(s["label"]) for s in cross.get("per_source", [])[:4])
     return (f"境外行情交叉验证：{cross['verdict']}；共识价 {cross['consensus']} USD"
             f"（参与源：{srcs}；最大偏离 {cross.get('spread_pct')}%，"
-            f"Stooq 为延迟源仅参与核验）。")
+            f"延迟核验源仅参与核验）。")
 
 
 # ================================================================ 离线样本与自检
@@ -751,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
 
     q = fetch_us_quote(code, use_cache=not args.no_cache)
     if not q:
-        print(f"❌ {code} 全部行情源失败（腾讯/东财/Yahoo/Stooq）")
+        print(f"❌ {code} 全部境外行情源失败")
         return 1
     if args.json:
         print(json.dumps(q, ensure_ascii=False, indent=2))

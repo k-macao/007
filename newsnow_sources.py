@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Dict
 
+from source_names import clean_wire_prefix, generalize_source, sanitize_error
+
 UTC = timezone.utc
 
 # ---------------- 通用请求 ----------------
@@ -127,14 +129,14 @@ def parse_zhihu(text: str) -> List[HotItem]:
         # id 取 url 尾数字
         m = re.search(r"(\d+)$", url)
         _id = m.group(1) if m else url
-        items.append(HotItem(source="知乎热榜", id=_id, title=title, url=url,
+        items.append(HotItem(source="问答社区热榜", id=_id, title=clean_wire_prefix(title), url=url,
                              extra_info=metrics or excerpt))
     return items
 
 def fetch_zhihu(timeout: int = 15) -> List[HotItem]:
     status, body, _ = http_request(ZHIHU_URL, timeout=timeout, encoding="utf-8")
     if status != 200:
-        raise RuntimeError(f"知乎 HTTP {status}")
+        raise RuntimeError(f"问答社区热榜 HTTP {status}")
     return parse_zhihu(body)
 
 
@@ -162,7 +164,7 @@ def parse_douyin(text: str) -> List[HotItem]:
         if not sid or not word:
             continue
         url = f"https://www.douyin.com/hot/{sid}"
-        items.append(HotItem(source="抖音热搜", id=sid, title=word, url=url, extra_info=hot))
+        items.append(HotItem(source="短视频热搜榜", id=sid, title=clean_wire_prefix(word), url=url, extra_info=hot))
     return items
 
 def fetch_douyin(timeout: int = 15) -> List[HotItem]:
@@ -179,7 +181,7 @@ def fetch_douyin(timeout: int = 15) -> List[HotItem]:
     headers = {"cookie": cookies} if cookies else {}
     status, body, _ = http_request(DOUYIN_HOT_URL, headers=headers, timeout=timeout)
     if status != 200:
-        raise RuntimeError(f"抖音 HTTP {status}")
+        raise RuntimeError(f"短视频热搜榜 HTTP {status}")
     return parse_douyin(body)
 
 
@@ -208,7 +210,7 @@ def parse_weibo(html: str) -> List[HotItem]:
         if "javascript" in href:
             continue
         url = f"https://s.weibo.com{href}" if href.startswith("/") else href
-        items.append(HotItem(source="微博实时热搜", id=title, title=title, url=url, extra_info=flag))
+        items.append(HotItem(source="社交实时热搜", id=title, title=clean_wire_prefix(title), url=url, extra_info=flag))
     return items
 
 def fetch_weibo(timeout: int = 15) -> List[HotItem]:
@@ -219,15 +221,15 @@ def fetch_weibo(timeout: int = 15) -> List[HotItem]:
     }
     status, body, _ = http_request(WEIBO_URL, headers=headers, timeout=timeout)
     if status != 200:
-        raise RuntimeError(f"微博 HTTP {status}")
+        raise RuntimeError(f"社交实时热搜 HTTP {status}")
     return parse_weibo(body)
 
 
 # ---------------- 4. 虎扑热搜 ----------------
 HUPU_URL = "https://bbs.hupu.com/topic-daily-hot"
 HUPU_SAMPLE = """
-<li class="bbs-sl-web-post-body"><a href="/123456.html" class="p-title">虎扑NBA：阿里巴巴冠名赞助</a></li>
-<li class="bbs-sl-web-post-body"><a href="/654321.html" class="p-title">虎扑热帖：电商板块大涨</a></li>
+<li class="bbs-sl-web-post-body"><a href="/123456.html" class="p-title">赛事商业：阿里巴巴冠名赞助</a></li>
+<li class="bbs-sl-web-post-body"><a href="/654321.html" class="p-title">社区热议：电商板块大涨</a></li>
 """
 
 def parse_hupu(html: str) -> List[HotItem]:
@@ -238,7 +240,7 @@ def parse_hupu(html: str) -> List[HotItem]:
         if not path or not title:
             continue
         url = f"https://bbs.hupu.com{path}" if path.startswith("/") else path
-        items.append(HotItem(source="虎扑热搜", id=path, title=title, url=url))
+        items.append(HotItem(source="论坛热议榜", id=path, title=clean_wire_prefix(title), url=url))
     return items
 
 def fetch_hupu(timeout: int = 15) -> List[HotItem]:
@@ -270,10 +272,9 @@ def parse_aihot_json(text: str) -> List[HotItem]:
         if not (it.get("id") and it.get("title") and it.get("url")):
             continue
         info = it.get("category") or ""
-        src = it.get("source") or ""
-        extra = f"{src} · {info}" if info else src
-        items.append(HotItem(source="AI hot", id=str(it["id"]), title=str(it["title"]),
-                             url=str(it["url"]), extra_info=extra or it.get("summary","") ))
+        extra = info or it.get("summary", "")
+        items.append(HotItem(source="科技热点榜", id=str(it["id"]), title=clean_wire_prefix(str(it["title"])),
+                             url=str(it["url"]), extra_info=extra))
     return items
 
 def parse_aihot_rss(text: str) -> List[HotItem]:
@@ -284,7 +285,7 @@ def parse_aihot_rss(text: str) -> List[HotItem]:
         link = (it.findtext("link") or "").strip()
         if not title or not link:
             continue
-        items.append(HotItem(source="AI hot", id=link, title=title, url=link))
+        items.append(HotItem(source="科技热点榜", id=link, title=clean_wire_prefix(title), url=link))
     return items
 
 def fetch_aihot(timeout: int = 15) -> List[HotItem]:
@@ -324,7 +325,7 @@ def parse_zaobao(html: str) -> List[HotItem]:
         if not url_path or not title:
             continue
         url = base + url_path if url_path.startswith("/") else url_path
-        items.append(HotItem(source="联合早报", id=url_path, title=title, url=url, extra_info=date))
+        items.append(HotItem(source="亚太资讯源", id=url_path, title=clean_wire_prefix(title), url=url, extra_info=date))
     return items
 
 def fetch_zaobao(timeout: int = 15) -> List[HotItem]:
@@ -354,7 +355,7 @@ HK01_URLS = [
 ]
 
 HK01_SAMPLE_HTML = """
-<div class="content"><a href="/news/123" title="香港01：电商新闻上热榜">香港01：电商新闻上热榜</a></div>
+<div class="content"><a href="/news/123" title="本港零售与电商新闻上热榜">本港零售与电商新闻上热榜</a></div>
 <div class="content"><a href="/news/124" title="港股阿里巴巴大涨">港股阿里巴巴大涨</a></div>
 """
 
@@ -388,7 +389,7 @@ def parse_hk01_json(text: str) -> List[HotItem]:
                 url = "https://www.hk01.com" + url
             if not url:
                 url = "https://www.hk01.com/hot"
-            items.append(HotItem(source="香港01", id=title, title=title.strip(), url=url))
+            items.append(HotItem(source="港闻资讯源", id=title, title=clean_wire_prefix(title.strip()), url=url))
         return items
     except Exception:
         return []
@@ -408,7 +409,7 @@ def parse_hk01_html(html: str) -> List[HotItem]:
             continue
         seen.add(href)
         url = f"https://www.hk01.com{href}"
-        items.append(HotItem(source="香港01", id=href, title=title, url=url))
+        items.append(HotItem(source="港闻资讯源", id=href, title=clean_wire_prefix(title), url=url))
         if len(items) >= 20:
             break
     return items
@@ -466,7 +467,7 @@ def parse_toutiao(text: str) -> List[HotItem]:
         if not url and cid:
             url = f"https://www.toutiao.com/trending/{cid}/"
         hot = str(it.get("HotValue") or it.get("hot_value") or "").strip()
-        items.append(HotItem(source="今日头条热榜", id=cid or title, title=title,
+        items.append(HotItem(source="综合资讯热榜", id=cid or title, title=clean_wire_prefix(title),
                              url=url, extra_info=hot))
     return items
 
@@ -530,7 +531,7 @@ def parse_baidu(text: str) -> List[HotItem]:
             desc = str(it.get("desc") or "").strip()
             if desc:
                 extra = f"{extra} {desc}".strip()
-            items.append(HotItem(source="百度实时热点", id=title, title=title,
+            items.append(HotItem(source="搜索实时热点", id=title, title=clean_wire_prefix(title),
                                  url=url, extra_info=extra))
     return items
 
@@ -580,7 +581,7 @@ def parse_bilibili(text: str) -> List[HotItem]:
         tname = str(it.get("tname") or "").strip()
         view = (it.get("stat") or {}).get("view")
         extra = f"{tname} · 播放{view}" if view is not None else tname
-        items.append(HotItem(source="B站热榜", id=bvid, title=title,
+        items.append(HotItem(source="视频社区热榜", id=bvid, title=clean_wire_prefix(title),
                              url=url, extra_info=extra))
     return items
 
@@ -601,19 +602,19 @@ def fetch_bilibili(timeout: int = 15) -> List[HotItem]:
 # ---------------- 聚合 ----------------
 
 FETCHERS = {
-    "zhihu": ("知乎热榜", fetch_zhihu),
-    "douyin": ("抖音热搜", fetch_douyin),
-    "weibo": ("微博实时热搜", fetch_weibo),
-    "hupu": ("虎扑热搜", fetch_hupu),
-    "aihot": ("AI hot", fetch_aihot),
-    "zaobao": ("联合早报", fetch_zaobao),
-    "hk01": ("香港01", fetch_hk01),
-    "toutiao": ("今日头条热榜", fetch_toutiao),
-    "baidu": ("百度实时热点", fetch_baidu),
-    "bilibili": ("B站热榜", fetch_bilibili),
+    "zhihu": ("问答社区热榜", fetch_zhihu),
+    "douyin": ("短视频热搜榜", fetch_douyin),
+    "weibo": ("社交实时热搜", fetch_weibo),
+    "hupu": ("论坛热议榜", fetch_hupu),
+    "aihot": ("科技热点榜", fetch_aihot),
+    "zaobao": ("亚太资讯源", fetch_zaobao),
+    "hk01": ("港闻资讯源", fetch_hk01),
+    "toutiao": ("综合资讯热榜", fetch_toutiao),
+    "baidu": ("搜索实时热点", fetch_baidu),
+    "bilibili": ("视频社区热榜", fetch_bilibili),
 }
 
-# 前 7 个为用户指定；2026-08-13 追加 3 个（今日头条/百度/B站）
+# 前 7 个为用户指定；2026-08-13 追加 3 个（综合资讯/搜索热点/视频社区）
 TARGET_SOURCES = ["zhihu", "douyin", "weibo", "hupu", "aihot", "zaobao", "hk01",
                   "toutiao", "baidu", "bilibili"]
 
@@ -643,73 +644,74 @@ def collect_newsnow(sources: List[str] | None = None, timeout: int = 15) -> News
     pack = NewsNowPack()
     all_items = []
     for key in srcs:
-        name, fn = FETCHERS.get(key, (key, None))
+        name, fn = FETCHERS.get(key, (generalize_source(key), None))
         if fn is None:
-            pack.errors.append(f"{key}：未实现")
+            pack.errors.append(f"{generalize_source(key)}：未实现")
             continue
         try:
             lst = fn(timeout=timeout)
             pack.items[name] = lst[:20]
             all_items.extend(lst)
         except Exception as e:
-            pack.errors.append(f"{name}：{str(e)[:150]}")
+            pack.errors.append(f"{name}：{sanitize_error(e)[:150]}")
     pack.agg = {"total": len(all_items), "sources_ok": len(pack.items), "sources_total": len(srcs)}
     return pack
 
 
 def _item_line_no(i: HotItem, idx: int) -> str:
-    # 用于 markdown AI 上下文
+    # 用于 markdown AI 上下文（泛化来源名且不外露原始平台 URL）
     extra = f" [{i.extra_info}]" if i.extra_info else ""
-    return f"{idx}. {i.title}{extra} — {i.source} | {i.url}"
+    return f"{idx}. {i.title}{extra} — {generalize_source(i.source)}"
 
 
 def newsnow_context(pack: NewsNowPack) -> str:
-    lines = [f"【NewsNow热榜聚合：{pack.agg.get('sources_ok')}/{pack.agg.get('sources_total')}源可用，共{pack.agg.get('total')}条】"]
+    lines = [f"【全网热榜聚合：{pack.agg.get('sources_ok')}/{pack.agg.get('sources_total')}源可用，共{pack.agg.get('total')}条】"]
     for src_name, items in pack.items.items():
-        lines.append(f"▼ {src_name}（{len(items)}条）")
+        lines.append(f"▼ {generalize_source(src_name)}（{len(items)}条）")
         for k, it in enumerate(items[:10]):
             lines.append(_item_line_no(it, k+1))
     if pack.errors:
-        lines.append("▼ 数据缺口：" + "；".join(pack.errors))
+        lines.append("▼ 数据缺口：" + "；".join(sanitize_error(e) for e in pack.errors))
     return "\n".join(lines)
 
 
 def render_newsnow_rule(topic: str, pack: NewsNowPack) -> str:
-    lines = [f"**{topic} · NewsNow热榜（{pack.agg.get('sources_ok')}/{pack.agg.get('sources_total')}源）**（本地抓取）", "",
+    lines = [f"**{topic} · 全网热榜（{pack.agg.get('sources_ok')}/{pack.agg.get('sources_total')}源）**（本地抓取）", "",
              "| 来源 | 排名 | 标题 | 热度/备注 |",
              "|---|---|---|---|"]
     for src_name, items in pack.items.items():
+        gsrc = generalize_source(src_name)
         for idx, it in enumerate(items[:10], 1):
             title = it.title[:22] + ("…" if len(it.title) > 22 else "")
-            # 转义 | 避免表格破裂
             title = title.replace("|", "/")
             extra = (it.extra_info[:12] + "…") if len(it.extra_info) > 12 else it.extra_info
             extra = extra.replace("|", "/")
-            lines.append(f"| {src_name} | {idx} | {title} | {extra} |")
+            lines.append(f"| {gsrc} | {idx} | {title} | {extra} |")
     if not lines or len(lines) <= 4:
         lines.append("| — | — | 暂无数据 | — |")
     lines += ["",
               f"- **总计** {pack.agg.get('total',0)} 条 / {pack.agg.get('sources_ok',0)} 源",
-              "> 数据来源：ourongxing/newsnow 移植（知乎/抖音/微博/虎扑/AI hot/联合早报/香港01/今日头条/百度/B站）",
+              "> 数据来源：全网多平台公开热榜聚合（10 源）",
               "> ⚠️ 非投资建议，仅供参考。"]
     if pack.errors:
         lines.append("")
         lines.append("**数据缺口**")
         for e in pack.errors:
-            lines.append(f"- ⚠️ {e}")
+            lines.append(f"- ⚠️ {sanitize_error(e)}")
     return "\n".join(lines)
 
 
 def render_newsnow_appendix(pack: NewsNowPack) -> str:
-    lines = ["---", f"🔥 **NewsNow热榜明细（{pack.agg.get('total',0)}条）**"]
+    lines = ["---", f"🔥 **全网热榜明细（{pack.agg.get('total',0)}条）**"]
     for src_name, items in pack.items.items():
-        lines.append(f"\n**{src_name}（{len(items)}/20）**")
+        lines.append(f"\n**{generalize_source(src_name)}（{len(items)}/20）**")
         for k, it in enumerate(items[:20], 1):
-            lines.append(f"{k}. [{it.title}]({it.url}) {it.extra_info}")
+            extra = f" · {it.extra_info}" if it.extra_info else ""
+            lines.append(f"{k}. {it.title}{extra}")
     if pack.errors:
         lines.append("\n**数据缺口**")
         for e in pack.errors:
-            lines.append(f"- ⚠️ {e}")
+            lines.append(f"- ⚠️ {sanitize_error(e)}")
     return "\n".join(lines)
 
 
@@ -747,12 +749,12 @@ def selftest_newsnow() -> int:
 
     pack = NewsNowPack()
     pack.items = {
-        "知乎热榜": parse_zhihu(ZHIHU_SAMPLE),
-        "抖音热搜": parse_douyin(DOUYIN_SAMPLE),
+        "问答社区热榜": parse_zhihu(ZHIHU_SAMPLE),
+        "短视频热搜榜": parse_douyin(DOUYIN_SAMPLE),
     }
     pack.agg = {"total": 4, "sources_ok": 2, "sources_total": 10}
     md = render_newsnow_rule("阿里巴巴", pack)
-    check("newsnow rule 渲染含表格", "| 来源 |" in md and "知乎热榜" in md)
+    check("newsnow rule 渲染含泛化源名表格", "| 来源 |" in md and "问答社区热榜" in md)
     ctx = newsnow_context(pack)
     check("newsnow context 含标的", "阿里巴巴" in ctx or "热榜" in ctx)
 

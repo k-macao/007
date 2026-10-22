@@ -162,19 +162,21 @@ def _score_text(text: str) -> tuple[float, str]:
 
 def _mk_item(firm_key: str, title: str, url: str, summary: str, ts,
              source: str = "") -> BrokerItem:
+    from source_names import clean_wire_prefix, generalize_broker_source
     firm = FIRM_MAP.get(firm_key, {})
     name = firm.get("name", firm_key)
-    score, label = _score_text(f"{title} {summary}")
+    clean_t = clean_wire_prefix(title)
+    score, label = _score_text(f"{clean_t} {summary}")
     rating = ""
     m = re.search(r"(增持|买入|中性|减持|卖出|超配|低配|跑赢大市|跑输大市|"
                   r"overweight|underweight|buy|sell|neutral|outperform)",
-                  title + " " + summary, re.I)
+                  clean_t + " " + summary, re.I)
     if m:
         rating = m.group(1)
     return BrokerItem(
-        firm=name, firm_key=firm_key, title=title.strip(),
+        firm=name, firm_key=firm_key, title=clean_t.strip(),
         url=(url or "").strip(), summary=(summary or "").strip(),
-        source=source or name, published=ts, rating=rating,
+        source=generalize_broker_source(source), published=ts, rating=rating,
         sentiment=label, score=score)
 
 
@@ -326,17 +328,17 @@ def _fetch_via_google(firm_key: str, hours: int,
             if status != 200:
                 raise RuntimeError(f"Google HTTP {status}")
             items = _rows_to_items(parse_google_rss(body), firm_key, hours,
-                                   now, "Google新闻")
+                                   now, "公开新闻检索")
             if items:
                 return items
         return []
     except Exception as e:
-        raise RuntimeError(f"Google 搜索失败: {e}") from e
+        raise RuntimeError(f"主检索源失败: {e}") from e
 
 
 def _fetch_via_bing(firm_key: str, hours: int,
                     timeout: int, now: datetime) -> List[BrokerItem]:
-    """Bing News RSS（备援真实新闻检索）。"""
+    """备援新闻 RSS 检索。"""
     try:
         from stock_news_scan import http_request
         import urllib.parse
@@ -347,7 +349,7 @@ def _fetch_via_bing(firm_key: str, hours: int,
         url = f"https://www.bing.com/news/search?q={q}&format=rss"
         status, body = http_request(url, timeout=timeout)
         if status != 200:
-            raise RuntimeError(f"Bing HTTP {status}")
+            raise RuntimeError(f"备援检索源 HTTP {status}")
         try:
             root = ET.fromstring(body)
         except ET.ParseError:
@@ -358,11 +360,14 @@ def _fetch_via_bing(firm_key: str, hours: int,
                 ts = parsedate_to_datetime(it.findtext("pubDate", "") or "")
             except (TypeError, ValueError):
                 ts = None
-            rows.append({"title": it.findtext("title", "") or "",
+            raw_t = (it.findtext("title", "") or "").strip()
+            if " - " in raw_t:
+                raw_t = raw_t.rsplit(" - ", 1)[0].strip()
+            rows.append({"title": raw_t,
                          "url": it.findtext("link", "") or "", "ts": ts})
-        return _rows_to_items(rows, firm_key, hours, now, "Bing资讯")
+        return _rows_to_items(rows, firm_key, hours, now, "备援新闻检索")
     except Exception as e:
-        raise RuntimeError(f"Bing 搜索失败: {e}") from e
+        raise RuntimeError(f"备援检索源失败: {e}") from e
 
 
 def _collect_quotes(target_keys: List[str]) -> Dict[str, Dict]:
@@ -433,7 +438,8 @@ def collect_hk_brokers(topic: str = "港股市场", hours: int = DEFAULT_HOURS,
             pack.reports[key] = uniq[:5]
             dead_streak = 0
         else:
-            detail = "；".join(errs) if errs else f"{hours}h 内无命中"
+            from source_names import sanitize_error
+            detail = "；".join(sanitize_error(x) for x in errs) if errs else f"{hours}h 内无命中"
             pack.errors.append(f"{firm['name']}：{detail}")
             # 开局连续 3 家两路 RSS 全抛错：判定网络源不可达，快速止损
             dead_streak = dead_streak + 1 if transport_dead else 0
@@ -492,17 +498,19 @@ def render_hk_brokers_rule(topic: str, pack: HkBrokersPack) -> str:
         f"- **汇总**：{a.get('n', 0)} 条动态 / {a.get('firms_hit', 0)} 家，"
         f"利好 {a.get('pos', 0)} / 利空 {a.get('neg', 0)} / 中性 {a.get('neu', 0)}，"
         f"均值 {a.get('mean', 0):+.2f} → **{stance}**；股价快照 {a.get('quotes_hit', 0)} 家",
-        "> 数据来源：DeepSeek AI 搜索（主）+ Google 新闻 RSS（备）逐家检索，股价为免费行情源抓取时点值",
+        "> 数据来源：多渠道公开新闻检索与机构研报摘要聚合，股价为实时行情源抓取时点值",
         "> ⚠️ 非投资建议，仅供参考，研报原文以各券商官方披露为准。",
     ]
     if pack.errors:
+        from source_names import sanitize_error
         lines.append("")
         lines.append("**数据缺口**")
-        lines += [f"- ⚠️ {e}" for e in pack.errors[:8]]
+        lines += [f"- ⚠️ {sanitize_error(e)}" for e in pack.errors[:8]]
     return "\n".join(lines)
 
 
 def hk_brokers_context(pack: HkBrokersPack, max_per_firm: int = 3) -> str:
+    from source_names import generalize_broker_source, sanitize_error
     a = pack.agg
     lines = [
         f"【香港券商新闻与数据：{pack.topic}，窗口 {pack.hours}h，命中 "
@@ -519,14 +527,15 @@ def hk_brokers_context(pack: HkBrokersPack, max_per_firm: int = 3) -> str:
         lines.append(f"▼ {firm['name']}（{len(items)}条）：")
         for it in items[:max_per_firm]:
             lines.append(f"  - [{it.sentiment}{it.score:+.2f}] {it.title}"
-                         f"（{it.rating or '—'} · {it.source}）")
+                         f"（{it.rating or '—'} · {generalize_broker_source(it.source)}）")
     if pack.errors:
-        lines.append("▼ 数据缺口：" + "；".join(pack.errors[:5]))
+        lines.append("▼ 数据缺口：" + "；".join(sanitize_error(e) for e in pack.errors[:5]))
     return "\n".join(lines)
 
 
 def render_hk_brokers_appendix(pack: HkBrokersPack,
                                max_per_firm: int | None = None) -> str:
+    from source_names import generalize_broker_source, sanitize_error
     lines = ["---", f"🏦 **香港券商新闻与数据（{pack.agg.get('n', 0)}条，{pack.hours}h）**"]
     strip = _quote_strip(pack)
     if strip:
@@ -544,12 +553,12 @@ def render_hk_brokers_appendix(pack: HkBrokersPack,
         for idx, it in enumerate(show, 1):
             ts = it.published.strftime("%Y-%m-%d") if it.published else "近期"
             lines.append(f"{idx}. [{it.sentiment} {it.score:+.2f}] {it.title}"
-                         f" — {it.source} · {ts} {it.rating}".rstrip())
+                         f" — {generalize_broker_source(it.source)} · {ts} {it.rating}".rstrip())
             if it.summary:
                 lines.append(f"   > {it.summary[:80]}")
     if pack.errors:
         lines.append("\n**数据缺口**")
-        lines += [f"- ⚠️ {e}" for e in pack.errors]
+        lines += [f"- ⚠️ {sanitize_error(e)}" for e in pack.errors]
     return "\n".join(lines)
 
 # ---------------- 自检 ----------------
@@ -605,9 +614,9 @@ def selftest() -> int:
          "ts": now - timedelta(hours=1)},
     ]
     got = _rows_to_items(rows, "cicc", 96, now, "Google新闻")
-    check("RSS 行过滤过期+别名优先",
+    check("RSS 行过滤过期+别名优先+泛化来源",
           len(got) == 1 and got[0].url == "u1"
-          and got[0].source == "Google新闻")
+          and got[0].source == "公开新闻检索")
 
     print(f"\n{'✅ 香港券商栏目自检通过' if fails == 0 else f'❌ {fails} 项失败'}")
     return 1 if fails else 0

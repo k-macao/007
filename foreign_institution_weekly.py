@@ -207,13 +207,15 @@ def _mk_item(inst_key: str, title: str, url: str, summary: str, ts, source: str 
     m = re.search(r"(增持|买入|中性|减持|卖出|上调|下调|overweight|underweight|buy|sell|neutral|outperform)", title + " " + summary, re.I)
     if m:
         rating = m.group(1)
+    from source_names import clean_wire_prefix, generalize_broker_source
+    clean_t = clean_wire_prefix(title)
     return ReportItem(
         institution=name,
         institution_key=inst_key,
-        title=title.strip(),
+        title=clean_t.strip(),
         url=url.strip(),
         summary=summary.strip(),
-        source=source or name,
+        source=generalize_broker_source(source),
         published=ts,
         rating=rating,
         sentiment=label,
@@ -362,16 +364,16 @@ def _fetch_via_google(inst_key: str, hours: int, timeout: int, now: datetime) ->
             if status != 200:
                 raise RuntimeError(f"Google HTTP {status}")
             items = _rows_to_items(parse_google_rss(body), inst_key, hours,
-                                   now, "Google新闻")
+                                   now, "公开新闻检索")
             if items:
                 return items
         return []
     except Exception as e:
-        raise RuntimeError(f"Google 搜索失败: {e}") from e
+        raise RuntimeError(f"主检索源失败: {e}") from e
 
 
 def _fetch_via_bing(inst_key: str, hours: int, timeout: int, now: datetime) -> List[ReportItem]:
-    """Bing News RSS（备援真实新闻检索）。"""
+    """备援新闻 RSS 检索。"""
     try:
         from stock_news_scan import http_request
         import urllib.parse
@@ -383,7 +385,7 @@ def _fetch_via_bing(inst_key: str, hours: int, timeout: int, now: datetime) -> L
         url = f"https://www.bing.com/news/search?q={q}&format=rss"
         status, body = http_request(url, timeout=timeout)
         if status != 200:
-            raise RuntimeError(f"Bing HTTP {status}")
+            raise RuntimeError(f"备援检索源 HTTP {status}")
         try:
             root = ET.fromstring(body)
         except ET.ParseError:
@@ -394,11 +396,14 @@ def _fetch_via_bing(inst_key: str, hours: int, timeout: int, now: datetime) -> L
                 ts = parsedate_to_datetime(it.findtext("pubDate", "") or "")
             except (TypeError, ValueError):
                 ts = None
-            rows.append({"title": it.findtext("title", "") or "",
+            raw_t = (it.findtext("title", "") or "").strip()
+            if " - " in raw_t:
+                raw_t = raw_t.rsplit(" - ", 1)[0].strip()
+            rows.append({"title": raw_t,
                          "url": it.findtext("link", "") or "", "ts": ts})
-        return _rows_to_items(rows, inst_key, hours, now, "Bing资讯")
+        return _rows_to_items(rows, inst_key, hours, now, "备援新闻检索")
     except Exception as e:
-        raise RuntimeError(f"Bing 搜索失败: {e}") from e
+        raise RuntimeError(f"备援检索源失败: {e}") from e
 
 def collect_foreign_weekly(topic: str = "全球市场", hours: int = DEFAULT_HOURS,
                            timeout: int = 12, only: List[str] | None = None,
@@ -454,7 +459,8 @@ def collect_foreign_weekly(topic: str = "全球市场", hours: int = DEFAULT_HOU
             pack.reports[inst_key] = uniq[:5]
             dead_streak = 0
         else:
-            detail = "；".join(errs) if errs else "一周内无命中"
+            from source_names import sanitize_error
+            detail = "；".join(sanitize_error(x) for x in errs) if errs else "一周内无命中"
             pack.errors.append(f"{inst['name']}：{detail}")
             # 开局连续 3 家两路 RSS 全抛错：判定网络源不可达，快速止损
             dead_streak = dead_streak + 1 if transport_dead else 0
@@ -480,6 +486,7 @@ def collect_foreign_weekly(topic: str = "全球市场", hours: int = DEFAULT_HOU
 # ---------------- 渲染 ----------------
 
 def render_foreign_weekly_rule(topic: str, pack: ForeignWeeklyPack) -> str:
+    from source_names import generalize_broker_source, sanitize_error
     a = pack.agg
     lines = [
         f"**{topic} · 国外专业投资机构一周研报（{pack.hours}h，{a.get('institutions_hit',0)}/{a.get('institutions_total',len(INSTITUTIONS))} 机构命中）**（本地聚合）",
@@ -496,7 +503,7 @@ def render_foreign_weekly_rule(topic: str, pack: ForeignWeeklyPack) -> str:
             title = title.replace("|", "/")
             rating = it.rating or it.sentiment
             ts = it.published.strftime("%m-%d") if it.published else "本周"
-            lines.append(f"| {it.institution} | {rating} | {title} | {it.source} | {ts} |")
+            lines.append(f"| {it.institution} | {rating} | {title} | {generalize_broker_source(it.source)} | {ts} |")
     if len(lines) <= 4:
         lines.append("| — | — | 一周内未命中（见数据缺口） | — | — |")
 
@@ -506,17 +513,18 @@ def render_foreign_weekly_rule(topic: str, pack: ForeignWeeklyPack) -> str:
         "",
         f"- **汇总**：{a.get('n',0)} 篇研报 / {a.get('institutions_hit',0)} 机构，利好 {a.get('pos',0)} / 利空 {a.get('neg',0)} / 中性 {a.get('neu',0)}，均值 {a.get('mean',0):+.2f} → **{stance}**",
         f"- **覆盖机构**：{', '.join([INSTITUTION_MAP[k]['name'] for k in pack.reports.keys()]) or '无'}",
-        "> 数据来源：DeepSeek AI 搜索（主）+ Google新闻 RSS（备），按机构别名与评级关键词过滤，逐机构隔离",
+        "> 数据来源：多渠道公开新闻检索与机构研报摘要聚合，逐机构隔离核验",
         "> ⚠️ 非投资建议，仅供参考，研报原文以机构官方披露为准。",
     ]
     if pack.errors:
         lines.append("")
         lines.append("**数据缺口**")
         for e in pack.errors[:8]:
-            lines.append(f"- ⚠️ {e}")
+            lines.append(f"- ⚠️ {sanitize_error(e)}")
     return "\n".join(lines)
 
 def foreign_weekly_context(pack: ForeignWeeklyPack) -> str:
+    from source_names import generalize_broker_source, sanitize_error
     a = pack.agg
     lines = [
         f"【国外机构一周研报：{pack.topic}，窗口 {pack.hours}h，命中 {a.get('institutions_hit',0)}/{a.get('institutions_total',len(INSTITUTIONS))} 机构，共 {a.get('n',0)} 篇】",
@@ -527,13 +535,14 @@ def foreign_weekly_context(pack: ForeignWeeklyPack) -> str:
             continue
         lines.append(f"▼ {INSTITUTION_MAP[inst_key]['name']}（{len(items)}篇）：")
         for it in items[:3]:
-            lines.append(f"  - [{it.sentiment}{it.score:+.2f}] {it.title}（{it.rating or '—'} · {it.source}）")
+            lines.append(f"  - [{it.sentiment}{it.score:+.2f}] {it.title}（{it.rating or '—'} · {generalize_broker_source(it.source)}）")
     if pack.errors:
-        lines.append("▼ 数据缺口：" + "；".join(pack.errors[:5]))
+        lines.append("▼ 数据缺口：" + "；".join(sanitize_error(e) for e in pack.errors[:5]))
     return "\n".join(lines)
 
 def render_foreign_weekly_appendix(pack: ForeignWeeklyPack,
                                    max_per_inst: int | None = None) -> str:
+    from source_names import generalize_broker_source, sanitize_error
     lines = ["---", f"🏛 **国外机构一周研报明细（{pack.agg.get('n',0)}篇，{pack.hours}h）**"]
     for inst_key in [it["key"] for it in INSTITUTIONS]:
         items = pack.reports.get(inst_key)
@@ -543,13 +552,13 @@ def render_foreign_weekly_appendix(pack: ForeignWeeklyPack,
         lines.append(f"\n**{INSTITUTION_MAP[inst_key]['name']}（{len(items)}篇）**")
         for idx, it in enumerate(show, 1):
             ts = it.published.strftime("%Y-%m-%d") if it.published else "本周"
-            lines.append(f"{idx}. [{it.sentiment} {it.score:+.2f}] {it.title} — {it.source} · {ts} {it.rating}".rstrip())
+            lines.append(f"{idx}. [{it.sentiment} {it.score:+.2f}] {it.title} — {generalize_broker_source(it.source)} · {ts} {it.rating}".rstrip())
             if it.summary:
                 lines.append(f"   > {it.summary[:80]}")
     if pack.errors:
         lines.append("\n**数据缺口**")
         for e in pack.errors:
-            lines.append(f"- ⚠️ {e}")
+            lines.append(f"- ⚠️ {sanitize_error(e)}")
     return "\n".join(lines)
 
 # ---------------- 自检 ----------------
@@ -596,9 +605,9 @@ def selftest() -> int:
          "ts": now - timedelta(hours=1)},
     ]
     got = _rows_to_items(rows, "goldman", 168, now, "Google新闻")
-    check("RSS 行过滤过期+别名优先",
+    check("RSS 行过滤过期+别名优先+泛化来源",
           len(got) == 1 and got[0].url == "u1"
-          and got[0].source == "Google新闻")
+          and got[0].source == "公开新闻检索")
 
     print(f"\n{'✅ 国外机构一周研报自检通过' if fails == 0 else f'❌ {fails} 项失败'}")
     return 1 if fails else 0
