@@ -281,3 +281,7 @@ python hf_hub.py --info <repo/id> --kind model
 `SENTIMENT_ENGINE=lexicon|hf|llm|auto` 指定模式。
 无样本或复核失败会显示提示，不阻断主报告推送。
 四种模式并非四路并行，也不代表股价预测。
+
+日常 09:00 / 17:00 微信全市场简报（`market-brief.yml` 的 `feedscan`）
+也在推送正文附带金融情绪复核，保留券商/投行栏目，不恢复原始快讯明细。
+更新只对部署后新生成的推送生效，既有微信详情页不会自动更新。

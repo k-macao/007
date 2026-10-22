@@ -1454,6 +1454,12 @@ def render_financial_sentiment_push(pack: SentPack) -> str:
     return md
 
 
+def render_feed_financial_sentiment_push(pack) -> str:
+    """日常全市场微信推送复用金融情绪复核，不展示原始快讯明细。"""
+    review = SentPack(hours=pack.hours, items=pack.items)
+    return render_financial_sentiment_push(review)
+
+
 def render_sentiment_appendix(pack: SentPack, new_keys: set | None = None) -> str:
     nk = new_keys or set()
     n = sum(len(v) for v in pack.items.values())
@@ -5968,7 +5974,10 @@ def main(argv: list[str]) -> int:
                                                 new_keys=new_key_set)
     elif template == "feedscan" and feed_pack is not None:
         # 隐藏快讯原始明细，保留香港券商、国外投行等简报栏目附录。
-        appendix_md = brief_columns_appendix_md
+        appendix_md = "\n\n".join(filter(None, [
+            render_feed_financial_sentiment_push(feed_pack),
+            brief_columns_appendix_md,
+        ]))
     elif template == "foreign_weekly" and locals().get("foreign_weekly_pack") is not None:
         try:
             from foreign_institution_weekly import render_foreign_weekly_appendix
