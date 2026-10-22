@@ -26,6 +26,15 @@ class PushSentimentTest(unittest.TestCase):
         self.assertIn('非四路并行', md)
         self.assertIn('本地金融词典', md)
 
+    def test_daily_wechat_feed_review(self):
+        item = SimpleNamespace(title='净利润大幅增长')
+        feed = SimpleNamespace(hours=48, items={'feed': [item]})
+        with patch.object(pp, 'env', return_value='lexicon'):
+            md = pp.render_feed_financial_sentiment_push(feed)
+        self.assertIn('金融情绪复核', md)
+        self.assertIn('情绪判定', md)
+        self.assertIn('本地金融词典', md)
+
     def test_failure_is_visible_and_cached(self):
         pack = pp.SentPack(hours=48, items={'news': [SimpleNamespace(title='新闻')]})
         with patch.object(hf_hub, 'score_texts', side_effect=RuntimeError('secret')):
