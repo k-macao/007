@@ -230,7 +230,7 @@ python hf_hub.py --check        # 连通性自检（Hub + datasets-server + 推�
 
 | 项 | 说明 |
 |---|---|
-| Token | `HF_TOKEN` → `HUGGINGFACE_API_KEY` → `HUGGINGFACEHUB_API_TOKEN` → `INFERENCE_API_KEY`，只需 Read 权限；**不配置也能用**（情绪引擎自动降级为本地中英金融词典） |
+| Token | `HF_TOKEN` → `HUGGINGFACE_API_KEY` → `HUGGINGFACEHUB_API_TOKEN` → `INFERENCE_API_KEY`，只需 Read 权限；**不配置也能用**（情绪引擎按 `hf → llm → lexicon` 降级；market-brief / stock-report / broker-columns / hf-sentiment 四个 workflow 均已透传 `HF_TOKEN`，核查方法见 `HUGGINGFACE.md` §7.5） |
 | 端点覆盖 | `HF_HUB_BASE` / `HF_DATASETS_SERVER` / `HF_TASK_API`，可指向镜像或本机 Mock（`--mock-server`） |
 | Key 安全 | Authorization 头只发给 `*.huggingface.co` 与 localhost |
 | 已下线端点 | `api-inference.huggingface.co` 已停止服务，统一改用 `router.huggingface.co/hf-inference` |

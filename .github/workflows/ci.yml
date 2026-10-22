@@ -38,6 +38,11 @@ on:
         required: false
         default: false
         type: boolean
+      require_token:
+        description: 'HF 探活的硬判定：勾选后 HF_TOKEN 缺失即判失败（用于核查仓库到底配没配）'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -122,19 +127,23 @@ jobs:
   #
   # 为什么单独开一个 job：上面的离线门禁是**零网络**的，永远测不出
   # 「HF_TOKEN 配没配、配了能不能用」。这一 job 只在手动勾选时跑，用真实外网回答：
-  #   ① 仓库里有没有 HF_TOKEN（只打印长度与脱敏片段，不打印明文）
+  #   ① 仓库里有没有 HF_TOKEN（只打印「已配置 + 长度」，不打印明文，也不打印片段）
   #   ② Hub 检索 / datasets-server 取数通不通（公开数据，不需要 Key）
   #   ③ 有 Key 时，FinBERT / 中文 tone 模型能不能真跑起来（engine=hf 强制走模型）
   #
-  # 2026-10-22 实测结论（本仓库当前 Token）：
-  #   whoami-v2 → 200（用户 kmacao，fine-grained token「273」，含
-  #   inference.serverless.write）说明 **Token 有效**；但任务推理返回
-  #   402 {"error":"You have no remaining credits..."，即 **账户无推理额度**。
-  #   二者要分开看：402 不是 Key 错，auto 引擎会据此降级到本地词典。
+  # 判定口径（三件事必须分开看，别混成一句「Token 有问题」）：
+  #   · **没配** → secrets 为空，① 打印「未配置」，模型调用整段跳过；这是合法状态，
+  #     情绪引擎 auto 会降级到 llm（有 Key 时）或本地词典，推送照常出。
+  #   · **配了但无效** → ① 有长度，③ 返回 401/403（kind=auth）。
+  #   · **配了但没额度** → ③ 返回 402（kind=payment，`no remaining credits`）。
+  #     402 不是 Key 错，auto 引擎会据此降级；本仓库 2026-10-22 曾实测到这一种。
+  #   （上述实测是在当时的**本地环境变量**上做的，不代表仓库 Secret 现在仍然存在；
+  #     要确认仓库侧，勾上 require_token 跑一次，缺失即红。）
   #
-  # 写法上的两个刻意选择（避免 GitHub 校验失败）：
+  # 写法上的三个刻意选择（避免 GitHub 校验失败）：
   #   · job 级 if 用 github.event.inputs，不用 inputs 上下文；
-  #   · 不把 secrets 写进 if 条件，改为在 shell 里判断环境变量是否为空。
+  #   · 不把 secrets 写进 if 条件，改为在 shell 里判断环境变量是否为空；
+  #   · 只有显式勾选 require_token 才把「缺失」判成失败，默认探活永远绿（诊断用）。
   # ==========================================================================
   hf-probe:
     name: HF Token probe (手动勾选 probe_hf 才跑)
@@ -157,12 +166,33 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Token verdict (配没配 · 可选硬判定)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          REQUIRE_TOKEN: ${{ github.event.inputs.require_token }}
+        run: |
+          # 只回答「仓库有没有配」这一个问题，不做网络请求，几秒内出结论。
+          if [ -z "$HF_TOKEN" ]; then
+            echo "HF_TOKEN：未配置（长度 0）"
+            echo "- 影响面：Hub 检索 / datasets-server 取数照常（公开数据免 Key）；"
+            echo "  情绪引擎 auto 会按 hf → llm → lexicon 顺序降级，推送不受影响。"
+            echo "- 想启用 FinBERT：仓库 Settings → Secrets and variables → Actions →"
+            echo "  新建 HF_TOKEN（只需 Read + Inference Providers 权限，且账户要有推理额度）。"
+            if [ "$REQUIRE_TOKEN" = "true" ]; then
+              echo "::error::require_token=true 且 HF_TOKEN 缺失 → 判失败（本次就是「未配置」的实证）"
+              exit 1
+            fi
+          else
+            # 不打印任何明文/片段，只报长度，避免 Key 从日志外泄。
+            echo "HF_TOKEN：已配置（长度 ${#HF_TOKEN}）"
+          fi
+
       - name: Probe Hub + datasets-server + model (不打印明文 Key)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           if [ -n "$HF_TOKEN" ]; then
-            echo "HF_TOKEN：已配置（长度 ${#HF_TOKEN}，脱敏：${HF_TOKEN:0:4}…${HF_TOKEN: -4}）"
+            echo "HF_TOKEN：已配置（长度 ${#HF_TOKEN}）"
           else
             echo "HF_TOKEN：未配置（公开数据集仍可用；模型调用会降级为本地词典）"
           fi
@@ -192,9 +222,9 @@ jobs:
             echo ""
             echo "- 分支：\`${{ github.ref_name }}\` · 提交 \`${GITHUB_SHA::7}\`"
             if [ -n "$HF_TOKEN" ]; then
-              echo "- HF_TOKEN：✅ 已配置（长度 ${#HF_TOKEN}，脱敏 ${HF_TOKEN:0:4}…${HF_TOKEN: -4}）"
+              echo "- HF_TOKEN：✅ 已配置（长度 ${#HF_TOKEN}）"
             else
-              echo "- HF_TOKEN：⚠️ 未配置（公开数据集可用，模型调用降级为本地词典）"
+              echo "- HF_TOKEN：⚪️ 未配置（可选；公开数据集可用，模型调用降级为 llm / 本地词典）"
             fi
             echo ""
             echo "判定口径：\`--check\` 里前四项全绿 = Hub + datasets-server 通；"

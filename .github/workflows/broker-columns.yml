@@ -94,6 +94,10 @@ jobs:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+      # 栏目正文里的「金融情绪复核」走 hf_hub engine=auto；HF_TOKEN 可选，
+      # 不配则降级 llm → 本地词典（不影响栏目生成与推送）。
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      SENTIMENT_ENGINE: ${{ vars.SENTIMENT_ENGINE }}
       PUSH_STATE_PATH: output/columns_push_state.json
       PYTHONUNBUFFERED: '1'
 
@@ -134,6 +138,7 @@ jobs:
         run: |
           echo "template=${{ inputs.template }} topic=${{ steps.cfg.outputs.topic }} hours=${{ steps.cfg.outputs.hours }}"
           echo "channel=${{ inputs.channel }} ai_provider=${{ inputs.ai_provider }} theme=${{ inputs.theme }} dry_run=${{ inputs.dry_run }}"
+          echo "HF_TOKEN set=${{ secrets.HF_TOKEN != '' }} SENTIMENT_ENGINE=${SENTIMENT_ENGINE:-auto}"
           python -V
 
       - name: Offline selftest (离线自检 · 屏蔽 AI Key)

@@ -217,6 +217,49 @@ print(hh.score_texts(["净利润增长超预期"], engine="llm")["aggregate"])
 server.close()
 ```
 
+### 7.5 没配 HF Token 时会怎样（以及怎么核查）
+
+**结论先说：`HF_TOKEN` 是可选项，不是故障。** 不配时全仓库照常跑，只有「情绪引擎
+优先用 FinBERT」这一条路走不通，`auto` 会按 `hf → llm → lexicon` 顺序降级。
+
+| 能力 | 无 HF_TOKEN | 配了但无推理额度（402） | 配了且有额度 |
+|---|---|---|---|
+| Hub 检索 / 详情（`--search`、大屏目录） | ✅ 公开可读 | ✅ | ✅ |
+| datasets-server 取数 / benchmark / digest | ✅ 公开可读 | ✅ | ✅ |
+| `--engine hf`（强制模型） | ❌ `kind=auth` | ❌ `kind=payment` | ✅ |
+| `--engine auto`（默认） | `llm`（若有 Key）→ 本地词典 | 同上，note 记 `payment` | FinBERT |
+| 每日简报 / 栏目里的「金融情绪复核」 | 照常出，引擎字段写「本地金融词典」 | 同上 | 引擎字段写模型名 |
+
+**四个 workflow 都已经透传 `HF_TOKEN`**（`market-brief.yml` / `stock-report.yml` /
+`broker-columns.yml` / `hf-sentiment.yml`），因此**只要在仓库里配一次 Secret，
+下次定时推送就会自动切到 FinBERT，不需要改代码**。想在推送正文里看到哪一档，
+读「金融情绪复核」那节的 `引擎` 与 `⚠️ 备注` 即可。
+
+核查分三层，从便宜到贵：
+
+```bash
+# ① 本地/沙箱：Token 读到了没有（不联网，读不出说明环境变量没带进来）
+python hf_hub.py --check | head -6      # 「Token 未配置」= 环境里确实没有
+python -c "import hf_hub as h; print(h.describe_config()['token_present'])"
+
+# ② 仓库侧：Secret 到底配没配（GitHub 不允许读 Secret 值，只能看它有没有）
+#   Actions → CI - Offline Gate → Run workflow，勾上
+#     probe_hf=true（跑连通性 + 模型调用）
+#     require_token=true（缺失即判红，绿=已配置）
+#   日志里会打印「HF_TOKEN：已配置（长度 N）」/「未配置（长度 0）」，只报长度不报片段。
+
+# ③ 有效性与额度：勾了 probe_hf 后看 ③ 的两条 engine=hf 调用
+#   出 JSON = 有效且有额度；401/403 = Key 无效；402 = 有效但没额度（换成 engine=llm）。
+```
+
+配法：仓库 **Settings → Secrets and variables → Actions → New repository secret**，
+名字必须是 `HF_TOKEN`（`HUGGINGFACE_API_KEY` / `HUGGINGFACEHUB_API_TOKEN` 也认，
+但 workflow 里透传的是 `HF_TOKEN`）。只想改引擎、不动 Secret 的话，配一个
+仓库 **Variable** `SENTIMENT_ENGINE=llm|lexicon|hf|auto` 即可（三个推送 workflow 已读取）。
+
+> 日志口径：本仓库**只打印 Token 长度**，不打印明文，也不打印前后 4 位片段
+> （片段对 `hf_` 前缀无信息量，后 4 位反而有泄露风险）。
+
 ## 8. 端点与 Key 安全
 
 | 用途 | 端点 |

@@ -939,8 +939,8 @@ def hf_classify(texts: Sequence[str], *, model: str = DEFAULT_SENTIMENT_MODEL,
     if not items:
         return []
     if not (token or hf_token()):
-        raise HFError("auth", "未配置 HF Token（HF_TOKEN / HUGGINGFACE_API_KEY），"
-                              "无法调用 Hugging Face 模型推理")
+        raise HFError("auth", "未配置 HF Token（HF_TOKEN / HUGGINGFACE_API_KEY / "
+                              "HUGGINGFACEHUB_API_TOKEN），无法调用 Hugging Face 模型推理")
     url = f"{task_api_base()}/{model.lstrip('/')}"
     payload = {"inputs": items,
                "options": {"wait_for_model": bool(wait_for_model),
@@ -1283,7 +1283,8 @@ def score_texts(texts: Sequence[str] | str, *, engine: str = "auto",
             except HFError as exc:
                 notes.append(f"HF 模型不可用（{exc.kind}），尝试下一个引擎")
         else:
-            notes.append("未配置 HF Token（HF_TOKEN / HUGGINGFACE_API_KEY）")
+            notes.append("未配置 HF Token（HF_TOKEN / HUGGINGFACE_API_KEY / "
+                             "HUGGINGFACEHUB_API_TOKEN），已按 auto 顺序降级")
         if not items:
             if llm_available():
                 try:
@@ -1291,7 +1292,7 @@ def score_texts(texts: Sequence[str] | str, *, engine: str = "auto",
                 except HFError as exc:
                     notes.append(f"大模型端点不可用（{exc.kind}），降级本地词典")
             else:
-                notes.append("未配置推理端点（INFERENCE_* 或 DEEPSEEK_API_KEY)")
+                notes.append("未配置推理端点（INFERENCE_* 或 DEEPSEEK_API_KEY）")
         if not items:
             notes.append("已使用本地金融词典（离线）")
             run_lexicon()

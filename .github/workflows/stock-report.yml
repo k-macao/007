@@ -150,6 +150,10 @@ jobs:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+      # 情绪复核（template=sentiment / feedscan 等）走 hf_hub engine=auto：
+      # 配了 HF_TOKEN 就用 FinBERT，没配则降级 llm → 本地词典，其它栏目不受影响。
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      SENTIMENT_ENGINE: ${{ vars.SENTIMENT_ENGINE }}
       PYTHONUNBUFFERED: '1'
 
     steps:
@@ -169,6 +173,7 @@ jobs:
           echo "channel=${{ inputs.channel }} ai_provider=${{ inputs.ai_provider }}"
           echo "theme=${{ inputs.theme }} hours=${{ inputs.hours }} risk=${{ inputs.risk }}"
           echo "industry=${{ inputs.industry }} dry_run=${{ inputs.dry_run }} ai_compress=${{ inputs.ai_compress }}"
+          echo "HF_TOKEN set=${{ secrets.HF_TOKEN != '' }} SENTIMENT_ENGINE=${SENTIMENT_ENGINE:-auto}"
           python -V
 
       - name: Restore push state (新鲜度看板跨运行对比)
