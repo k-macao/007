@@ -86,10 +86,11 @@ jobs:
       - name: Unit tests (unittest discover test_*.py)
         run: python -m unittest discover -s . -p "test_*.py" -v
 
-      - name: Module selftests (13 个模块 --selftest，离线)
+      - name: Module selftests (14 个模块 --selftest，离线)
         shell: bash
         run: |
           MODULES="
+            source_names
             inference_api
             deepseek_search
             equity_research_column
@@ -120,7 +121,7 @@ jobs:
             echo "::error::离线自检门禁未通过：至少一个模块 --selftest 返回非 0"
             exit 1
           fi
-          echo "✅ 全部 13 个模块自检通过"
+          echo "✅ 全部 14 个模块自检通过"
 
   # ==========================================================================
   # 🤗 Hugging Face 探活（仅 workflow_dispatch 且勾选 probe_hf 时运行）

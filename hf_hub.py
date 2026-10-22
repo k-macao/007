@@ -1377,17 +1377,16 @@ def market_sentiment(items: Iterable[Any], *, text_keys: Sequence[str] = (),
 
 
 def _engine_label(result: dict) -> str:
-    """三种引擎给人看的显示名（渲染 Markdown / HTML / 大屏共用）。"""
+    """三种引擎给人看的显示名（渲染 Markdown / HTML / 大屏共用，泛化口径）。"""
     engine = result.get("engine", "lexicon")
-    model = result.get("model") or ""
     if engine == "hf":
-        return f"Hugging Face 模型 · {model}" if model else "Hugging Face 模型"
+        return "金融情绪模型"
     if engine == "llm":
-        return f"大模型端点 · {model}" if model else "大模型端点（inference_api）"
+        return "大模型端点"
     return "本地金融词典（离线）"
 
 
-def render_sentiment_md(result: dict, title: str = "🤗 Hugging Face 情绪引擎") -> str:
+def render_sentiment_md(result: dict, title: str = "🧠 金融情绪引擎") -> str:
     """渲染成仓库既有推送风格（无表格，纯列表，PushPlus/企微可直接发）。"""
     agg = result.get("aggregate") or {}
     lines = [

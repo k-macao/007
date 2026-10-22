@@ -386,20 +386,20 @@ STOCKS = {
             {"type": "info", "title": "资金异动 C", "text": "第三监控项：大单成交比超过 35% 且主力单笔流入超 5000 万", "is_up": True}
         ],
         "feeds": [
-            {"source": "Google 新闻", "cat": "财经", "time": "12m 前", "type": "利好", "title": "阿里巴巴云栖大会发布最新一代开源大模型，企业客户采用率激增", "summary": "算力基础设施投资回报显著，商业化进程提速。"},
-            {"source": "财联社电报", "cat": "财经", "time": "28m 前", "type": "利好", "title": "南向资金连续第4日净买入阿里巴巴，合计增持逾12亿港元", "summary": "机构资金在低估值区间积极加仓。"},
-            {"source": "华尔街见闻", "cat": "财经", "time": "45m 前", "type": "中性", "title": "全球科技股震荡整固，中概互联网ETF出现规模资金申购", "summary": "海外宏观利率预期出现调整，科技板块波动加剧。"},
-            {"source": "格隆汇", "cat": "财经", "time": "1h 前", "type": "利好", "title": "高盛上调阿里巴巴目标价至 18.50 港元，重申强力买入评级", "summary": "核心电商与云计算双轮驱动战略成效显现。"},
-            {"source": "金十数据", "cat": "财经", "time": "2h 前", "type": "中性", "title": "离岸人民币汇率窄幅波动，港股核心资产流动性保持充裕", "summary": "大市成交额维持在千亿以上水平。"},
-            {"source": "MKTNews", "cat": "财经", "time": "3h 前", "type": "利好", "title": "菜鸟海外本地快递网络拓展至欧洲五国，跨境时效大幅提升", "summary": "海外电商基础设施网络竞争力巩固。"},
-            {"source": "雪球热帖", "cat": "财经", "time": "实时", "type": "利好", "title": "【深度剖析】阿里自由现金流与回购收益率测算，当前估值性价比极高", "summary": "社区热度破万，多头观点占绝对主导。"},
-            {"source": "知乎热议", "cat": "社媒", "time": "1h 前", "type": "利好", "title": "如何看待阿里最新开源的模型测评超越多项基准？", "summary": "技术社区开发者好评如潮，生态扩张迅猛。"},
-            {"source": "微博财经", "cat": "社媒", "time": "实时", "type": "利好", "title": "#阿里云计算提速# 登上同城财经热搜榜 Top 3", "summary": "公众舆情正面词频占比达 82%。"},
-            {"source": "抖音热榜", "cat": "社媒", "time": "实时", "type": "中性", "title": "AI 赋能电商主播实测：阿里新工具降低中小商家运营成本", "summary": "视频播放量破千万，展现技术落地应用。"},
-            {"source": "虎扑步行街", "cat": "社媒", "time": "4h 前", "type": "利好", "title": "聊聊港股科技股，这轮阿里回调是不是黄金坑？", "summary": "投票统计中 71% 网友认为当前属于高胜率买点。"},
-            {"source": "AI hot 追踪", "cat": "社媒", "time": "2h 前", "type": "利好", "title": "Global AI Models Benchmark：Qwen 系列开源模型下载量破亿", "summary": "全球开发者社区关注度与星标数跃居前列。"},
-            {"source": "联合早报", "cat": "社媒", "time": "5h 前", "type": "中性", "title": "亚太数字经济峰会聚焦中资科技企业出海新机遇", "summary": "东南亚市场电商与云服务渗透率持续攀升。"},
-            {"source": "香港01", "cat": "社媒", "time": "6h 前", "type": "利好", "title": "恒指成份股检讨：科技巨头权重稳固，阿里交投活跃度居前", "summary": "港股核心指数权重股支撑作用突出。"}
+            {"source": "公开新闻检索", "cat": "财经", "time": "12m 前", "type": "利好", "title": "阿里巴巴云栖大会发布最新一代开源大模型，企业客户采用率激增", "summary": "算力基础设施投资回报显著，商业化进程提速。"},
+            {"source": "财经电报源", "cat": "财经", "time": "28m 前", "type": "利好", "title": "南向资金连续第4日净买入阿里巴巴，合计增持逾12亿港元", "summary": "机构资金在低估值区间积极加仓。"},
+            {"source": "宏观快讯源", "cat": "财经", "time": "45m 前", "type": "中性", "title": "全球科技股震荡整固，中概互联网ETF出现规模资金申购", "summary": "海外宏观利率预期出现调整，科技板块波动加剧。"},
+            {"source": "港美股快讯源", "cat": "财经", "time": "1h 前", "type": "利好", "title": "高盛上调阿里巴巴目标价至 18.50 港元，重申强力买入评级", "summary": "核心电商与云计算双轮驱动战略成效显现。"},
+            {"source": "实时快讯主源", "cat": "财经", "time": "2h 前", "type": "中性", "title": "离岸人民币汇率窄幅波动，港股核心资产流动性保持充裕", "summary": "大市成交额维持在千亿以上水平。"},
+            {"source": "海外快讯源", "cat": "财经", "time": "3h 前", "type": "利好", "title": "菜鸟海外本地快递网络拓展至欧洲五国，跨境时效大幅提升", "summary": "海外电商基础设施网络竞争力巩固。"},
+            {"source": "投资社区热榜", "cat": "财经", "time": "实时", "type": "利好", "title": "【深度剖析】阿里自由现金流与回购收益率测算，当前估值性价比极高", "summary": "社区热度破万，多头观点占绝对主导。"},
+            {"source": "问答社区热榜", "cat": "社媒", "time": "1h 前", "type": "利好", "title": "如何看待阿里最新开源的模型测评超越多项基准？", "summary": "技术社区开发者好评如潮，生态扩张迅猛。"},
+            {"source": "社交实时热搜", "cat": "社媒", "time": "实时", "type": "利好", "title": "#阿里云计算提速# 登上同城财经热搜榜 Top 3", "summary": "公众舆情正面词频占比达 82%。"},
+            {"source": "短视频热搜榜", "cat": "社媒", "time": "实时", "type": "中性", "title": "AI 赋能电商主播实测：阿里新工具降低中小商家运营成本", "summary": "视频播放量破千万，展现技术落地应用。"},
+            {"source": "论坛热议榜", "cat": "社媒", "time": "4h 前", "type": "利好", "title": "聊聊港股科技股，这轮阿里回调是不是黄金坑？", "summary": "投票统计中 71% 网友认为当前属于高胜率买点。"},
+            {"source": "科技热点榜", "cat": "社媒", "time": "2h 前", "type": "利好", "title": "Global AI Models Benchmark：Qwen 系列开源模型下载量破亿", "summary": "全球开发者社区关注度与星标数跃居前列。"},
+            {"source": "亚太资讯源", "cat": "社媒", "time": "5h 前", "type": "中性", "title": "亚太数字经济峰会聚焦中资科技企业出海新机遇", "summary": "东南亚市场电商与云服务渗透率持续攀升。"},
+            {"source": "港闻资讯源", "cat": "社媒", "time": "6h 前", "type": "利好", "title": "恒指成份股检讨：科技巨头权重稳固，阿里交投活跃度居前", "summary": "港股核心指数权重股支撑作用突出。"}
         ]
     },
     "00700": {
@@ -443,9 +443,9 @@ STOCKS = {
             {"type": "info", "title": "回购跟踪 C", "text": "第三监控项：每日 10 亿港元回购执行进度已超年度计划 60%", "is_up": True}
         ],
         "feeds": [
-            {"source": "财联社电报", "cat": "财经", "time": "15m 前", "type": "利好", "title": "腾讯控股今日斥资10.02亿港元回购262万股", "summary": "常态化回购持续维护股东价值。"},
-            {"source": "Google 新闻", "cat": "财经", "time": "40m 前", "type": "利好", "title": "腾讯混元大模型全面接入微信搜一搜，AI 搜索交互体验升级", "summary": "大模型在十亿级用户场景落地。"},
-            {"source": "知乎热议", "cat": "社媒", "time": "2h 前", "type": "利好", "title": "如何评价腾讯新游首周流水破纪录？", "summary": "长青游戏运营能力再次得到市场验证。"}
+            {"source": "财经电报源", "cat": "财经", "time": "15m 前", "type": "利好", "title": "腾讯控股今日斥资10.02亿港元回购262万股", "summary": "常态化回购持续维护股东价值。"},
+            {"source": "公开新闻检索", "cat": "财经", "time": "40m 前", "type": "利好", "title": "腾讯混元大模型全面接入微信搜一搜，AI 搜索交互体验升级", "summary": "大模型在十亿级用户场景落地。"},
+            {"source": "问答社区热榜", "cat": "社媒", "time": "2h 前", "type": "利好", "title": "如何评价腾讯新游首周流水破纪录？", "summary": "长青游戏运营能力再次得到市场验证。"}
         ]
     },
     "03690": {
@@ -488,8 +488,8 @@ STOCKS = {
             {"type": "info", "title": "业务指标 C", "text": "第三监控项：即时零售日峰值单量突破 8000 万单", "is_up": True}
         ],
         "feeds": [
-            {"source": "格隆汇", "cat": "财经", "time": "20m 前", "type": "利好", "title": "美团 Keeta 在中东利雅得正式上线，首日订单表现强劲", "summary": "本地生活基础设施成功复制海外。"},
-            {"source": "财联社电报", "cat": "财经", "time": "1h 前", "type": "利好", "title": "高盛维持美团买入评级，看好本地商业利润率持续扩张", "summary": "核心业务盈利韧性强于市场预期。"}
+            {"source": "港美股快讯源", "cat": "财经", "time": "20m 前", "type": "利好", "title": "美团 Keeta 在中东利雅得正式上线，首日订单表现强劲", "summary": "本地生活基础设施成功复制海外。"},
+            {"source": "财经电报源", "cat": "财经", "time": "1h 前", "type": "利好", "title": "高盛维持美团买入评级，看好本地商业利润率持续扩张", "summary": "核心业务盈利韧性强于市场预期。"}
         ]
     }
 }
@@ -522,7 +522,7 @@ def get_cluster_status() -> dict:
         "ping": f"{ping_ms} ms",
         "total_qps": f"{qps:,} req/s",
         "rec_status": "● REC LIVE 60 FPS",
-        "ai_engine": "DeepSeek-V3 / R1 混合推理池 (8x H800)",
+        "ai_engine": "多模态量化混合推理池 (8x H800)",
         "nodes": [
             {
                 "id": "HK-Master-01",
@@ -553,7 +553,7 @@ def get_cluster_status() -> dict:
             },
             {
                 "id": "AI-Node-04",
-                "role": "DeepSeek 推理执行集群",
+                "role": "大模型推理执行集群",
                 "status": "ACTIVE",
                 "ping": "5ms",
                 "load": "68%",
@@ -562,7 +562,7 @@ def get_cluster_status() -> dict:
             },
             {
                 "id": "TS-Database-05",
-                "role": "十七源时序与情绪数据库",
+                "role": "多源时序与情绪数据库",
                 "status": "SYNCED",
                 "ping": "1ms",
                 "load": "19%",
@@ -793,13 +793,12 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
     </div>
     """ for f in data["feeds"])
 
-    # 7. 终端日志 / 机构周报副标题中的渠道枚举同样受开关控制
+    # 7. 终端日志 / 机构周报副标题中的渠道枚举同样受开关控制（且统一使用泛化源名）
     if SHOW_SOURCE_INFO:
-        feed_sync_log = ("18 platforms queried (Yahoo / EastMoney / Tencent / Google / CLS / WSCN / "
-                         "GLH / Jin10 / MKT / Xueqiu / Zhihu / Weibo / Douyin / Hupu / AIHot / ZaoBao / "
-                         "HK01 / DeepSeek).")
-        foreign_source_tag = "168H · DeepSeek+Google双源 · 情绪打标 · 表格渲染"
-        foreign_source_sub = ("DeepSeek AI 搜索为主 + Google RSS 备用 · 评级/目标价/概率 · "
+        feed_sync_log = ("18 channels queried (实时行情源×3 / 财经快讯源×6 / "
+                         "社区与全网热榜源×8 / AI 智能检索).")
+        foreign_source_tag = "168H · AI智能检索+公开新闻双源 · 情绪打标 · 表格渲染"
+        foreign_source_sub = ("AI 智能检索为主 + 公开新闻检索备用 · 评级/目标价/概率 · "
                               "主线/板块/评级调整 · 附录明细可追溯 · 支持离线自检")
     else:
         feed_sync_log = "18 platforms queried · 156h window · dedup + sentiment tagging complete."
@@ -808,17 +807,17 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
                               "附录明细可追溯 · 支持离线自检")
 
     # 前端 JS 文案同样按开关注入（json.dumps 保证引号安全）
-    js_foreign_meta = json.dumps("DeepSeek+Google" if SHOW_SOURCE_INFO else "双链路检索",
+    js_foreign_meta = json.dumps("AI智能检索+公开新闻" if SHOW_SOURCE_INFO else "双链路检索",
                                  ensure_ascii=False)
     js_foreign_pending = json.dumps(
-        "DeepSeek AI 搜索为主，Google RSS 备用" if SHOW_SOURCE_INFO else "双链路检索",
+        "AI 智能检索为主，公开新闻检索备用" if SHOW_SOURCE_INFO else "双链路检索",
         ensure_ascii=False)
     js_quote_log = json.dumps(
-        "Cross-checking price quotes across Tencent Finance, EastMoney, Yahoo... OK"
+        "Cross-checking price quotes across primary, backup, international feeds... OK"
         if SHOW_SOURCE_INFO else "Cross-checking price quotes across 3 quote feeds... OK",
         ensure_ascii=False)
     js_foreign_log = json.dumps(
-        "12 foreign institutions · 168H window · DeepSeek+Google dual-feed active."
+        "12 foreign institutions · 168H window · AI+News dual-feed active."
         if SHOW_SOURCE_INFO else "12 foreign institutions · 168H window · dual-feed active.",
         ensure_ascii=False)
 
@@ -2199,7 +2198,7 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
         <!-- 🧩 Skills Hub：官方 + 社区最新技能 -->
         <div class="section-header" id="skills-section">
             <span>🧩 Skills Hub · 最新投研技能目录 (AGENT SKILLS)</span>
-            <span class="section-tag">rollingSirius v3 + Anthropic financial-services 官方 9 技能 · Apache-2.0 / MIT</span>
+            <span class="section-tag">社区投研技能 v3 + 机构投研 9 技能 · Apache-2.0 / MIT</span>
         </div>
         <div class="equity-column-panel" id="skills-hub-panel" style="border-color:rgba(167,139,250,0.4);box-shadow:0 0 18px rgba(167,139,250,0.12);">
             <div class="equity-hero">
@@ -2207,14 +2206,10 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
                     <div class="equity-kicker" style="color:var(--purple);">SKILLS UPDATED · 2026-08-13</div>
                     <div class="equity-title">最新 Skills 已接入</div>
                     <div class="equity-sub">按 Agent Skills 标准安装，大屏 / CLI / Actions 可直接跑</div>
-                    <div class="equity-links">
-                        <a class="equity-link" href="https://github.com/anthropics/financial-services" target="_blank" rel="noopener">📦 Anthropic equity-research 9 skills</a>
-                        <a class="equity-link" href="https://github.com/rollingSirius/equity-research-skill" target="_blank" rel="noopener">⬆ equity-research v3.0.0</a>
-                    </div>
                 </div>
                 <div class="equity-hero-side">
                     <div class="equity-stat"><span class="equity-stat-n" id="sk-total">10</span><span class="equity-stat-l">已安装 Skills</span></div>
-                    <div class="equity-stat"><span class="equity-stat-n" id="sk-anth">9</span><span class="equity-stat-l">Anthropic 官方</span></div>
+                    <div class="equity-stat"><span class="equity-stat-n" id="sk-anth">9</span><span class="equity-stat-l">机构投研标准</span></div>
                     <div class="equity-stat"><span class="equity-stat-n" id="sk-status">—</span><span class="equity-stat-l">Hub 状态</span></div>
                 </div>
             </div>
@@ -2255,7 +2250,7 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
         <!-- 🔌 推理 API：统一接入（OpenAI 兼容） -->
         <div class="section-header" id="inference-section">
             <span>🔌 推理 API · 统一接入 (INFERENCE GATEWAY)</span>
-            <span class="section-tag">Hugging Face / DeepSeek / 硅基流动 / 百炼 / Ollama / vLLM · Key 不出服务端</span>
+            <span class="section-tag">云端推理网关 / 本地推理服务 · Key 不出服务端</span>
         </div>
         <div class="equity-column-panel" id="inference-panel" style="border-color:rgba(92,255,92,0.35);box-shadow:0 0 18px rgba(92,255,92,0.10);">
             <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
@@ -2283,10 +2278,10 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
             <pre id="inf-output" style="margin-top:10px;padding:12px;border:1px dashed rgba(92,255,92,0.3);background:rgba(0,0,0,0.35);color:var(--text);white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.7;max-height:280px;overflow:auto;">等待调用…</pre>
         </div>
 
-        <!-- 🤗 Hugging Face：精选目录 / Hub 检索 / 金融情绪引擎 -->
+        <!-- 金融数据集与情绪引擎 -->
         <div class="section-header" id="hf-section">
-            <span>🤗 Hugging Face · 数据集与金融情绪引擎 (HF HUB &amp; SENTIMENT ENGINE)</span>
-            <span class="section-tag">datasets-server 免下载取数 · FinBERT / 中文 tone 模型 · 无 Token 自动降级本地词典</span>
+            <span>🧠 金融数据集与情绪引擎 (DATASET &amp; SENTIMENT ENGINE)</span>
+            <span class="section-tag">在线免下载取数 · 金融情绪模型 · 无 Token 自动降级本地词典</span>
         </div>
         <div class="equity-column-panel" id="hf-panel" style="border-color:rgba(255,153,0,0.35);box-shadow:0 0 18px rgba(255,153,0,0.10);">
             <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
@@ -2322,10 +2317,10 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
             <div class="stock-selector-ribbon" style="border:none;background:transparent;padding:8px 0 0;flex-wrap:wrap;">
                 <span class="selector-label">⚙️ 引擎:</span>
                 <select id="hf-engine-pick" class="report-select">
-                    <option value="auto">auto（HF 模型→大模型→词典）</option>
-                    <option value="llm">llm（DeepSeek 等大模型端点）</option>
+                    <option value="auto">auto（金融情绪模型→大模型→词典）</option>
+                    <option value="llm">llm（大模型推理端点）</option>
                     <option value="lexicon">lexicon（离线词典）</option>
-                    <option value="hf">hf（强制 HF 模型）</option>
+                    <option value="hf">hf（金融情绪模型）</option>
                 </select>
                 <button class="report-btn" onclick="fillHF('公司三季度净利润同比增长 42%，大幅超市场预期' + String.fromCharCode(10) + '控股股东拟减持不超过 2% 股份，套现约 3 亿元' + String.fromCharCode(10) + '公司将于下周四披露三季报')">📝 示例</button>
                 <button class="report-btn" onclick="fillHF('Revenue surges 38% year over year, beats estimates' + String.fromCharCode(10) + 'Quarterly results miss estimates; cuts full-year guidance')">🌐 英文示例</button>
@@ -2688,7 +2683,7 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{
                         topic: topic, hours: 168, channel: channel,
-                        dry_run: channel === 'console', use_deepseek: true
+                        dry_run: channel === 'console', use_ai_search: true
                     }})
                 }});
                 const r = await resp.json();
@@ -2930,7 +2925,7 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
         }}
         setTimeout(refreshInferenceConfig, 400);
 
-        // —— Hugging Face：精选目录 / Hub 检索 / 金融情绪引擎 ——
+        // —— 金融模型与数据集：精选目录 / 目录检索 / 金融情绪引擎 ——
         async function refreshHFConfig() {{
             try {{
                 const resp = await fetch('/api/hf/config');
@@ -2995,7 +2990,7 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
             const kind = (document.getElementById('hf-kind') || {{}}).value || 'model';
             const box = document.getElementById('hf-list');
             const meta = document.getElementById('hf-list-meta');
-            if (box) box.innerHTML = '<div style="color:var(--text-muted);">⏳ 正在检索 Hugging Face Hub…</div>';
+            if (box) box.innerHTML = '<div style="color:var(--text-muted);">⏳ 正在检索金融模型与数据集目录…</div>';
             appendLog('HF.SEARCH', 'QUERY', kind + ' · ' + (q || '(全部)'));
             try {{
                 const resp = await fetch('/api/hf/search?q=' + encodeURIComponent(q)
@@ -3055,7 +3050,7 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
                 if (out) out.innerHTML = r.html || '';
                 const agg = r.aggregate || {{}};
                 if (meta) meta.textContent = (r.engine === 'hf'
-                        ? 'Hugging Face 模型 · ' + (r.model || '')
+                        ? '金融情绪模型 · ' + (r.model || '')
                         : (r.engine === 'llm'
                             ? '大模型端点 · ' + (r.model || '')
                             : '本地金融词典（离线）'))
@@ -3408,7 +3403,7 @@ def render_server_monitor_html(stock_code: str = "09988") -> str:
         // 模拟遥测日志滚动
         const logSamples = [
             ["HEARTBEAT", "TICK", "Node HK-Master-01 reported 0 packet loss (latency 2.1ms)"],
-            ["AI.INFERENCE", "OK", "DeepSeek sentiment embedding batch completed in 18ms"],
+            ["AI.INFERENCE", "OK", "LLM sentiment embedding batch completed in 18ms"],
             ["MARKET.DATA", "FLOW", {js_quote_log}],
             ["RADAR.SCAN", "PULSE", "18 platforms active. No anomalous divergence detected."],
             ["FOREIGN.WEEKLY", "PULSE", {js_foreign_log}]
@@ -3521,7 +3516,7 @@ def _api_foreign_weekly(params: dict) -> dict:
         return {"ok": False, "error": "foreign_institution_weekly 模块加载失败"}
     topic = str(params.get("topic") or params.get("query") or params.get("code") or "").strip()
     hours = int(params.get("hours") or 168)
-    use_deepseek = bool(params.get("use_deepseek", True))
+    use_deepseek = bool(params.get("use_ai_search", params.get("use_deepseek", True)))
     only = str(params.get("only") or "").strip()
     only_list = [s.strip() for s in only.split(",") if s.strip()] if only else None
     try:
@@ -3529,7 +3524,7 @@ def _api_foreign_weekly(params: dict) -> dict:
             topic=topic, hours=hours, timeout=int(params.get("timeout") or 20),
             only=only_list, use_deepseek=use_deepseek)
         # 生成渲染
-        rule_md = foreign_mod.render_foreign_weekly_rule(pack)
+        rule_md = foreign_mod.render_foreign_weekly_rule(topic or "全球市场", pack)
         appendix_md = foreign_mod.render_foreign_weekly_appendix(pack)
         ctx = foreign_mod.foreign_weekly_context(pack)
         r = {

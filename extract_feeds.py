@@ -32,22 +32,22 @@ def cls_signed_url(base, extra=None):
 
 def build_specs():
     return [
-        ("MKTNews 快讯", ["https://api.mktnews.net/api/flash?limit=5"]),
-        ("华尔街见闻 快讯", ["https://api-one.wallstcn.com/apiv1/content/lives?channel=global-channel&limit=5"]),
-        ("华尔街见闻 最新", ["https://api-one.wallstcn.com/apiv1/content/information-flow?channel=global-channel&accept=article&limit=5"]),
-        ("华尔街见闻 最热", ["https://api-one.wallstcn.com/apiv1/content/articles/hot?period=all"]),
-        ("财联社 电报", [cls_signed_url(
+        ("海外快讯源", ["https://api.mktnews.net/api/flash?limit=5"]),
+        ("宏观快讯源", ["https://api-one.wallstcn.com/apiv1/content/lives?channel=global-channel&limit=5"]),
+        ("宏观资讯流", ["https://api-one.wallstcn.com/apiv1/content/information-flow?channel=global-channel&accept=article&limit=5"]),
+        ("宏观热读榜", ["https://api-one.wallstcn.com/apiv1/content/articles/hot?period=all"]),
+        ("财经电报源", [cls_signed_url(
             "https://www.cls.cn/v1/roll/get_roll_list",
             {"last_time": int(time.time()), "refresh_type": 1, "rn": 10})]),
-        ("财联社 深度", [cls_signed_url(
+        ("财经深度源", [cls_signed_url(
             "https://www.cls.cn/v3/depth/home/assembled/1000")]),
-        ("财联社 热门", [cls_signed_url(
+        ("财经热文榜", [cls_signed_url(
             "https://www.cls.cn/v2/article/hot/list")]),
-        ("雪球 热门股票", []),  # 专用流程
-        ("格隆汇 事件", ["https://www.gelonghui.com/api/live-channels/all/lives/v4"]),
-        ("法布财经 快讯", ["https://www.fastbull.com/cn/express-news"]),
-        ("法布财经 头条", ["https://www.fastbull.com/cn/news"]),
-        ("金十数据", ["https://www.jin10.com/flash_newest.js"]),
+        ("投资社区热榜", []),  # 专用流程
+        ("港美股快讯源", ["https://www.gelonghui.com/api/live-channels/all/lives/v4"]),
+        ("外汇商品快讯", ["https://www.fastbull.com/cn/express-news"]),
+        ("市场头条源", ["https://www.fastbull.com/cn/news"]),
+        ("实时快讯主源", ["https://www.jin10.com/flash_newest.js"]),
     ]
 
 

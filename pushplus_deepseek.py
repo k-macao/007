@@ -49,6 +49,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from statistics import median
+from source_names import clean_wire_prefix, generalize_source, sanitize_error
 # newsnow 10源（前 7 源用户指定，2026-08-13 追加 3 源：头条/百度/B站）
 try:
     import newsnow_sources as newsnow_mod
@@ -102,7 +103,7 @@ TEMPLATE_TITLES = {
     "plan": "交易计划·进出场风控", "earnings": "财报前瞻",
     "portfolio": "组合配置优化", "review": "交易复盘改进", "regime": "市场形态识别",
     "sentiment": "量价舆情动量·48h", "feedscan": "全市场快讯情绪扫描",
-    "newsnow": "NewsNow热榜聚合·10源",
+    "newsnow": "全网热榜聚合·10源",
     "equity": "机构级个股投研",
     "initiate": "首次覆盖·公司研究",
     "earnings_preview": "财报前瞻·Skill",
@@ -261,7 +262,7 @@ def _fill_change(q: Quote) -> None:
 def parse_yahoo(text: str) -> Quote:
     data = json.loads(text)
     meta = data["chart"]["result"][0]["meta"]
-    q = Quote(source="Yahoo财经", ok=True,
+    q = Quote(source="国际行情源", ok=True,
               name=meta.get("longName") or meta.get("shortName")
                    or meta.get("symbol", ""),
               price=meta.get("regularMarketPrice"),
@@ -279,7 +280,7 @@ def parse_yahoo(text: str) -> Quote:
 def parse_eastmoney(text: str) -> Quote:
     data = json.loads(text).get("data") or {}
     raw_price, raw_prev = data.get("f43"), data.get("f60")
-    q = Quote(source="东方财富", ok=True, name=data.get("f58", ""))
+    q = Quote(source="实时行情备源", ok=True, name=data.get("f58", ""))
     if raw_price is not None:
         q.price = round(raw_price / EM_HK_PRICE_SCALE, 3)
     if raw_prev is not None:
@@ -300,7 +301,7 @@ def parse_tencent(text: str) -> Quote:
     parts = body.split("~")
     if len(parts) < 5:
         raise ValueError("字段数量不足")
-    q = Quote(source="腾讯财经", ok=True, name=parts[1],
+    q = Quote(source="实时行情主源", ok=True, name=parts[1],
               price=float(parts[3]), prev_close=float(parts[4]))
     _fill_change(q)
     if not _sane(q.price):
@@ -308,10 +309,10 @@ def parse_tencent(text: str) -> Quote:
     return q
 
 
-SOURCES = [  # (源名, URL 构造器, 解析器, 解码)
-    ("Yahoo财经", lambda c: YAHOO_CHART_URL.format(code=str(int(c))), parse_yahoo, "utf-8"),
-    ("东方财富", lambda c: EASTMONEY_URL.format(code=c), parse_eastmoney, "utf-8"),
-    ("腾讯财经", lambda c: TENCENT_URL.format(code=c), parse_tencent, "gbk"),
+SOURCES = [  # (泛化源名, URL 构造器, 解析器, 解码)
+    ("国际行情源", lambda c: YAHOO_CHART_URL.format(code=str(int(c))), parse_yahoo, "utf-8"),
+    ("实时行情备源", lambda c: EASTMONEY_URL.format(code=c), parse_eastmoney, "utf-8"),
+    ("实时行情主源", lambda c: TENCENT_URL.format(code=c), parse_tencent, "gbk"),
 ]
 
 
@@ -347,29 +348,28 @@ class Verification:
 
 
 def _short_err(err: str) -> str:
-    """失败原因压缩成短文案（去掉 URL 等噪音），便于微信表格阅读。"""
+    """失败原因压缩成短文案（不外露接口域名或 URL），便于微信表格阅读。"""
+    from source_names import sanitize_error
     if "网络请求失败" in err:
-        host = err.split("//", 1)[1].split("/")[0] if "//" in err else ""
         low = err.lower()
         if "timed out" in low or "timeout" in low:
-            cat = "超时"
-        elif "ssl" in low or "eof" in low or "reset" in low:
-            cat = "网络不可达"
-        elif "name" in low or "resolve" in low:
-            cat = "域名解析失败"
-        else:
-            cat = "连接失败"
-        return f"{cat}（{host}）"
-    return err[:40]
+            return "请求超时"
+        if "ssl" in low or "eof" in low or "reset" in low:
+            return "网络不可达"
+        if "name" in low or "resolve" in low:
+            return "域名解析失败"
+        return "连接失败"
+    return sanitize_error(err)[:40]
 
 
 def verify_quotes(quotes: list[Quote]) -> Verification:
+    from source_names import generalize_source
     v = Verification()
     ok = [q for q in quotes if q.ok and _sane(q.price)]
     v.n_ok = len(ok)
     for q in quotes:
         if not q.ok:
-            v.rows.append({"source": q.source, "price": None, "dev": None,
+            v.rows.append({"source": generalize_source(q.source), "price": None, "dev": None,
                            "status": f"❌ 获取失败（{_short_err(q.error)}）"})
     if not ok:
         v.verdict = "❌ 三个数据源全部失败，本次内容降级为纯模型推断"
@@ -380,7 +380,7 @@ def verify_quotes(quotes: list[Quote]) -> Verification:
         dev = abs(q.price - mid) / mid * 100
         status = "✅ 一致" if dev <= MAX_DEV_OK else (
             "⚠️ 偏差偏大" if dev <= MAX_DEV_EXCLUDE else "❌ 异常剔除")
-        v.rows.append({"source": f"{q.source}（{q.name or '?'}）",
+        v.rows.append({"source": f"{generalize_source(q.source)}（{q.name or '?'}）",
                        "price": q.price, "dev": round(dev, 2), "status": status,
                        "change": q.change_pct, "time": q.time_str})
     included = [r for r in v.rows if r["price"] is not None
@@ -492,10 +492,11 @@ class SentItem:
 
 def _mk_item(source: str, title: str, url: str, ts: datetime | None,
              now: datetime) -> SentItem:
-    title = re.sub(r"\s+", " ", title).strip()
+    from source_names import clean_wire_prefix, generalize_source
+    title = clean_wire_prefix(re.sub(r"\s+", " ", title).strip())
     score, label, conf = score_text(title)
     age = round((now - ts).total_seconds() / 3600, 1) if ts else None
-    return SentItem(source=source, title=title, url=url,
+    return SentItem(source=generalize_source(source), title=title, url=url,
                     age_h=age, score=score, label=label, conf=conf)
 
 
@@ -757,54 +758,47 @@ def cls_signed_url(base: str, query: dict, now: datetime) -> str:
 
 FEED_HEADERS = {"Referer": "https://wallstreetcn.com/", "Accept": "application/json"}
 FEED_SPECS: list[FeedSpec] = [
-    FeedSpec("MKTNews 快讯", [
+    FeedSpec("海外快讯源", [
         "https://api.mktnews.net/api/flash?limit=10",
         "https://mktnews.net/api/flash?limit=10",
     ]),
-    # 华尔街见闻：旧域名 api-ddc-wscn.awtmt.com 已整体 71404 下线，
-    # 现行域名 api-one.wallstcn.com（api-one-wscn.awtmt.com 为其别名备援）。
-    FeedSpec("华尔街见闻 快讯", [
+    FeedSpec("宏观快讯源", [
         "https://api-one.wallstcn.com/apiv1/content/lives?channel=global-channel&limit=10",
         "https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=global-channel&limit=10",
     ], headers=FEED_HEADERS),
-    FeedSpec("华尔街见闻 最新", [
+    FeedSpec("宏观资讯流", [
         "https://api-one.wallstcn.com/apiv1/content/information-flow?channel=global-channel&accept=article&limit=10",
         "https://api-one-wscn.awtmt.com/apiv1/content/information-flow?channel=global-channel&accept=article&limit=10",
     ], headers=FEED_HEADERS),
-    FeedSpec("华尔街见闻 最热", [
+    FeedSpec("宏观热读榜", [
         "https://api-one.wallstcn.com/apiv1/content/articles/hot?period=all",
         "https://api-one-wscn.awtmt.com/apiv1/content/articles/hot?period=all",
     ], headers=FEED_HEADERS),
-    # 财联社：旧 nodeapi/telegraphList 已 404；现行端点需签名（cls_signed_url）。
-    FeedSpec("财联社 电报", [
+    FeedSpec("财经电报源", [
         "https://www.cls.cn/v1/roll/get_roll_list",
     ], kind="cls", headers={"Referer": "https://www.cls.cn/telegraph"},
         query={"last_time": "NOW_TS", "refresh_type": 1, "rn": 20}),
-    FeedSpec("财联社 深度", [
+    FeedSpec("财经深度源", [
         "https://www.cls.cn/v3/depth/home/assembled/1000",
     ], kind="cls", headers={"Referer": "https://www.cls.cn/depth"}),
-    FeedSpec("财联社 热门", [
+    FeedSpec("财经热文榜", [
         "https://www.cls.cn/v2/article/hot/list",
     ], kind="cls", headers={"Referer": "https://www.cls.cn/"}),
-    FeedSpec("雪球 热门股票", [], kind="xueqiu"),  # 专用流程（Cookie 预热）
-    # 格隆汇：旧 fastnews/v2 已 404；现行快讯聚合接口 lives/v4。
-    FeedSpec("格隆汇 事件", [
+    FeedSpec("投资社区热榜", [], kind="xueqiu"),  # 专用流程（Cookie 预热）
+    FeedSpec("港美股快讯源", [
         "https://www.gelonghui.com/api/live-channels/all/lives/v4",
     ], headers={"Referer": "https://www.gelonghui.com/live"}),
-    # 法布财经（FastBull）：无公开 JSON 端点，解析服务端渲染的列表页 HTML。
-    FeedSpec("法布财经 快讯", [
+    FeedSpec("外汇商品快讯", [
         "https://www.fastbull.com/cn/express-news",
     ], kind="fb_express",
         headers={"Referer": "https://www.fastbull.com/cn/",
                  "Accept": "text/html"}),
-    FeedSpec("法布财经 头条", [
+    FeedSpec("市场头条源", [
         "https://www.fastbull.com/cn/news",
     ], kind="fb_news",
         headers={"Referer": "https://www.fastbull.com/cn/",
                  "Accept": "text/html"}),
-    # 金十：flash_newest.js 一次返回数十条，按口径取最新≤50 条
-    # （其中 channel=[5] 是同一快讯的英文重复版，抓取时过滤，避免重复计数）
-    FeedSpec("金十数据", [
+    FeedSpec("实时快讯主源", [
         "https://www.jin10.com/flash_newest.js",
     ], kind="js", limit=50,
         headers={"Referer": "https://www.jin10.com/", "x-app-id": "rU6QIu7JHe2gOUTe"}),
@@ -1085,7 +1079,7 @@ def parse_xueqiu_hot(text: str, now: datetime) -> list[SentItem]:
             else f"{name} {code}"
         if inc:
             title += f"，关注增量 {inc}"
-        items.append(SentItem(source="雪球 热门股票", title=title,
+        items.append(SentItem(source="投资社区热榜", title=title,
                               age_h=0.0, score=round(score, 2), label=label,
                               conf=0.7))
         if len(items) >= 10:
@@ -1104,7 +1098,7 @@ def fetch_xueqiu(timeout: int, now: datetime) -> list[SentItem]:
         resp = opener.open(XUEQIU_HOT_URL, timeout=timeout)
         body = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
-        raise PushError(f"HTTP {e.code}（雪球反爬升级）") from e
+        raise PushError(f"HTTP {e.code}（访问受限）") from e
     except (urllib.error.URLError, TimeoutError) as e:
         raise PushError(f"网络失败 {getattr(e, 'reason', e)}") from e
     items = parse_xueqiu_hot(body, now)
@@ -1130,11 +1124,10 @@ def _try_import_deepseek_search():
 
 
 def fetch_deepseek_feed(topic: str, hours: int, timeout: int, now: datetime) -> list[SentItem]:
-    """DeepSeek API 作为第 13 源（AI 搜索引擎）接入 feedscan，失败只记缺口"""
+    """智能检索 API 作为第 13 源接入 feedscan，失败只记缺口"""
     ds = _try_import_deepseek_search()
     if ds is None:
-        raise PushError("deepseek_search 模块不可用")
-    # 使用 topic 作为查询，若为全市场简报则用通用查询
+        raise PushError("智能检索模块不可用")
     query = topic.strip() if topic and not is_market_wide_topic(topic) else f"{topic or '全球市场'} 最新财经快讯"
     rows = ds.fetch_deepseek_search(query, timeout=timeout, hours=hours)
     items: list[SentItem] = []
@@ -1143,16 +1136,16 @@ def fetch_deepseek_feed(topic: str, hours: int, timeout: int, now: datetime) -> 
         if len(title) < 4:
             continue
         ts = r.get("ts")
-        # 复用情绪打标
-        items.append(_mk_item("DeepSeek 搜索", title, r.get("url", ""), ts, now))
+        items.append(_mk_item("AI 智能检索", title, r.get("url", ""), ts, now))
         if len(items) >= 10:
             break
     if not items:
-        raise PushError("DeepSeek 搜索未命中（或返回空）")
+        raise PushError("智能检索未命中")
     return items
 
 
 def collect_feeds(hours: int, timeout: int, topic: str = "") -> FeedPack:
+    from source_names import sanitize_error
     now = datetime.now(UTC)
     pack = FeedPack(hours=hours)
     for spec in FEED_SPECS:
@@ -1160,7 +1153,7 @@ def collect_feeds(hours: int, timeout: int, topic: str = "") -> FeedPack:
             try:
                 pack.items[spec.name] = fetch_xueqiu(min(timeout, 12), now)
             except Exception as e:  # noqa: BLE001
-                pack.errors.append(f"{spec.name}：{str(e)[:100]}")
+                pack.errors.append(f"{spec.name}：{sanitize_error(e)[:100]}")
             continue
         if not spec.urls:
             pack.errors.append(f"{spec.name}：{spec.note or '无端点'}")
@@ -1169,20 +1162,17 @@ def collect_feeds(hours: int, timeout: int, topic: str = "") -> FeedPack:
             pack.items[spec.name] = fetch_feed_json(
                 spec, hours, min(timeout, 12), now)
         except Exception as e:  # noqa: BLE001 —— 逐源隔离
-            pack.errors.append(f"{spec.name}：{str(e)[:100]}")
+            pack.errors.append(f"{spec.name}：{sanitize_error(e)[:100]}")
 
-    # ---- DeepSeek 搜索（AI 搜索引擎，第 13 源，新增）----
+    # ---- AI 智能检索（第 13 源）----
     try:
-        # 仅在有 Key 或离线样本模式下尝试，避免无 Key 时每次都记缺口噪音过大？
-        # 这里按“有 Key 才尝试，无 Key 记跳过”策略，与其他源一致：无 Key 也记缺口，便于追踪
-        pack.items["DeepSeek 搜索"] = fetch_deepseek_feed(topic or "全球市场", hours, min(timeout, 15), now)
+        pack.items["AI 智能检索"] = fetch_deepseek_feed(topic or "全球市场", hours, min(timeout, 15), now)
     except Exception as e:  # noqa: BLE001
-        # 无 Key 时提示更友好
-        msg = str(e)[:120]
-        if "DEEPSEEK_API_KEY" in msg:
-            pack.errors.append(f"DeepSeek 搜索：跳过（未配置 DEEPSEEK_API_KEY）")
+        msg = sanitize_error(e)[:120]
+        if "检索密钥" in msg:
+            pack.errors.append("AI 智能检索：跳过（未配置检索密钥）")
         else:
-            pack.errors.append(f"DeepSeek 搜索：{msg}")
+            pack.errors.append(f"AI 智能检索：{msg}")
 
     all_items = [i for v in pack.items.values() for i in v]
     n_ok = len(pack.items)
@@ -1206,9 +1196,10 @@ def is_market_wide_topic(topic: str) -> bool:
 
 
 def feed_context(topic: str, pack: FeedPack) -> str:
+    from source_names import sanitize_error
     scope = ("报告范围：全市场（不指定单一个股）" if is_market_wide_topic(topic)
              else f"关注标的：{topic}")
-    total = 13  # 12 原有 + DeepSeek 1
+    total = 13
     ctx = [f"【{pack.hours}h 全市场快讯数据：{pack.agg['n_sources']}/{total} 源可用，"
            f"共 {pack.agg['n']} 条，已本地打标】{scope}"]
     for spec in FEED_SPECS:
@@ -1219,15 +1210,14 @@ def feed_context(topic: str, pack: FeedPack) -> str:
         ctx.append(f"▼ {spec.name}（{agg['n']}条：利好{agg['pos']}/"
                    f"利空{agg['neg']}/中性{agg['neu']}，动量{agg['mean']:+.2f}）")
         ctx += [_item_line(i, k + 1) for k, i in enumerate(items[:spec.limit])]
-    # DeepSeek 搜索（新增第 13 源）
-    ds_items = pack.items.get("DeepSeek 搜索")
+    ds_items = pack.items.get("AI 智能检索") or pack.items.get("DeepSeek 搜索")
     if ds_items:
         agg = _src_agg(ds_items)
-        ctx.append(f"▼ DeepSeek 搜索（{agg['n']}条：利好{agg['pos']}/"
+        ctx.append(f"▼ AI 智能检索（{agg['n']}条：利好{agg['pos']}/"
                    f"利空{agg['neg']}/中性{agg['neu']}，动量{agg['mean']:+.2f}）")
         ctx += [_item_line(i, k + 1) for k, i in enumerate(ds_items[:10])]
     if pack.errors:
-        ctx.append("▼ 数据缺口：" + "；".join(pack.errors))
+        ctx.append("▼ 数据缺口：" + "；".join(sanitize_error(e) for e in pack.errors))
     ctx.append(f"▼ 本地聚合：总样本 {pack.agg['n']}，利好/利空/中性="
                f"{pack.agg['pos']}/{pack.agg['neg']}/{pack.agg['neu']}，"
                f"情绪均值 {pack.agg['mean']:+.2f}，"
@@ -1236,13 +1226,15 @@ def feed_context(topic: str, pack: FeedPack) -> str:
 
 
 def render_feed_rule(topic: str, pack: FeedPack) -> str:
-    lines = [f"**{topic} · 全市场快讯情绪扫描**（rule 本地计算，未经 AI 综合，含 DeepSeek 搜索）",
+    from source_names import sanitize_error
+    clean_errs = [sanitize_error(e) for e in pack.errors]
+    lines = [f"**{topic} · 全市场快讯情绪扫描**（rule 本地计算，未经 AI 综合）",
              "", "| 来源 | 样本 | 利好/利空/中性 | 情绪分 | 代表快讯 |",
              "|---|---|---|---|---|"]
     for spec in FEED_SPECS:
         items = pack.items.get(spec.name)
         if not items:
-            err = next((e.split("：", 1)[1] for e in pack.errors
+            err = next((e.split("：", 1)[1] for e in clean_errs
                         if e.startswith(spec.name)), "失败")
             lines.append(f"| {spec.name} | — | — | — | ⚠️ {err[:16]} |")
             continue
@@ -1250,17 +1242,16 @@ def render_feed_rule(topic: str, pack: FeedPack) -> str:
         rep = items[0].title[:16]
         lines.append(f"| {spec.name} | {agg['n']} | {agg['pos']}/{agg['neg']}"
                      f"/{agg['neu']} | {agg['mean']:+.2f} | {rep}… |")
-    # DeepSeek 搜索（第 13 源）
-    ds_items = pack.items.get("DeepSeek 搜索")
+    ds_items = pack.items.get("AI 智能检索") or pack.items.get("DeepSeek 搜索")
     if ds_items:
         agg = _src_agg(ds_items)
         rep = ds_items[0].title[:16]
-        lines.append(f"| DeepSeek 搜索 | {agg['n']} | {agg['pos']}/{agg['neg']}"
+        lines.append(f"| AI 智能检索 | {agg['n']} | {agg['pos']}/{agg['neg']}"
                      f"/{agg['neu']} | {agg['mean']:+.2f} | {rep}… |")
     else:
-        err = next((e.split("：", 1)[1] for e in pack.errors
-                    if e.startswith("DeepSeek")), "跳过")
-        lines.append(f"| DeepSeek 搜索 | — | — | — | ⚠️ {err[:16]} |")
+        err = next((e.split("：", 1)[1] for e in clean_errs
+                    if e.startswith("AI 智能检索")), "跳过")
+        lines.append(f"| AI 智能检索 | — | — | — | ⚠️ {err[:16]} |")
     a = pack.agg
     anchor = a.get("综合多头概率锚点", 50)
     stance = "偏多" if anchor >= 55 else ("偏空" if anchor <= 45 else "中性")
@@ -1274,8 +1265,9 @@ def render_feed_rule(topic: str, pack: FeedPack) -> str:
 
 
 def render_feed_appendix(pack: FeedPack, new_keys: set | None = None) -> str:
+    from source_names import sanitize_error
     nk = new_keys or set()
-    lines = ["---", f"📰 **快讯原始明细（{pack.agg['n']} 条，金十≤50、其余每源≤10，含 DeepSeek 搜索）**"]
+    lines = ["---", f"📰 **快讯原始明细（{pack.agg['n']} 条，主源≤50、其余每源≤10）**"]
     for spec in FEED_SPECS:
         items = pack.items.get(spec.name)
         if not items:
@@ -1283,14 +1275,14 @@ def render_feed_appendix(pack: FeedPack, new_keys: set | None = None) -> str:
         lines.append(f"\n**{spec.name}（{len(items)}/{spec.limit}）**")
         lines += [_item_line(i, k + 1, _item_key(i.title) in nk)
                   for k, i in enumerate(items[:spec.limit])]
-    ds_items = pack.items.get("DeepSeek 搜索")
+    ds_items = pack.items.get("AI 智能检索") or pack.items.get("DeepSeek 搜索")
     if ds_items:
-        lines.append(f"\n**DeepSeek 搜索（{len(ds_items)}/10）**")
+        lines.append(f"\n**AI 智能检索（{len(ds_items)}/10）**")
         lines += [_item_line(i, k + 1, _item_key(i.title) in nk)
                   for k, i in enumerate(ds_items[:10])]
     if pack.errors:
         lines.append("\n**数据缺口**")
-        lines += [f"- ⚠️ {e}" for e in pack.errors]
+        lines += [f"- ⚠️ {sanitize_error(e)}" for e in pack.errors]
     return "\n".join(lines)
 
 
@@ -1373,12 +1365,13 @@ def _clean_query_topic(topic: str) -> str:
 
 def collect_sentiment(topic: str, code: str | None, hours: int,
                       timeout: int, yt_handle: str = "") -> SentPack:
-    """采集 4 源 + 量价动量。任何单源失败只记录、不中断。"""
+    """采集公开新闻 + 海外财经频道 + 量价动量。任何单源失败只记录、不中断。"""
+    from source_names import sanitize_error
     pack = SentPack(hours=hours)
     q_topic = _clean_query_topic(topic)
     jobs = [
-        ("Google新闻", lambda: fetch_google_news(q_topic, hours, 10, timeout)),
-        ("YouTube·investtalk", lambda: fetch_youtube(
+        ("公开新闻检索", lambda: fetch_google_news(q_topic, hours, 10, timeout)),
+        ("海外财经频道", lambda: fetch_youtube(
             yt_handle or (env("YT_CHANNEL") or "investtalk"), hours, 10, timeout)),
     ]
     for name, fn in jobs:
@@ -1386,25 +1379,24 @@ def collect_sentiment(topic: str, code: str | None, hours: int,
             items, note = fn()
             pack.items[name] = items
             if note:
-                pack.errors.append(f"{name}：{note}")
+                pack.errors.append(f"{name}：{sanitize_error(note)}")
         except Exception as e:  # noqa: BLE001 —— 逐源隔离
-            pack.errors.append(f"{name}：{str(e)[:120]}")
+            pack.errors.append(f"{name}：{sanitize_error(e)[:120]}")
     if code:
         try:
             pack.momentum = fetch_price_momentum(code, hours, timeout)
         except Exception as e:  # noqa: BLE001
             pack.momentum = {"ok": False, "score": 0.0,
-                             "label": "获取失败", "detail": str(e)[:100]}
-    # ---------- 十七平台扫描：输入股票代码 → 窗口内相关新闻 + 有关板块 ----------
+                             "label": "获取失败", "detail": sanitize_error(e)[:100]}
     if code or q_topic:
         try:
             from stock_news_scan import scan_stock
             pack.scan = scan_stock(code or "", q_topic, hours=hours,
                                    timeout=min(timeout, 12))
         except Exception as e:  # noqa: BLE001 —— 扫描失败仅记数据缺口
-            pack.errors.append(f"十七平台扫描：{str(e)[:120]}")
-    a = {"news": _src_agg(pack.items.get("Google新闻", [])),
-         "social": _src_agg([i for k in ("YouTube·investtalk",)
+            pack.errors.append(f"多平台扫描：{sanitize_error(e)[:120]}")
+    a = {"news": _src_agg(pack.items.get("公开新闻检索") or pack.items.get("Google新闻", [])),
+         "social": _src_agg([i for k in ("海外财经频道", "YouTube·investtalk")
                              for i in pack.items.get(k, [])])}
     news_score = a["news"].get("mean", 0.0) if a["news"].get("n") else 0.0
     social_score = a["social"].get("mean", 0.0) if a["social"].get("n") else 0.0
@@ -1416,10 +1408,11 @@ def collect_sentiment(topic: str, code: str | None, hours: int,
 
 
 def _item_line(i: SentItem, idx: int, is_new: bool = False) -> str:
+    from source_names import generalize_source
     age = f"{i.age_h:.0f}h前" if i.age_h is not None else "时间未知"
     t = i.title if len(i.title) <= 60 else i.title[:57] + "…"
     mark = "🆕 " if is_new else ""   # 上次推送之后新进入窗口的样本
-    return f"{idx}. {mark}[{i.label} {i.score:+.2f}] {t} — {i.source} · {age}"
+    return f"{idx}. {mark}[{i.label} {i.score:+.2f}] {t} — {generalize_source(i.source)} · {age}"
 
 
 def render_financial_sentiment_push(pack: SentPack) -> str:
@@ -1454,14 +1447,20 @@ def render_feed_financial_sentiment_push(pack) -> str:
 
 
 def render_sentiment_appendix(pack: SentPack, new_keys: set | None = None) -> str:
+    from source_names import generalize_source, sanitize_error
     nk = new_keys or set()
     n = sum(len(v) for v in pack.items.values())
     lines = ["---", f"📡 **{SENTIMENT_FACTOR}证据（{pack.hours}h，共 {n} 条，本地打标）**"]
-    for name in ("Google新闻", "YouTube·investtalk"):
+    seen_groups: set[str] = set()
+    for name in ("公开新闻检索", "海外财经频道", "Google新闻", "YouTube·investtalk"):
         items = pack.items.get(name)
         if not items:
             continue
-        lines.append(f"\n**{name}（{len(items)}/10）**")
+        gname = generalize_source(name)
+        if gname in seen_groups:
+            continue
+        seen_groups.add(gname)
+        lines.append(f"\n**{gname}（{len(items)}/10）**")
         lines += [_item_line(i, k + 1, _item_key(i.title) in nk)
                   for k, i in enumerate(items)]
     m = pack.momentum
@@ -1471,7 +1470,7 @@ def render_sentiment_appendix(pack: SentPack, new_keys: set | None = None) -> st
                      f"{m.get('label')}（动量分 {m.get('score', 0):+.2f}）")
     if pack.errors:
         lines.append("\n**数据缺口**")
-        lines += [f"- ⚠️ {e}" for e in pack.errors]
+        lines += [f"- ⚠️ {sanitize_error(e)}" for e in pack.errors]
     if getattr(pack, "scan", None):
         try:
             from stock_news_scan import render_scan_md
@@ -1483,12 +1482,13 @@ def render_sentiment_appendix(pack: SentPack, new_keys: set | None = None) -> st
 
 
 def sentiment_context(pack: SentPack) -> str:
+    from source_names import generalize_source, sanitize_error
     ctx = [
         f"【新增因子：{SENTIMENT_FACTOR}】",
         f"【{pack.hours}h 多源舆情数据（本地预打标：标签/分值/时效）】",
     ]
     for name, items in pack.items.items():
-        ctx.append(f"▼ {name}")
+        ctx.append(f"▼ {generalize_source(name)}")
         ctx += [_item_line(i, k + 1) for k, i in enumerate(items)]
     m = pack.momentum
     if m.get("ok"):
@@ -1496,12 +1496,12 @@ def sentiment_context(pack: SentPack) -> str:
     if getattr(pack, "scan", None):
         try:
             from stock_news_scan import scan_context
-            ctx.append("▼ 十七平台扫描：")
+            ctx.append("▼ 多平台扫描：")
             ctx += ["  " + line for line in scan_context(pack.scan).splitlines()]
         except Exception:  # noqa: BLE001
             pass
     if pack.errors:
-        ctx.append("▼ 数据缺口：" + "；".join(pack.errors))
+        ctx.append("▼ 数据缺口：" + "；".join(sanitize_error(e) for e in pack.errors))
     a = pack.agg
     ctx.append(
         "▼ 本地预聚合："
@@ -1531,7 +1531,7 @@ def render_sentiment_rule(topic: str, code: str | None, pack: SentPack) -> str:
         "", *rows, "",
         f"- **综合判断**：{stance}，综合多头概率 ≈ **{anchor}%**"
         "（权重：量价40% / 新闻35% / 舆情25%）",
-        f"- **来源**：HK{code or '—'}；Google新闻 / YouTube@investtalk（{pack.hours}h 窗口）",
+        f"- **来源**：HK{code or '—'}；公开新闻检索 / 海外财经频道（{pack.hours}h 窗口）",
         "", "> ⚠️ 非投资建议，仅供参考。"])
 
 
@@ -1563,7 +1563,7 @@ def build_messages(template: str, topic: str, context: str,
             "| 舆情动量 |  |  |  |  |  |\n"
             "| 量价动量 |  | — |  | — |  |\n\n"
             "- **新闻要点**：3 条最有信息量的（引用编号）\n"
-            "- **舆情要点**：3 条（注明来自 YouTube）\n"
+            "- **舆情要点**：3 条（注明来自海外财经频道）\n"
             "- **催化 vs 风险**：各 2 条\n"
             "- **综合判断**：明确偏多/偏空 + 综合多头概率%"
             "（可参考本地锚点，偏离须给理由）\n"
@@ -1617,7 +1617,7 @@ def build_messages(template: str, topic: str, context: str,
                 + RULES_TAIL)
     elif template == "newsnow":
         user = (
-            f"基于以下 NewsNow 热榜聚合数据（10源：知乎热榜/抖音热搜/微博实时热搜/虎扑热搜/AI hot/联合早报/香港01/今日头条热榜/百度实时热点/B站热榜），"
+            f"基于以下全网热榜聚合数据（10 源：问答社区热榜/短视频热搜榜/社交实时热搜/论坛热议榜/科技热点榜/亚太资讯源/港闻资讯源/综合资讯热榜/搜索实时热点/视频社区热榜），"
             f"分析全网热点与对标的「{topic}」的潜在关联。\n\n{context}\n\n"
             "严格按此格式输出：\n\n"
             "## 热榜聚合分析\n\n"
@@ -1813,7 +1813,9 @@ def build_messages(template: str, topic: str, context: str,
                 + ctx + RULES_TAIL)
     system = ("你是一位严谨的跨市场分析师，深耕港股/A股市场，熟悉宏观与行业政策。"
               "输出必须是简体中文 Markdown，不要寒暄，不要使用代码块，"
-              "所有概率用整数百分比表示。")
+              "所有概率用整数百分比表示。"
+              "标注信息来源时一律使用上下文给定的泛化来源名（如财经电报源、宏观快讯源、"
+              "实时快讯主源、公开新闻检索、实时行情主源等），不得点名具体第三方网站或 App 名称。")
     return [{"role": "system", "content": system},
             {"role": "user", "content": user}]
 
@@ -1861,7 +1863,7 @@ def gen_by_rule(topic: str, template: str,
             from newsnow_sources import render_newsnow_rule
             return render_newsnow_rule(topic, newsnow_pack)
         except Exception:
-            return f"**{topic} · NewsNow热榜**（rule）\n\n> 暂无数据，newsnow模块未加载"
+            return f"**{topic} · 全网热榜**（rule）\n\n> 暂无数据"
     if template == "analysis":
         rows = []
         for factor in FACTORS:
@@ -3631,14 +3633,16 @@ def _item_key(title: str) -> str:
 
 
 def gather_item_keys(*packs) -> dict[str, list[str]]:
-    """汇总各数据源本次样本标题指纹（按源分组、去重）。"""
+    """汇总各数据源本次样本标题指纹（按泛化源名分组、去重）。"""
+    from source_names import generalize_source
     out: dict[str, list[str]] = {}
 
     def add(src: str, title: str) -> None:
         key = _item_key(title)
         if not key:
             return
-        bucket = out.setdefault(src, [])
+        gsrc = generalize_source(src)
+        bucket = out.setdefault(gsrc, [])
         if key not in bucket:
             bucket.append(key)
 
@@ -3760,8 +3764,9 @@ def render_freshness_md(*, now_cst: str, template: str, hours: int,
     if not state_enabled or first_run:
         new_line = "🆕 新增样本：—（无上次基线可对比）"
     elif new_items:
+        from source_names import generalize_source
         per_src = " · ".join(
-            f"{s} {len(v)}" for s, v in
+            f"{generalize_source(s)} {len(v)}" for s, v in
             sorted(new_items.items(), key=lambda kv: -len(kv[1]))[:5])
         total_new = sum(len(v) for v in new_items.values())
         new_line = f"🆕 新增样本：{total_new} 条（{per_src}）"
@@ -4304,10 +4309,10 @@ def fetch_chart_bars(code: str, timeout: int = 15) -> tuple[list[dict], str]:
                     "close": float(c), "vol": float(v or 0),
                 })
             if len(bars) >= 5:
-                return _with_ma(bars), "YAHOO"
+                return _with_ma(bars), "日线行情主源"
     except Exception as e:
-        log(f"  ⚠️ 字符模拟图 Yahoo 源失败：{e}")
-    try:  # ② 东方财富
+        log(f"  ⚠️ 字符模拟图主源失败：{sanitize_error(str(e))}")
+    try:  # ② 备源
         url = ("https://push2his.eastmoney.com/api/qt/stock/kline/get"
                f"?secid={em_secid}&klt=101&fqt=1&lmt=90&end=20500101"
                "&fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55,f56,f57")
@@ -4324,10 +4329,10 @@ def fetch_chart_bars(code: str, timeout: int = 15) -> tuple[list[dict], str]:
                     "vol": float(p[5] or 0),
                 })
             if len(bars) >= 5:
-                return _with_ma(bars), "EASTMONEY"
+                return _with_ma(bars), "日线行情备源"
     except Exception as e:
-        log(f"  ⚠️ 字符模拟图 东方财富 源失败：{e}")
-    raise PushError("Yahoo 与东方财富日级数据均获取失败")
+        log(f"  ⚠️ 字符模拟图备源失败：{sanitize_error(str(e))}")
+    raise PushError("日级行情数据获取失败")
 
 
 # 兼容旧名
@@ -4344,12 +4349,13 @@ def render_char_chart(bars: list[dict], meta: dict | None = None,
       支撑 S1 / 压力 R1 用虚线 ─ 标注
     返回可直接嵌入 Markdown <pre> 的多行字符串。
     """
+    from source_names import generalize_source
     bars = [b for b in bars if b.get("close") is not None][-width:]
     if len(bars) < 5:
         raise PushError("数据不足（<5 根），无法渲染字符模拟图")
     meta = meta or {}
     code = str(meta.get("code") or "09988")
-    source = str(meta.get("source") or "YAHOO")
+    source = generalize_source(str(meta.get("source") or "日线行情源"))
     suffix = str(meta.get("suffix") or "HK")
 
     # 选用收盘价决定量纲，保留适当上下边距
@@ -4586,7 +4592,7 @@ def selftest() -> int:
     log("② 交叉核验")
     v = verify_quotes([qa, qb, qc])
     check("三源一致→可信", "三源一致" in v.verdict and v.n_excluded == 0)
-    bad = Quote(source="东方财富", ok=True, name="阿里巴巴", price=18.50,
+    bad = Quote(source="实时行情备源", ok=True, name="阿里巴巴", price=18.50,
                 prev_close=16.61, change_pct=11.4)
     v2 = verify_quotes([qa, bad, qc])
     check("异常源被剔除", v2.n_excluded == 1 and "剔除" in v2.verdict)
@@ -4598,7 +4604,7 @@ def selftest() -> int:
                         Quote(source="C", ok=False, error="z")])
     check("全失败→降级提示", "全部失败" in v4.verdict)
     md = market_block_md("09988", [qa, qb, qc], v)
-    check("核验表含三源名", all(s in md for s in ("Yahoo", "东方财富", "腾讯")))
+    check("核验表含三路泛化源名", all(s in md for s in ("国际行情源", "实时行情备源", "实时行情主源")))
 
     log("③ 港股代码规整")
     check("normalize 9988→09988", normalize_hk_code("9988") == "09988")
@@ -4671,8 +4677,8 @@ def selftest() -> int:
                     '"data":{"content":"黄金突破历史新高","pic":""}}]};')
     m = re.search(r"[{\[]", jin10_sample)
     jj = json.loads(jin10_sample[m.start():].rstrip(";\n "))
-    ij = extract_items_generic(jj, "金十数据", 10, 48, NOW)
-    check("金十:JS壳+双层data", len(ij) == 1 and ij[0].label == "利好")
+    ij = extract_items_generic(jj, "实时快讯主源", 10, 48, NOW)
+    check("主源:JS壳+双层data", len(ij) == 1 and ij[0].label == "利好")
 
     log("③c2 修复源回归（2026-10 接口换代：华尔街/财联社/格隆汇/法布）")
     wscn_live = {"code": 20000, "data": {"items": [
@@ -4706,9 +4712,9 @@ def selftest() -> int:
          "is_ad": 0},
         {"title": "广告电报不应入选", "brief": "x", "ctime": ts_8am,
          "is_ad": 1}]}}
-    ic1 = extract_items_generic(cls_roll, "财联社 电报", 10, 48, NOW)
-    check("财联社电报:roll_data定位+is_ad剔除",
-          len(ic1) == 1 and ic1[0].title.startswith("财联社电"))
+    ic1 = extract_items_generic(cls_roll, "财经电报源", 10, 48, NOW)
+    check("电报源:roll_data定位+导语脱敏+is_ad剔除",
+          len(ic1) == 1 and ic1[0].title == "指数午后拉升")
     cls_depth = {"data": {"roll_bar": {},
                           "banner": [{"id": 1, "title": ""}],
                           "top_article": [
@@ -4716,23 +4722,23 @@ def selftest() -> int:
                           "depth_list": [
                               {"title": "深度列表文章一", "ctime": ts_8am},
                               {"title": "深度列表文章二", "ctime": ts_8am}]}}
-    ic2 = extract_items_generic(cls_depth, "财联社 深度", 10, 48, NOW)
-    check("财联社深度:depth_list不被banner干扰",
+    ic2 = extract_items_generic(cls_depth, "财经深度源", 10, 48, NOW)
+    check("深度源:depth_list不被banner干扰",
           len(ic2) == 2 and ic2[0].title == "深度列表文章一")
-    check("财联社签名:md5(sha1(排序query))向量",
+    check("签名:md5(sha1(排序query))向量",
           cls_signed_url("https://www.cls.cn/v2/article/hot/list", {}, NOW)
           .endswith("sign=10bdc2da403ad7415bb639aa22dc6cd3"))
-    check("财联社签名:NOW_TS替换为epoch秒",
+    check("签名:NOW_TS替换为epoch秒",
           f"last_time={int(NOW.timestamp())}" in cls_signed_url(
               "https://www.cls.cn/v1/roll/get_roll_list",
               {"last_time": "NOW_TS", "refresh_type": 1, "rn": 20}, NOW))
     glh = {"statusCode": 200, "result": [
-        {"title": "格隆汇快讯标题", "createTimestamp": int(ts_8am)},
+        {"title": "港股科技板块快讯标题", "createTimestamp": int(ts_8am)},
         {"title": "", "content": "格隆汇电，无标题回退正文",
          "createTimestamp": int(ts_8am)}]}
-    ig = extract_items_generic(glh, "格隆汇 事件", 10, 48, NOW)
-    check("格隆汇:result+createTimestamp",
-          len(ig) == 2 and ig[1].title.startswith("格隆汇电"))
+    ig = extract_items_generic(glh, "港美股快讯源", 10, 48, NOW)
+    check("港美股快讯:result+导语脱敏+createTimestamp",
+          len(ig) == 2 and ig[1].title == "无标题回退正文")
     fb_now_ms = int(ts_8am) * 1000
     fb_express = (
         f'<div class="content-list news-list" data-date="{fb_now_ms}">'
@@ -4759,17 +4765,17 @@ def selftest() -> int:
           and ifb2[0].url.endswith("/cn/news/789"))
 
     fp = FeedPack(hours=48)
-    fp.items["金十数据"] = ij
-    fp.errors.append("MKTNews 快讯：HTTP 502")
+    fp.items["实时快讯主源"] = ij
+    fp.errors.append("海外快讯源：HTTP 502")
     fp.agg = {"n": 1, "pos": 1, "neg": 0, "neu": 0, "mean": 1.0,
               "n_sources": 1, "综合多头概率锚点": 50 + 45 * min(1.0, 1.0 * 3)}
     md_rule = render_feed_rule("阿里巴巴", fp)
     check("feedscan:rule渲染含缺口行", "⚠️" in md_rule and "情绪温度" in md_rule)
-    check("feedscan:附录含来源明细", "金十数据（1/50）" in render_feed_appendix(fp))
-    jin10_spec = next(s for s in FEED_SPECS if s.name == "金十数据")
-    check("金十:样本上限=50(其余源默认10)",
+    check("feedscan:附录含泛化来源明细", "实时快讯主源（1/50）" in render_feed_appendix(fp))
+    jin10_spec = next(s for s in FEED_SPECS if s.name == "实时快讯主源")
+    check("主源:样本上限=50(其余源默认10)",
           jin10_spec.limit == 50
-          and all(s.limit == 10 for s in FEED_SPECS if s.name != "金十数据"))
+          and all(s.limit == 10 for s in FEED_SPECS if s.name != "实时快讯主源"))
     j50_raw = [{"id": str(k), "time": "2026-08-04 11:00:00", "channel": [1],
                 "data": {"content": f"测试快讯样本第{k}条内容"}}
                for k in range(60)]
@@ -5192,12 +5198,12 @@ def selftest() -> int:
             # 模拟 pack 渲染走 pixel 主题
             from newsnow_sources import NewsNowPack, HotItem
             demo_pack = NewsNowPack(items={
-                "知乎热榜": [HotItem(source="知乎热榜", id="1", title="阿里巴巴Q3财报超预期", url="https://zhihu.com/q/1", extra_info="100万热度")],
-                "微博实时热搜": [HotItem(source="微博实时热搜", id="a", title="+2.5% 阿里巴巴大涨", url="https://weibo.com/a", extra_info="热")],
-                "香港01": [HotItem(source="香港01", id="b", title="港股电商板块", url="https://hk01.com/b", extra_info="")],
+                "问答社区热榜": [HotItem(source="问答社区热榜", id="1", title="阿里巴巴Q3财报超预期", url="https://zhihu.com/q/1", extra_info="100万热度")],
+                "社交实时热搜": [HotItem(source="社交实时热搜", id="a", title="+2.5% 阿里巴巴大涨", url="https://weibo.com/a", extra_info="热")],
+                "港闻资讯源": [HotItem(source="港闻资讯源", id="b", title="港股电商板块", url="https://hk01.com/b", extra_info="")],
             }, agg={"total": 3, "sources_ok": 3, "sources_total": 10})
             md_demo = render_newsnow_rule("阿里巴巴", demo_pack)
-            check("NewsNow 渲染含源名", "知乎热榜" in md_demo and "香港01" in md_demo)
+            check("NewsNow 渲染含泛化源名", "问答社区热榜" in md_demo and "港闻资讯源" in md_demo)
             # pixel 主题渲染涨跌突出
             html_demo = themed_html("测试NewsNow", md_demo, "pixel")
             check("NewsNow+pixel 涨跌突出", "▲" in html_demo or "热" in html_demo or "11px" in html_demo)
@@ -5218,10 +5224,10 @@ def selftest() -> int:
         check("十七平台扫描自检通过", selftest_scan() == 0)
         sp = SentPack(hours=156, scan=demo_scan_pack())
         md = render_sentiment_appendix(sp)
-        check("情绪附录并入十七平台扫描",
+        check("情绪附录并入多平台扫描",
               ("十八平台扫描" in md or "十七平台扫描" in md) and "有关板块" in md)
         ctx = sentiment_context(sp)
-        check("AI 上下文并入十七平台扫描", ("十八平台扫描" in ctx or "十七平台扫描" in ctx))
+        check("AI 上下文并入多平台扫描", ("十八平台扫描" in ctx or "十七平台扫描" in ctx))
         check("扫描聚合含平台计数", sp.scan.agg.get("platforms_total") in (17, 18))
     except Exception as e:  # noqa: BLE001
         check(f"十七平台扫描集成异常: {e}", False)
@@ -5269,8 +5275,8 @@ def selftest() -> int:
                   bool(rep["run"]) and rep["run"]["total"] in (14, 15)
                   and rep["run"]["fail"] == 0)
             md_ck = render_report_md(rep)
-            check("校验报告含新增三源",
-                  all(x in md_ck for x in ("今日头条热榜", "百度实时热点", "B站热榜")))
+            check("校验报告含新增三源泛化名",
+                  all(x in md_ck for x in ("综合资讯热榜", "搜索实时热点", "视频社区热榜")))
             check("单源历史按键可查",
                   source_history(con, "toutiao")[0]["source_key"] == "toutiao")
             con.close()
@@ -5421,11 +5427,11 @@ def selftest() -> int:
     pk = NS(items={"Google新闻": [NS(title="阿里巴巴 签 大单")]},
             scan=NS(direct={"雪球": [NS(title="阿里热帖")]}, sector_hits={}))
     ks = gather_item_keys(pk)
-    check("样本指纹含两源", set(ks) == {"Google新闻", "扫·雪球"})
+    check("样本指纹含两泛化源", set(ks) == {"公开新闻检索", "扫·投资社区热榜"})
     ks2 = gather_item_keys(pk, pk)
-    check("重复采集自动去重", len(ks2["Google新闻"]) == 1)
-    new = diff_item_keys(ks, {"Google新闻": ks["Google新闻"]})
-    check("增量=仅新源条目", set(new) == {"扫·雪球"})
+    check("重复采集自动去重", len(ks2["公开新闻检索"]) == 1)
+    new = diff_item_keys(ks, {"公开新闻检索": ks["公开新闻检索"]})
+    check("增量=仅新源条目", set(new) == {"扫·投资社区热榜"})
     check("无基线→不报增量", diff_item_keys(ks, {}) == {})
     qb_live = _quote_brief([qa, qb, qc])
     check("行情共识=三源中位价",

@@ -238,7 +238,7 @@ def run_checks(con: sqlite3.Connection, live: bool = False, timeout: int = 12,
 
             finance_jobs: list[tuple[str, str, Callable[[], list]]] = []
             for platform, fn in scan.FINANCE_FETCHERS.items():
-                if platform == "Google新闻":
+                if platform in ("公开新闻检索", "Google新闻"):
                     finance_jobs.append(
                         ("google", platform,
                          lambda fn=fn: fn("股票", timeout)))
@@ -248,7 +248,7 @@ def run_checks(con: sqlite3.Connection, live: bool = False, timeout: int = 12,
                          lambda fn=fn: fn(timeout)))
             q = scan.build_stock_query("09988", "阿里巴巴")
             finance_jobs.append(
-                ("xueqiu", "雪球 热门股票",
+                ("xueqiu", "投资社区热榜",
                  lambda: scan.fetch_xueqiu(q, timeout, _dt.now(scan.UTC))))
             for key, name, produce in finance_jobs:
                 if only and key not in only:
@@ -266,10 +266,10 @@ def run_checks(con: sqlite3.Connection, live: bool = False, timeout: int = 12,
     # ---- 境外（美股）行情 4 源（us_quote，离线样本/在线实抓）----
     try:
         import us_quote
-        us_offline = [("us_tencent", "腾讯财经(美股)", "腾讯美股样本"),
-                      ("us_eastmoney", "东方财富(美股)", "东财美股样本"),
-                      ("us_yahoo", "Yahoo Finance", "Yahoo 样本"),
-                      ("us_stooq", "Stooq(延迟)", "Stooq 样本")]
+        us_offline = [("us_tencent", "美股行情主源", "主源样本"),
+                      ("us_eastmoney", "美股行情备源", "备源样本"),
+                      ("us_yahoo", "国际行情核验源", "核验样本"),
+                      ("us_stooq", "延迟核验源", "延迟样本")]
         for key, name, _tag in us_offline:
             if only and key not in only and key.removeprefix("us_") not in only:
                 continue
@@ -300,21 +300,19 @@ def run_checks(con: sqlite3.Connection, live: bool = False, timeout: int = 12,
         results.append(r)
         record_check(con, run_id, r)
 
-    # ---- AI 搜索 1 源（DeepSeek API 作为搜索引擎，新增）----
+    # ---- AI 智能检索 1 源 ----
     try:
         import deepseek_search
         key = "deepseek"
-        name = "DeepSeek 搜索"
+        name = "AI 智能检索"
         if only and key not in only and "deepseek_search" not in only:
             pass
         else:
             if live:
                 def _produce_ds():
-                    # 在线：真调用 DeepSeek，查询“阿里巴巴”
                     return deepseek_search.fetch_deepseek_search("阿里巴巴 09988", timeout=timeout, hours=48)
                 r = check_one(key, name, "AI搜索", _produce_ds)
             else:
-                # 离线：用样本 JSON 走解析器
                 def _produce_ds_offline():
                     import json as _json
                     content = _json.loads(deepseek_search.DEEPSEEK_SAMPLE_JSON)["choices"][0]["message"]["content"]
@@ -323,7 +321,7 @@ def run_checks(con: sqlite3.Connection, live: bool = False, timeout: int = 12,
             results.append(r)
             record_check(con, run_id, r)
     except ImportError as e:
-        r = CheckResult(source_key="deepseek", source_name="DeepSeek 搜索",
+        r = CheckResult(source_key="deepseek", source_name="AI 智能检索",
                         group_name="AI搜索", status="fail",
                         error=f"deepseek_search 不可导入：{e}")
         results.append(r)
@@ -464,8 +462,8 @@ def selftest_checkdb() -> int:
 
     # 4) 报告与历史
     md = render_report_md(latest_report(con))
-    check("报告含全部新三源 + DeepSeek",
-          all(s in md for s in ("今日头条热榜", "百度实时热点", "B站热榜", "DeepSeek"))
+    check("报告含全部新三源 + AI 智能检索",
+          all(s in md for s in ("综合资讯热榜", "搜索实时热点", "视频社区热榜", "AI 智能检索"))
           and "run #" in md)
     hist = source_history(con, "toutiao")
     check("单源历史可查询",
