@@ -23,8 +23,11 @@ class PushSentimentTest(unittest.TestCase):
             self.assertEqual(md, pp.render_financial_sentiment_push(pack))
             score.assert_called_once_with([item.title], engine='auto')
         self.assertIn('情绪判定', md)
-        self.assertIn('非四路并行', md)
         self.assertIn('本地金融词典', md)
+        # 读者侧不再出现引擎模式/请求模式这类元说明
+        self.assertNotIn('非四路并行', md)
+        self.assertNotIn('请求模式', md)
+        self.assertNotIn('备注', md)
 
     def test_daily_wechat_feed_review(self):
         item = SimpleNamespace(title='净利润大幅增长')
@@ -39,7 +42,9 @@ class PushSentimentTest(unittest.TestCase):
         pack = pp.SentPack(hours=48, items={'news': [SimpleNamespace(title='新闻')]})
         with patch.object(hf_hub, 'score_texts', side_effect=RuntimeError('secret')):
             md = pp.render_financial_sentiment_push(pack)
-        self.assertIn('主报告照常推送', md)
+        # 失败时只留一句合规声明，不向读者解释「情绪复核不可用」
+        self.assertIn('非投资建议', md)
+        self.assertNotIn('暂不可用', md)
         self.assertNotIn('secret', md)
         self.assertEqual(md, pack.financial_sentiment_md)
 
