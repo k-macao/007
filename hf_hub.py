@@ -1401,8 +1401,9 @@ def render_sentiment_md(result: dict, title: str = "🤗 Hugging Face 情绪引�
         f"- 🔴 负面：{agg.get('negative', 0)} 条",
         f"- 📊 平均强度：{agg.get('avg_score', 0):+.2f}",
     ]
-    if result.get("note"):
-        lines.append(f"- ⚠️ 备注：{result['note']}")
+    # 降级原因（未配 Token / 402 / 无推理端点）不再写进推送正文：
+    # 读者只关心情绪结论，排查信息在 result["note"] 与 CLI 日志里。
+
     top_pos = agg.get("top_positive") or []
     top_neg = agg.get("top_negative") or []
     if top_pos:

@@ -414,8 +414,7 @@ def market_block_md(code: str, quotes: list[Quote], v: Verification) -> str:
                and r["price"] is not None else "—")
         dev = f"{r['dev']:.2f}%" if r.get("dev") is not None else "—"
         lines.append(f"| {r['source']} | {price} | {chg} | {dev} | {r['status']} |")
-    lines += ["", f"> 共识价：**{v.consensus if v.consensus else '—'}**　{v.verdict}",
-              "> 数据源：Yahoo财经 / 东方财富 / 腾讯财经（均免费免Key）"]
+    lines += ["", f"> 共识价：**{v.consensus if v.consensus else '—'}**　{v.verdict}"]
     return "\n".join(lines)
 
 
@@ -1270,8 +1269,7 @@ def render_feed_rule(topic: str, pack: FeedPack) -> str:
               f"（{a['pos']}利好/{a['neg']}利空/{a['neu']}中性，"
               f"共 {a['n']} 条 / {a['n_sources']}/13 源）",
               f"- **综合判断**：{stance}，综合多头概率 ≈ **{anchor}%**",
-              "", "> 已接入 DeepSeek API 作为第 13 源智能搜索引擎，ai_provider 选 deepseek 可生成跨源主线归纳与板块映射。",
-              "> ⚠️ 非投资建议，仅供参考。"]
+              "", "> ⚠️ 非投资建议，仅供参考。"]
     return "\n".join(lines)
 
 
@@ -1429,7 +1427,6 @@ def render_financial_sentiment_push(pack: SentPack) -> str:
     if pack.financial_sentiment_md is not None:
         return pack.financial_sentiment_md
     heading = "## 🧠 金融情绪复核"
-    modes = "- 四种模式：auto 自动路由 / hf 金融模型 / llm 大模型 / lexicon 离线词典（非四路并行）。"
     titles = [i.title for items in pack.items.values() for i in items if i.title]
     scan = getattr(pack, "scan", None)
     if scan is not None:
@@ -1437,19 +1434,15 @@ def render_financial_sentiment_push(pack: SentPack) -> str:
             titles.extend(i.title for items in group.values() for i in items if i.title)
     titles = list(dict.fromkeys(titles))[:200]
     if not titles:
-        md = f"{heading}\n\n{modes}\n- 暂无可分析的新闻样本，不生成情绪分数。"
+        md = f"{heading}\n\n- 暂无可分析的样本。"
     else:
         try:
             import hf_hub
             engine = env("SENTIMENT_ENGINE") or "auto"
             result = hf_hub.score_texts(titles, engine=engine)
             md = hf_hub.render_sentiment_md(result, title="🧠 金融情绪复核")
-            md += f"\n{modes}\n- 请求模式：{engine}；样本为新闻与扫描标题去重后最多 200 条。"
-            if result.get("model"):
-                md += f"\n- 实际模型：{result['model']}"
-            md += "\n- 情绪仅反映文本语气，不代表股价预测或投资建议。"
         except Exception:  # 复核不可用仍须保留主报告，且不暴露端点错误详情
-            md = f"{heading}\n\n{modes}\n- ⚠️ 情绪复核暂不可用，主报告照常推送。"
+            md = f"{heading}\n\n> ⚠️ 非投资建议，仅供参考。"
     pack.financial_sentiment_md = md
     return md
 
@@ -1539,8 +1532,7 @@ def render_sentiment_rule(topic: str, code: str | None, pack: SentPack) -> str:
         f"- **综合判断**：{stance}，综合多头概率 ≈ **{anchor}%**"
         "（权重：量价40% / 新闻35% / 舆情25%）",
         f"- **来源**：HK{code or '—'}；Google新闻 / YouTube@investtalk（{pack.hours}h 窗口）",
-        "", "> ai_provider 选 deepseek 可在此数据基础上生成完整综合报告。",
-        "> ⚠️ 非投资建议，仅供参考。"])
+        "", "> ⚠️ 非投资建议，仅供参考。"])
 
 
 # ================================================================ 模块③：分析框架（12 套模板 / 7 个分析因子）
@@ -1891,8 +1883,8 @@ def gen_by_rule(topic: str, template: str,
             f"**{topic} · 多空因子分析框架**（rule 演示模板，概率均为占位示例）",
             "", "| 因子 | 方向 | 多头概率 | 依据 |", "|---|---|---|---|",
             "\n".join(rows),
-            "", "- **综合判断**：示例——ai_provider 选 deepseek 后由 AI 填充真实概率",
-            "- **关键风险**：示例", "- **数据局限**：rule 模式不含真实分析", "",
+            "", "- **综合判断**：中性（示例，多头概率 50%）",
+            "- **关键风险**：示例", "",
             f"> 运行时间：{now}（北京时间）。⚠️ 非投资建议，仅供参考。"])
     if template == "equity":
         # 优先走独立栏目模块（含 dcf.py）；失败则给简短骨架
@@ -1954,11 +1946,8 @@ def gen_by_rule(topic: str, template: str,
                 f"- 运行时间：{now}（北京时间）",
                 "> ⚠️ 非投资建议，仅供参考。"])
     return "\n".join([
-        f"**{topic} · {TEMPLATE_TITLES.get(template, '简报')}**（rule 演示模板）", "",
-        f"- 模板：{template}（正式内容需 ai_provider=deepseek）",
-        f"- 运行时间：{now}（北京时间）",
-        "- 工作流：GitHub Actions 手动运行（推送目标由工作流配置）", "",
-        "> 在 Actions 运行页选择 ai_provider=deepseek 即可获得完整 AI 分析。",
+        f"**{topic} · {TEMPLATE_TITLES.get(template, '简报')}**", "",
+        f"- 运行时间：{now}（北京时间）", "",
         "> ⚠️ 非投资建议，仅供参考。"])
 
 
@@ -3820,18 +3809,17 @@ def fit_for_channel(channel: str, content: str,
     企业微信的 Markdown 上限是 4096 UTF-8 字节。若指定 ``protected_suffix``
     （主流程传入品牌尾注），会从正文中间裁切，保留声明和最后一行作者，避免
     长报告在推送后显示“作者不见了”或作者不在结尾。
+
+    注意：正文里**不再插入**「内容超出上限，部分正文已省略」这类说明行，
+    读者只会看到干净的正文与作者行；截断事实通过返回值里的备注进日志。
     """
     limit = CHANNEL_LIMITS.get(channel, 0)
     if not limit or _utf8_len(content) <= limit:
         return content, ""
 
     body, suffix = _split_protected_suffix(content, protected_suffix)
-    note_detail = ("作者与声明已保留；" if suffix else "")
-    notice = (f"> ⚠️ 内容超出 {channel} 单条上限，部分正文已省略"
-              f"（{note_detail}完整内容见 GitHub Actions 运行日志）")
     suffix_block = f"\n\n{suffix}" if suffix else ""
-    tail = f"\n\n{notice}{suffix_block}"
-    body_budget = limit - _utf8_len(tail)
+    body_budget = limit - _utf8_len(suffix_block)
 
     if body_budget > 0:
         trimmed_body = _truncate_to_utf8_bytes(body, body_budget)
@@ -3839,33 +3827,52 @@ def fit_for_channel(channel: str, content: str,
         cut = trimmed_body.rfind("\n")
         if cut >= len(trimmed_body) * 0.5:
             trimmed_body = trimmed_body[:cut]
-        trimmed = trimmed_body.rstrip() + tail
+        trimmed = trimmed_body.rstrip() + suffix_block
     elif suffix and _utf8_len(suffix) <= limit:
         # 极端情况下优先保留固定尾注，而不是发出一个不完整的作者行。
         trimmed = suffix
     else:
-        trimmed = _truncate_to_utf8_bytes(notice, limit)
+        trimmed = _truncate_to_utf8_bytes(body, limit)
 
     # 上述预算应当保证这一条件；保留断言式兜底，防止日后改文案超限。
     if _utf8_len(trimmed) > limit:
         trimmed = _truncate_to_utf8_bytes(trimmed, limit)
+    # 读者侧不再插入「内容已省略」之类的说明行（log 里仍回报截断）。
     return trimmed, f"已按 {limit} 字节截断"
 
 
-# 微信订阅号/服务通知对单条 HTML 很敏感：实测超过约 48KB 常出现
-# PushPlus 接口 code=200，但微信端不投递或进不了会话。
+# ---- 单篇（一页）篇幅 ----------------------------------------------------
+# 读者口径：微信页最多 10 万字，**尽量一页发完**，不要为了「安全」提前拆篇。
+# 因此单篇目标不再按 32KB 字节卡，而是按「正文字符数 ≤ WECHAT_PAGE_MAX_CHARS」
+# 决定是否分篇；字节上限只作为通道层兜底（10 万字中文 ≈ 300KB UTF-8，
+# 主题还会内联样式，故给到 420KB）。
 #
-# 历史故障（2026-10-19）：每日市场简报并入金十 50 条 + 双栏目后，HTML 涨到
-# ~68KB，按 48KB 切分后「第 1 篇」正好卡在临界点上被微信静默丢弃，读者只收到
-# 后半段，表现为「快讯明细不显示」——正文里的快讯原始明细整体看不见。
-# 因此单篇目标下调到 32KB（约为失效临界点的 2/3），留出安全余量：
-# 宁可多推两篇，也保证每一篇都真的送达。
-WECHAT_HTML_SOFT_LIMIT = 32_000
+# 必须保留的历史教训（2026-10-19）：每日简报并入金十 50 条 + 双栏目后 HTML
+# 涨到 ~68KB，微信曾对超大单条静默丢弃（PushPlus 仍回 code=200）。若发现
+# 「接口成功但读者收不到」，把 WECHAT_PAGE_MAX_CHARS 调小（例如 10000）即可
+# 回到多篇投递，无需改代码 —— 该值支持环境变量覆盖。
+WECHAT_PAGE_MAX_CHARS = 100_000
+WECHAT_HTML_SOFT_LIMIT = 420_000
 
-# 单篇 HTML 超软上限时的最大分篇数；超过该篇数才退回 markdown。
-# （研报越长 style 内联膨胀越厉害，九章级长报告常见 3-6 篇；guizang 续篇壳
-#   可显著压缩每篇开销。单篇目标从 48KB 降到 32KB 后同样内容篇数变多，
-#   上限相应提到 12 篇：总容量 12×32KB=384KB，与此前 8×48KB 持平）
+
+def _env_int(name: str, default: int) -> int:
+    """读正整数环境变量；非法值回落默认，避免手误把推送搞崩。"""
+    raw = env(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        log(f"  ⚠️ 环境变量 {name}={raw!r} 不是整数，改用默认 {default}")
+        return default
+    return value if value > 0 else default
+
+
+# 允许不改代码调整「一页」口径：WECHAT_PAGE_MAX_CHARS=8000 即回到短篇多篇投递。
+WECHAT_PAGE_MAX_CHARS = _env_int("WECHAT_PAGE_MAX_CHARS", WECHAT_PAGE_MAX_CHARS)
+WECHAT_HTML_SOFT_LIMIT = _env_int("WECHAT_HTML_SOFT_LIMIT", WECHAT_HTML_SOFT_LIMIT)
+
+# 单篇仍超限时的最大分篇数；超过该篇数才裁尾/退回 markdown。
 WECHAT_HTML_MAX_PARTS = 12
 
 
@@ -3891,13 +3898,18 @@ def _md_blocks(md: str) -> list[str]:
 
 
 def _html_fits(title: str, md: str, theme_name: str, limit: int,
-               continuation: bool = False) -> bool:
+               continuation: bool = False,
+               char_limit: int | None = None) -> bool:
+    """一页是否装得下：字节与字符数两个口径都要满足。"""
+    if char_limit is not None and len(md) > char_limit:
+        return False
     return _utf8_len(themed_html(title, md, theme_name=theme_name,
                                  continuation=continuation)) <= limit
 
 
 def _split_block_lines(title: str, block: str, theme_name: str,
-                       limit: int, continuation: bool = False) -> list[str] | None:
+                       limit: int, continuation: bool = False,
+                       char_limit: int | None = None) -> list[str] | None:
     """单个块（如长表格/长列表）超限时的兜底：按行贪心装填。
 
     表格块（``|`` 开头且第二行为分隔行）续篇自动补表头+分隔行，
@@ -3912,14 +3924,14 @@ def _split_block_lines(title: str, block: str, theme_name: str,
     cur: list[str] = list(header)
     for ln in lines:
         if _html_fits(title, "\n".join(cur + [ln]), theme_name, limit,
-                      continuation):
+                      continuation, char_limit):
             cur.append(ln)
             continue
         if len(cur) > len(header):
             parts.append("\n".join(cur))
         cur = header + [ln]
         if not _html_fits(title, "\n".join(cur), theme_name, limit,
-                          continuation):
+                          continuation, char_limit):
             return None
     if len(cur) > len(header):
         parts.append("\n".join(cur))
@@ -3927,7 +3939,8 @@ def _split_block_lines(title: str, block: str, theme_name: str,
 
 
 def _greedy_split_parts(title: str, md: str, theme_name: str,
-                        limit: int) -> list[str] | None:
+                        limit: int,
+                        char_limit: int | None = None) -> list[str] | None:
     """贪心把 md 按块装进若干篇（每篇 themed_html ≤ limit）；无法切分返回 None。
 
     第 2 篇起按「紧凑续篇壳」测量（仅支持 continuation 的主题生效），
@@ -3936,26 +3949,29 @@ def _greedy_split_parts(title: str, md: str, theme_name: str,
     """
     theme = _get_theme(theme_name)
     has_cont = bool(theme.get("continuation"))
-    if _html_fits(title, md, theme_name, limit):
+    if _html_fits(title, md, theme_name, limit, char_limit=char_limit):
         return [md]
     parts: list[str] = []
     cur = ""
     continuation = False  # 第 2 篇起使用紧凑续篇壳
     for block in _md_blocks(md):
         trial = f"{cur}\n\n{block}" if cur else block
-        if _html_fits(title, trial, theme_name, limit, continuation):
+        if _html_fits(title, trial, theme_name, limit, continuation,
+                      char_limit):
             cur = trial
             continue
         if cur:
             parts.append(cur)
             cur = ""
             continuation = has_cont
-        if _html_fits(title, block, theme_name, limit, continuation):
+        if _html_fits(title, block, theme_name, limit, continuation,
+                      char_limit):
             cur = block
             continue
         if block.lstrip().startswith("```"):
             return None  # 围栏代码块不可切分
-        sub = _split_block_lines(title, block, theme_name, limit, continuation)
+        sub = _split_block_lines(title, block, theme_name, limit, continuation,
+                                 char_limit)
         if not sub:
             return None
         parts.extend(sub[:-1])
@@ -3994,7 +4010,8 @@ def _appendix_block_indexes(blocks: list[str], marker: str,
 
 
 def _trim_tail_to_fit(title: str, md: str, theme_name: str, limit: int,
-                      max_parts: int) -> list[str] | None:
+                      max_parts: int,
+                      char_limit: int | None = None) -> list[str] | None:
     """max_parts 装不下时的最后手段：从尾部裁掉最可弃的块，保住主题风格。
 
     优先裁掉品牌尾注之后的块（如一致性检查器输出），仍不够再从尾注前
@@ -4012,13 +4029,14 @@ def _trim_tail_to_fit(title: str, md: str, theme_name: str, limit: int,
             footer_idx = i
             break
     protected = _appendix_block_indexes(blocks, "快讯原始明细")
-    note = ("\n\n> ⚠️ 篇幅超限：微信投递有单篇长度上限，"
-            "部分内容已省略；完整报告见 GitHub Actions 运行日志。")
+    # 裁尾不再向读者插入「篇幅超限/已省略」说明行：正文结尾只留品牌尾注。
+    note = ""
     if footer_idx is None:
         # 无品牌尾注：直接从尾部逐块裁，任何块都允许裁掉
         for cut in range(1, len(blocks)):
             trial = "\n\n".join(blocks[: len(blocks) - cut]) + note
-            out = _greedy_split_parts(title, trial, theme_name, limit)
+            out = _greedy_split_parts(title, trial, theme_name, limit,
+                                      char_limit)
             if out is not None and 1 <= len(out) <= max_parts:
                 return out
         return None
@@ -4027,7 +4045,8 @@ def _trim_tail_to_fit(title: str, md: str, theme_name: str, limit: int,
     kept = list(range(footer_idx + 1))  # 尾注之后的块（检查器等）全部裁掉
     while len(kept) > 2:
         trial = "\n\n".join(blocks[i] for i in kept) + note
-        out = _greedy_split_parts(title, trial, theme_name, limit)
+        out = _greedy_split_parts(title, trial, theme_name, limit,
+                                  char_limit)
         if out is not None and 1 <= len(out) <= max_parts:
             return out
         # 裁掉尾注之前的最后一块；「快讯原始明细」等受保护块跳过不裁
@@ -4069,7 +4088,8 @@ def _mark_appendix_continuation(title: str, parts: list[str], theme_name: str,
 
 def split_md_for_html(title: str, md: str, theme_name: str,
                       limit: int = WECHAT_HTML_SOFT_LIMIT,
-                      max_parts: int = WECHAT_HTML_MAX_PARTS) -> list[str] | None:
+                      max_parts: int = WECHAT_HTML_MAX_PARTS,
+                      char_limit: int | None = WECHAT_PAGE_MAX_CHARS) -> list[str] | None:
     """把 md 切成若干片，使每片 themed_html ≤ limit；无法满足返回 None。
 
     超微信软上限时不再整篇退回纯 markdown（推送页会完全丢掉主题风格），
@@ -4078,14 +4098,15 @@ def split_md_for_html(title: str, md: str, theme_name: str,
     最可弃的附录块（带可见提示，「快讯原始明细」受保护不裁），
     仍不行才返回 None 由调用方退回 markdown 投递（与旧行为一致）。
     """
-    parts = _greedy_split_parts(title, md, theme_name, limit)
+    parts = _greedy_split_parts(title, md, theme_name, limit, char_limit)
     if parts is None:
         return None
     if len(parts) == 1:
         return parts  # 整篇一页即可装下（含裁尾后只剩单篇的情形）
     if len(parts) <= max_parts:
         return _mark_appendix_continuation(title, parts, theme_name, limit)
-    trimmed = _trim_tail_to_fit(title, md, theme_name, limit, max_parts)
+    trimmed = _trim_tail_to_fit(title, md, theme_name, limit, max_parts,
+                                char_limit)
     if trimmed is None:
         return None
     return _mark_appendix_continuation(title, trimmed, theme_name, limit)
@@ -4105,11 +4126,15 @@ def push_pushplus(title: str, content: str, timeout: int,
     if theme in THEMES:
         html = themed_html(title, content, theme_name=theme)
         html_bytes = _utf8_len(html)
-        log(f"  📦 PushPlus HTML {html_bytes} 字节（主题 {theme}）")
-        if html_bytes <= WECHAT_HTML_SOFT_LIMIT:
+        chars = len(content)
+        log(f"  📦 PushPlus HTML {html_bytes} 字节 / 正文 {chars} 字"
+            f"（一页上限 {WECHAT_PAGE_MAX_CHARS} 字，主题 {theme}）")
+        # 一页策略：字符数与字节数都在一页预算内就整篇发，只有真超了才分篇。
+        if chars <= WECHAT_PAGE_MAX_CHARS and html_bytes <= WECHAT_HTML_SOFT_LIMIT:
             sends.append((title, html, "html"))
         else:
-            parts = split_md_for_html(title, content, theme)
+            parts = split_md_for_html(title, content, theme,
+                                      char_limit=WECHAT_PAGE_MAX_CHARS)
             if parts:
                 # 分篇推送：每篇都是完整主题 HTML，推送页风格保持一致
                 notes.append(f"HTML {html_bytes}B 超软上限，"
@@ -4804,8 +4829,9 @@ def selftest() -> int:
     check("限内原样", short_c == "短内容" and note == "")
     long_c = "报告头部\n" + "明细行\n" * 1500
     trim_c, note = fit_for_channel("wecom", long_c)
-    check("超限截断+注释", _utf8_len(trim_c) <= 4096 and "已省略" in trim_c
-          and note.startswith("已按"))
+    check("超限截断但正文不插说明行",
+          _utf8_len(trim_c) <= 4096 and "已省略" not in trim_c
+          and "内容超出" not in trim_c and note.startswith("已按"))
     check("截断保住正文头部", trim_c.startswith("报告头部"))
     footer = brand_footer_md()
     branded_long = add_branding("报告头部\n" + "中文明细行\n" * 1500)
@@ -4820,22 +4846,30 @@ def selftest() -> int:
           and trim_with_title.rstrip().endswith(footer.rstrip()))
     unlim_c, _ = fit_for_channel("pushplus", "x" * 5000)
     check("pushplus 5000字不限", len(unlim_c) == 5000)
-    check("微信 HTML 软上限已设置",
-          20_000 <= WECHAT_HTML_SOFT_LIMIT <= 80_000)
+    # 生产口径：一页 10 万字（字节只是通道兜底）。分篇机制仍用固定小上限
+    # SPLIT_LIMIT 单独测，避免「一页 10 万字」的默认值把分篇用例全变成单篇。
+    SPLIT_LIMIT = 32_000
+    check("一页上限=10 万字", WECHAT_PAGE_MAX_CHARS == 100_000)
+    check("一页字节兜底覆盖 10 万字中文",
+          300_000 <= WECHAT_HTML_SOFT_LIMIT <= 1_000_000)
     fat = themed_html("超长标题", "# 章\n\n" + ("明细行 价格 16.80 多头概率 65%\n" * 4000), "game")
-    check("九章级 HTML 会触发微信软上限",
-          _utf8_len(fat) > WECHAT_HTML_SOFT_LIMIT)
+    check("九章级 HTML 超过分篇测试上限（机制仍有效）",
+          _utf8_len(fat) > SPLIT_LIMIT)
+    page_md = "正文段落。" * 8_000          # 4 万字正文，一页必须装得下
+    page_parts = split_md_for_html("t", page_md, "game")
+    check("10 万字以内不分篇（尽量一页）",
+          page_parts is not None and len(page_parts) == 1)
 
     log("③e2 超软上限自动分篇（推送页不再退回纯文本、保留主题风格）")
-    short_ok = split_md_for_html("t", "正文**加粗**", "game")
+    short_ok = split_md_for_html("t", "正文**加粗**", "game", limit=SPLIT_LIMIT)
     check("短内容不分篇", short_ok == ["正文**加粗**"])
     sec_md = lambda i: (f"## 第{i}节\n\n| 因子 | 方向 | 概率 |\n|---|---|---|\n"
                         + "\n".join(f"| 因子{j} | 多 | {50 + j % 40}% |"
                                     for j in range(30)))
     multi_md = "\n\n".join(sec_md(i) for i in range(4))
     assert _utf8_len(themed_html("超长标题", multi_md,
-                                 theme_name="game")) > WECHAT_HTML_SOFT_LIMIT
-    parts = split_md_for_html("超长标题", multi_md, "game")
+                                 theme_name="game")) > SPLIT_LIMIT
+    parts = split_md_for_html("超长标题", multi_md, "game", limit=SPLIT_LIMIT)
     check("超长内容自动分篇", parts is not None and 2 <= len(parts)
           <= WECHAT_HTML_MAX_PARTS)
     check("每篇 HTML 均低于软上限",
@@ -4843,7 +4877,7 @@ def selftest() -> int:
               _utf8_len(themed_html("超长标题", p, theme_name="game",
                                     continuation=(i > 0),
                                     part_no=i + 1, part_count=len(parts)))
-              <= WECHAT_HTML_SOFT_LIMIT
+              <= SPLIT_LIMIT
               for i, p in enumerate(parts or [])))
 
     log("③e2-0 每日市场简报分篇（2026-10-19 故障回归：快讯明细必须送达）")
@@ -4863,14 +4897,15 @@ def selftest() -> int:
                 + "\n\n**金十数据（50/50）**\n" + "\n".join(feed_item for _ in range(50)))
     brief_html = themed_html("章鱼 AI 全景分析", brief_md, theme_name="dos")
     check("市场简报正文超过单篇上限（必须分篇才不会被微信静默丢弃）",
-          _utf8_len(brief_html) > WECHAT_HTML_SOFT_LIMIT)
-    brief_parts = split_md_for_html("章鱼 AI 全景分析", brief_md, "dos")
+          _utf8_len(brief_html) > SPLIT_LIMIT)
+    brief_parts = split_md_for_html("章鱼 AI 全景分析", brief_md, "dos",
+                                       limit=SPLIT_LIMIT)
     check("市场简报自动分篇且每篇都在安全线内",
           brief_parts is not None and 2 <= len(brief_parts) <= WECHAT_HTML_MAX_PARTS
           and all(_utf8_len(themed_html("章鱼 AI 全景分析", p, theme_name="dos",
                                         continuation=(i > 0), part_no=i + 1,
                                         part_count=len(brief_parts)))
-                  <= WECHAT_HTML_SOFT_LIMIT
+                  <= SPLIT_LIMIT
                   for i, p in enumerate(brief_parts or [])))
     check("分篇后快讯明细完整保留",
           brief_parts is not None
@@ -4891,7 +4926,7 @@ def selftest() -> int:
                         + "\n".join(f"| 变量{j} | {40 + j} | 上行 | 偏多 |"
                                     for j in range(12)))
     gz_md = "\n\n".join(gz_sec(i) for i in range(4))
-    gz_parts = split_md_for_html("长标题", gz_md, "guizang")
+    gz_parts = split_md_for_html("长标题", gz_md, "guizang", limit=SPLIT_LIMIT)
     check("guizang 长报告自动分篇", gz_parts is not None
           and 2 <= len(gz_parts) <= WECHAT_HTML_MAX_PARTS)
     check("guizang 续篇紧凑壳且每篇低于软上限",
@@ -4899,7 +4934,7 @@ def selftest() -> int:
               _utf8_len(themed_html("长标题", p, theme_name="guizang",
                                     continuation=(i > 0),
                                     part_no=i + 1, part_count=len(gz_parts)))
-              <= WECHAT_HTML_SOFT_LIMIT for i, p in enumerate(gz_parts)))
+              <= SPLIT_LIMIT for i, p in enumerate(gz_parts)))
     check("guizang 续篇壳显著小于首篇壳",
           gz_parts is not None and len(gz_parts) > 1
           and _utf8_len(themed_html("长标题", "正文", theme_name="guizang",
@@ -4914,19 +4949,19 @@ def selftest() -> int:
                    for _ in range(12))
                + "\n\n**作者：章鱼 ai**\n\n```\n"
                + ("检查行\n" * 600) + "```")
-    trim_parts = split_md_for_html("t", trim_md, "guizang")
+    trim_parts = split_md_for_html("t", trim_md, "guizang", limit=SPLIT_LIMIT)
     check("超长报告裁尾保风格", trim_parts is not None
           and len(trim_parts) <= WECHAT_HTML_MAX_PARTS)
-    check("裁尾保留品牌尾注与可见提示",
+    check("裁尾保留品牌尾注且不插说明行",
           trim_parts is not None
           and any("作者：章鱼" in p for p in trim_parts)
-          and any("篇幅超限" in p for p in trim_parts))
+          and not any("篇幅超限" in p or "已省略" in p for p in trim_parts))
     check("裁尾后每篇仍低于软上限",
           trim_parts is not None and all(
               _utf8_len(themed_html("t", p, theme_name="guizang",
                                     continuation=(i > 0),
                                     part_no=i + 1, part_count=len(trim_parts)))
-              <= WECHAT_HTML_SOFT_LIMIT for i, p in enumerate(trim_parts)))
+              <= SPLIT_LIMIT for i, p in enumerate(trim_parts)))
     check("分篇覆盖全部正文",
           parts is not None and "第3节" in "\n".join(parts or [])
           and "第0节" in "\n".join(parts or []))
@@ -4937,7 +4972,8 @@ def selftest() -> int:
                       + feed_sec("财联社 深度", 10)
                       + "\n\n**金十数据（50/50）**\n" + "\n".join(feed_item for _ in range(50))
                       + "\n\n**作者：章鱼 ai**\n\n```\n" + ("检查行\n" * 600) + "```")
-    trim_feed_parts = split_md_for_html("t", trim_with_feed, "guizang")
+    trim_feed_parts = split_md_for_html("t", trim_with_feed, "guizang",
+                                                limit=SPLIT_LIMIT)
     check("超长简报裁尾后快讯明细仍在（不出现「快讯明细不显示」）",
           trim_feed_parts is not None
           and "快讯原始明细" in "\n".join(trim_feed_parts)
@@ -4947,7 +4983,7 @@ def selftest() -> int:
               _utf8_len(themed_html("t", p, theme_name="guizang",
                                     continuation=(i > 0),
                                     part_no=i + 1, part_count=len(trim_feed_parts)))
-              <= WECHAT_HTML_SOFT_LIMIT
+              <= SPLIT_LIMIT
               for i, p in enumerate(trim_feed_parts or [])))
     tbl_rows = "\n".join(f"| 因子{i} | {40 + i % 55}% |" for i in range(2000))
     tbl_parts = _split_block_lines("t", f"| 因子 | 概率 |\n|---|---|\n{tbl_rows}",
@@ -4963,7 +4999,7 @@ def selftest() -> int:
               for p in (tbl_parts or [])))
     fence_md = "```\n" + ("print(1)\n" * 9000) + "```"
     check("围栏代码块超限不可切，交回上层退回 markdown",
-          split_md_for_html("t", fence_md, "game") is None)
+          split_md_for_html("t", fence_md, "game", limit=SPLIT_LIMIT) is None)
 
     log("③f game 主题渲染（8-bit 像素游戏风·兼容主题）")
     gh = md_to_html("## 标题\n\n| 板块 | 概率 |\n|---|---|\n| 云计算 | 65% |\n\n"
