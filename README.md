@@ -242,6 +242,11 @@ python hf_hub.py --selftest        # 74 项离线自检（Mock 四个协议，CI
 python hf_hub.py --mock-server 18090   # 无 Key 也能联调：Hub + datasets-server + task API
 ```
 
+> **没配 `HF_TOKEN` 不算故障**：Hub 检索与 datasets-server 取数是公开的，情绪引擎
+> `auto` 会按 `hf → llm → lexicon` 降级，四个 workflow 都已透传该 Secret，配一次即
+> 自动生效。三层核查（环境变量 → 仓库 Secret → 有效性与额度）见
+> [HUGGINGFACE.md §7.5](HUGGINGFACE.md#75-没配-hf-token-时会怎样以及怎么核查)。
+
 ### 已接入的位置
 
 - **大屏** `python server_dashboard.py 8080` → 新增「🤗 Hugging Face · 数据集与金融情绪引擎」面板

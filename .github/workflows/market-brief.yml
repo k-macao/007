@@ -35,6 +35,11 @@ jobs:
     env:
       PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      # 情绪复核（pushplus_deepseek → hf_hub，engine=auto）优先用 HF 金融模型；
+      # 不配也能跑（降级 llm → 本地词典），配了就自动切 FinBERT。见 HUGGINGFACE.md §7.5。
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      # 可选：强制情绪引擎（auto / llm / lexicon / hf），留空=auto；仓库变量同名可配。
+      SENTIMENT_ENGINE: ${{ vars.SENTIMENT_ENGINE }}
       PUSH_STATE_PATH: output/market_push_state.json
       PYTHONUNBUFFERED: '1'
 
@@ -46,6 +51,19 @@ jobs:
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
+
+      - name: Report sentiment engine state (不打印明文)
+        run: |
+          python - <<'PY'
+          import os
+          import hf_hub as hh
+
+          token = os.environ.get("HF_TOKEN", "")
+          print(f"HF_TOKEN：{'已配置（长度 ' + str(len(token)) + '）' if token else '未配置（可选）'}")
+          print(f"情绪引擎：请求 {os.environ.get('SENTIMENT_ENGINE') or 'auto'}"
+                f" · 大模型端点 {'可用' if hh.llm_available() else '未配置'}"
+                f" · auto 顺序 hf → llm → lexicon")
+          PY
 
       - name: Restore market push state
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
