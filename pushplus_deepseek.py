@@ -1347,6 +1347,7 @@ class SentPack:
     momentum: dict = field(default_factory=dict)
     agg: dict = field(default_factory=dict)
     scan: object | None = None   # 十七平台股票扫描结果（stock_news_scan.ScanPack）
+    financial_sentiment_md: str | None = None  # 推送复核缓存，避免重复渲染时重复推理
 
 
 def _src_agg(items: list[SentItem]) -> dict:
@@ -1423,6 +1424,36 @@ def _item_line(i: SentItem, idx: int, is_new: bool = False) -> str:
     return f"{idx}. {mark}[{i.label} {i.score:+.2f}] {t} — {i.source} · {age}"
 
 
+def render_financial_sentiment_push(pack: SentPack) -> str:
+    """推送页金融情绪复核；同一采集包只推理一次，失败不阻断推送。"""
+    if pack.financial_sentiment_md is not None:
+        return pack.financial_sentiment_md
+    heading = "## 🧠 金融情绪复核"
+    modes = "- 四种模式：auto 自动路由 / hf 金融模型 / llm 大模型 / lexicon 离线词典（非四路并行）。"
+    titles = [i.title for items in pack.items.values() for i in items if i.title]
+    scan = getattr(pack, "scan", None)
+    if scan is not None:
+        for group in (scan.direct, scan.sector_hits):
+            titles.extend(i.title for items in group.values() for i in items if i.title)
+    titles = list(dict.fromkeys(titles))[:200]
+    if not titles:
+        md = f"{heading}\n\n{modes}\n- 暂无可分析的新闻样本，不生成情绪分数。"
+    else:
+        try:
+            import hf_hub
+            engine = env("SENTIMENT_ENGINE") or "auto"
+            result = hf_hub.score_texts(titles, engine=engine)
+            md = hf_hub.render_sentiment_md(result, title="🧠 金融情绪复核")
+            md += f"\n{modes}\n- 请求模式：{engine}；样本为新闻与扫描标题去重后最多 200 条。"
+            if result.get("model"):
+                md += f"\n- 实际模型：{result['model']}"
+            md += "\n- 情绪仅反映文本语气，不代表股价预测或投资建议。"
+        except Exception:  # 复核不可用仍须保留主报告，且不暴露端点错误详情
+            md = f"{heading}\n\n{modes}\n- ⚠️ 情绪复核暂不可用，主报告照常推送。"
+    pack.financial_sentiment_md = md
+    return md
+
+
 def render_sentiment_appendix(pack: SentPack, new_keys: set | None = None) -> str:
     nk = new_keys or set()
     n = sum(len(v) for v in pack.items.values())
@@ -1448,6 +1479,7 @@ def render_sentiment_appendix(pack: SentPack, new_keys: set | None = None) -> st
             lines += ["", render_scan_md(pack.scan)]
         except Exception:  # noqa: BLE001 —— 附录缺扫描段不影响主报告
             pass
+    lines += ["", render_financial_sentiment_push(pack)]
     return "\n".join(lines)
 
 
