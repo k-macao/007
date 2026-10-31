@@ -251,9 +251,13 @@ class PushSentimentTest(unittest.TestCase):
         self.assertEqual(widths, {66})
         self.assertTrue(all(ord(ch) < 128 for ch in tbl))
         self.assertEqual(find_brand_leaks(blk), [])
+        self.assertIn('## 📊 美银牛熊指标 · BofA Bull & Bear Indicator (B&B)', blk)
+        self.assertNotIn('## 🧭 美银牛熊指标', blk)
+        self.assertNotIn('.---~~~~---.', tbl)
         for token in (
             'Our BofA Bull & Bear Indicator is at 7.1... signal is Neutral.',
             'Chart 21: BofA Bull & Bear at 7.1  (Down to 7.1 from 7.2)',
+            '[===]', '[###]', 'Bar Chart',
             'Table 6: BofA B&B Indicator (Current Component Readings)',
             'Hedge Fund Positioning', '64%',
             'Equity Flow', '89%', 'V Bullish +',

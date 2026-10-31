@@ -1485,11 +1485,11 @@ def load_bofa_bb_data() -> dict:
 
 
 def render_bofa_bb_char_table(data: dict | None = None) -> str:
-    """用纯等宽 ASCII 字符绘制 BofA Bull & Bear Indicator 仪表盘（Chart 21）与六大分项表（Table 6）。"""
+    """用纯等宽 ASCII 字符绘制 BofA Bull & Bear Indicator 柱状图（Chart 21）与六大分项柱状表（Table 6）。"""
     d = data or load_bofa_bb_data()
     val = max(0.0, min(10.0, float(d.get("current", 7.1))))
     prev = d.get("previous", 7.2)
-    prev_f = float(prev) if prev is not None else val
+    prev_f = max(0.0, min(10.0, float(prev) if prev is not None else val))
     signal = str(
         d.get("signal")
         or ("Buy" if val < 2.0 else ("Sell" if val > 8.0 else "Neutral"))
@@ -1514,49 +1514,56 @@ def render_bofa_bb_char_table(data: dict | None = None) -> str:
     else:
         chg_note = f"Up to {val:.1f} from {prev_f:.1f}"
 
-    bar_len = 40  # 0..10 对应 40 格（每 1.0 单位 = 4 格）
-    pos = max(0, min(bar_len, int(round((val / 10.0) * bar_len))))
+    series = [
+        ("Mar'20", 0.0, "_"),
+        ("Oct'22", 0.0, "_"),
+        ("Mar'23", 0.4, "="),
+        ("Prev", prev_f, "="),
+        ("Latest", val, "#"),
+    ]
 
-    tick_buf = [" "] * (bar_len + 2)
-    for t in (0, 2, 4, 6, 8, 10):
-        idx = t * 4 - (1 if t == 10 else 0)
-        for k, ch in enumerate(str(t)):
-            tick_buf[idx + k] = ch
-    tick_str = "".join(tick_buf).rstrip()
+    def _bar_rows(v: float) -> int:
+        if v <= 0.05:
+            return 0
+        if v < 1.0:
+            return 1
+        return max(1, min(10, int(round(v))))
 
-    track = []
-    for i in range(bar_len + 1):
-        if i == pos:
-            track.append("^")
-        elif i % 4 == 0:
-            track.append("|")
-        elif i < 8 or i > 32:
-            track.append("=")
-        else:
-            track.append("-")
-    track_str = "".join(track)
+    heights = [_bar_rows(v) for _, v, _ in series]
+    chart_lines: list[str] = []
+    if max(heights) >= 10:
+        cap_cells = [
+            (f"{v:.1f}".center(7) if heights[idx] == 10 else " " * 7)
+            for idx, (_, v, _) in enumerate(series)
+        ]
+        chart_lines.append(row("     " + "".join(cap_cells)))
 
-    ptr_label = f"[{val:.1f} LATEST]"
-    ptr_buf = [" "] * width
-    p_start = max(0, min(width - len(ptr_label), 9 + pos - len(ptr_label) // 2))
-    for k, ch in enumerate(ptr_label):
-        ptr_buf[p_start + k] = ch
+    notes = {
+        10: f"  *{val:.1f} LATEST",
+        9: f"  Signal: {signal[:13]}",
+        8: "  <-- 8.0 Sell (8-10)",
+        5: "  Neutral Zone (2-8)",
+        2: "  <-- 2.0 Buy  (0-2)",
+    }
+    for lvl in range(10, 0, -1):
+        bg = "-" if lvl in (8, 2) else " "
+        cells: list[str] = []
+        for idx, (_lbl, v, ch) in enumerate(series):
+            h = heights[idx]
+            if lvl <= h:
+                if v < 1.0 and lvl == 1:
+                    cells.append(f"{bg}[...]{bg}")
+                else:
+                    cells.append(f"{bg}[{ch * 3}]{bg}")
+            elif lvl == h + 1:
+                cells.append(f"{v:.1f}".center(7, bg))
+            else:
+                cells.append(bg * 7)
+        chart_lines.append(row(f" {lvl:>2} |" + "".join(cells) + notes.get(lvl, "")))
 
-    if val >= 6.0:
-        d1 = f"               .---~~~~---.       {val:.1f} LATEST"
-        d2 = "            .-~   4    6   ~-.     /"
-        d3 = "          /    2         /  8  \\  v"
-        d4 = " [0.4]   |  BUY         /  SELL |   Historical Lows:"
-    elif val <= 4.0:
-        d1 = f"  {val:.1f} LATEST   .---~~~~---."
-        d2 = "     \\      .-~   4    6   ~-."
-        d3 = "      v   /    2  \\         8  \\"
-        d4 = " [0.4]   |  BUY    \\       SELL |   Historical Lows:"
-    else:
-        d1 = f"               .---~~~~---.  [{val:.1f} LATEST]"
-        d2 = "            .-~   4  | 6   ~-."
-        d3 = "          /    2     |      8  \\"
-        d4 = " [0.4]   |  BUY      |     SELL |   Historical Lows:"
+    chart_lines.append(row("  0 +" + "-" * 35 + "+  Ext.Bear<2 | >8Bull"))
+    lbl_cells = [lbl.center(7) for lbl, _, _ in series]
+    chart_lines.append(row("     " + "".join(lbl_cells) + "  [###]=Now [===]=Prev"))
 
     lines = [
         sep,
@@ -1565,22 +1572,11 @@ def render_bofa_bb_char_table(data: dict | None = None) -> str:
         sep,
         row(f"Chart 21: BofA Bull & Bear at {val:.1f}  ({chg_note})"),
         row(""),
-        row(d1),
-        row(d2),
-        row(d3),
-        row(d4),
-        row(" Mar'23  | 0          o      10 |   * 0.4 (Mar'23)"),
-        row(" [0.0]   +----------------------+   * 0.0 (Mar'20 / Oct'22)"),
-        row(""),
-        row("         " + tick_str),
-        row("         " + track_str),
-        row("".join(ptr_buf)),
-        row("         [BUY:0-2 |       NEUTRAL: 2-8      |SELL:8-10]"),
-        row("         Ext.Bear                            Ext.Bull"),
+        *chart_lines,
         tsep,
         row("Table 6: BofA B&B Indicator (Current Component Readings)"),
         tsep,
-        trow("Components", "Pctl", "Reading", "Sentiment"),
+        trow("Components", "Pctl", "Bar Chart", "Sentiment"),
         tsep,
     ]
 
@@ -1607,7 +1603,7 @@ def render_bofa_bb_char_table(data: dict | None = None) -> str:
 
 
 def render_bofa_bb_char_block(data: dict | None = None) -> str:
-    """生成置顶在报告开头的「美银牛熊指标（BofA Bull & Bear Indicator）」字符表区块。"""
+    """生成置顶在报告开头的「美银牛熊指标（BofA Bull & Bear Indicator）」柱状图字符表区块。"""
     d = data or load_bofa_bb_data()
     val = float(d.get("current", 7.1))
     prev = d.get("previous", 7.2)
@@ -1640,7 +1636,7 @@ def render_bofa_bb_char_block(data: dict | None = None) -> str:
 
     char_box = render_bofa_bb_char_table(d)
     lines = [
-        "## 🧭 美银牛熊指标 · BofA Bull & Bear Indicator (B&B)",
+        "## 📊 美银牛熊指标 · BofA Bull & Bear Indicator (B&B)",
         "",
         "```text",
         char_box,
