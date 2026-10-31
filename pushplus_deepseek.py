@@ -5028,8 +5028,31 @@ TENCENT_SAMPLE = ('v_hk09988="100~阿里巴巴~09988~16.800~16.610~16.850~16.900
                   '~190.02~18.440~14.080~1.230~16.800~3.30~0.00~0.00~0~0~0~0~0";')
 
 
+_SELFTEST_MASKED_ENVS: tuple[str, ...] = (
+    "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+    "INFERENCE_PROVIDER", "INFERENCE_BASE_URL",
+    "INFERENCE_API_KEY", "INFERENCE_MODEL",
+    "INFERENCE_TIMEOUT", "INFERENCE_MAX_RETRIES", "INFERENCE_GATEWAY_TOKEN",
+    "HF_TOKEN", "HUGGINGFACE_API_KEY", "HUGGINGFACEHUB_API_TOKEN",
+    "HF_ENDPOINT_URL", "HF_MODEL",
+    "SILICONFLOW_API_KEY", "MOONSHOT_API_KEY", "ZHIPU_API_KEY", "DASHSCOPE_API_KEY",
+    "SENTIMENT_ENGINE",
+)
+
+
 def selftest() -> int:
-    """离线自检：三源解析器 + 交叉核验逻辑 + 全部模板构造。"""
+    """离线自检：全程隔离外部 AI / HF Secret，确保任何仓库环境结果一致。"""
+    saved_env = {k: os.environ.pop(k) for k in _SELFTEST_MASKED_ENVS if k in os.environ}
+    try:
+        return _selftest_impl()
+    finally:
+        for k in _SELFTEST_MASKED_ENVS:
+            os.environ.pop(k, None)
+        os.environ.update(saved_env)
+
+
+def _selftest_impl() -> int:
+    """离线自检实现：三源解析器 + 交叉核验逻辑 + 全部模板构造。"""
     fails = 0
 
     def check(name: str, cond: bool):
@@ -5827,10 +5850,7 @@ def selftest() -> int:
     check("### 归属上一节", len(split_md_sections("## A\n\nx\n\n### 子\n\ny")) == 1)
     # 环境开关
     old_env = os.environ.get("AI_COMPRESS")
-    ai_env_names = ("DEEPSEEK_API_KEY", "OPENAI_API_KEY",
-                    "INFERENCE_PROVIDER", "INFERENCE_BASE_URL",
-                    "INFERENCE_API_KEY", "INFERENCE_MODEL",
-                    "INFERENCE_TIMEOUT", "INFERENCE_MAX_RETRIES")
+    ai_env_names = _SELFTEST_MASKED_ENVS
     old_ai_keys = {k: os.environ[k] for k in ai_env_names if k in os.environ}
     try:
         os.environ["AI_COMPRESS"] = "0"
@@ -6364,81 +6384,53 @@ def main(argv: list[str]) -> int:
         context = (f"{line}\n\n{user_context}" if user_context else line)
 
     # ---------- 模块③：内容生成 ----------
+    def _render_rule_content() -> str:
+        if template == "sentiment" and sent_pack is not None:
+            return render_sentiment_rule(topic, code4sent, sent_pack)
+        if template == "feedscan" and feed_pack is not None:
+            return render_market_brief_rule(
+                topic, feed_pack,
+                fw_pack=brief_foreign_pack, hk_pack=brief_hk_pack,
+                columns_enabled=brief_columns_enabled,
+                has_foreign_detail=bool(brief_foreign_appendix_md),
+            )
+        if template == "newsnow" and newsnow_pack is not None:
+            try:
+                from newsnow_sources import render_newsnow_rule
+                return render_newsnow_rule(topic, newsnow_pack)
+            except Exception:
+                return gen_by_rule(topic, template, sent_pack=sent_pack,
+                                   newsnow_pack=newsnow_pack)
+        if template == "foreign_weekly" and foreign_weekly_pack is not None:
+            try:
+                from foreign_institution_weekly import render_foreign_weekly_rule
+                return render_foreign_weekly_rule(topic, foreign_weekly_pack)
+            except Exception:
+                return gen_by_rule(topic, template)
+        if template == "hk_brokers" and hk_brokers_pack is not None:
+            try:
+                from hk_brokers import render_hk_brokers_rule
+                return render_hk_brokers_rule(topic, hk_brokers_pack)
+            except Exception:
+                return gen_by_rule(topic, template)
+        try:
+            return gen_by_rule(topic, template, sent_pack=sent_pack,
+                               newsnow_pack=locals().get("newsnow_pack"))
+        except TypeError:
+            return gen_by_rule(topic, template, sent_pack=sent_pack)
+
+    ai_degraded = False
     try:
         if provider == "rule":
-            if template == "sentiment" and sent_pack is not None:
-                content = render_sentiment_rule(topic, code4sent, sent_pack)
-            elif template == "feedscan" and feed_pack is not None:
-                content = render_market_brief_rule(
-                    topic, feed_pack,
-                    fw_pack=brief_foreign_pack, hk_pack=brief_hk_pack,
-                    columns_enabled=brief_columns_enabled,
-                    has_foreign_detail=bool(brief_foreign_appendix_md),
-                )
-            elif template == "newsnow" and newsnow_pack is not None:
-                try:
-                    from newsnow_sources import render_newsnow_rule
-                    content = render_newsnow_rule(topic, newsnow_pack)
-                except Exception:
-                    content = gen_by_rule(topic, template, sent_pack=sent_pack, newsnow_pack=newsnow_pack)
-            elif template == "foreign_weekly" and foreign_weekly_pack is not None:
-                try:
-                    from foreign_institution_weekly import render_foreign_weekly_rule
-                    content = render_foreign_weekly_rule(topic, foreign_weekly_pack)
-                except Exception:
-                    content = gen_by_rule(topic, template)
-            elif template == "hk_brokers" and hk_brokers_pack is not None:
-                try:
-                    from hk_brokers import render_hk_brokers_rule
-                    content = render_hk_brokers_rule(topic, hk_brokers_pack)
-                except Exception:
-                    content = gen_by_rule(topic, template)
-            else:
-                # newsnow may be None if import fails, pass it anyway
-                try:
-                    content = gen_by_rule(topic, template, sent_pack=sent_pack, newsnow_pack=locals().get("newsnow_pack"))
-                except TypeError:
-                    content = gen_by_rule(topic, template, sent_pack=sent_pack)
+            content = _render_rule_content()
         else:
             ai_url, ai_model, key, ai_label, keyless = ai_credentials(provider)
             if not key and not keyless:
                 log(f"⚠️  缺少 AI Key（ai_provider={provider}；可配置 INFERENCE_API_KEY "
                     f"或 DEEPSEEK_API_KEY），已降级使用 rule 模板继续。")
                 provider = "rule"
-                if template == "sentiment" and sent_pack is not None:
-                    content = render_sentiment_rule(topic, code4sent, sent_pack)
-                elif template == "feedscan" and feed_pack is not None:
-                    content = render_market_brief_rule(
-                        topic, feed_pack,
-                        fw_pack=brief_foreign_pack, hk_pack=brief_hk_pack,
-                        columns_enabled=brief_columns_enabled,
-                        has_foreign_detail=bool(brief_foreign_appendix_md),
-                    )
-                elif template == "newsnow" and newsnow_pack is not None:
-                    try:
-                        from newsnow_sources import render_newsnow_rule
-                        content = render_newsnow_rule(topic, newsnow_pack)
-                    except Exception:
-                        content = gen_by_rule(topic, template, sent_pack=sent_pack,
-                                              newsnow_pack=newsnow_pack)
-                elif template == "foreign_weekly" and foreign_weekly_pack is not None:
-                    try:
-                        from foreign_institution_weekly import render_foreign_weekly_rule
-                        content = render_foreign_weekly_rule(topic, foreign_weekly_pack)
-                    except Exception:
-                        content = gen_by_rule(topic, template)
-                elif template == "hk_brokers" and hk_brokers_pack is not None:
-                    try:
-                        from hk_brokers import render_hk_brokers_rule
-                        content = render_hk_brokers_rule(topic, hk_brokers_pack)
-                    except Exception:
-                        content = gen_by_rule(topic, template)
-                else:
-                    try:
-                        content = gen_by_rule(topic, template, sent_pack=sent_pack,
-                                              newsnow_pack=locals().get("newsnow_pack"))
-                    except TypeError:
-                        content = gen_by_rule(topic, template, sent_pack=sent_pack)
+                ai_degraded = True
+                content = _render_rule_content()
             else:
                 messages = build_messages(template, topic, context, risk)
                 log(f"  🤖 推理端点：{ai_label}")
@@ -6446,18 +6438,15 @@ def main(argv: list[str]) -> int:
                     ai_url, key, ai_model, messages,
                     TEMPLATE_MAX_TOKENS[template], args.timeout)
     except PushError as e:
-        if args.dry_run and "缺少 Secret" in str(e):
-            log(f"⚠️  {e}")
-            log("⚠️  dry-run 模式：降级使用 rule 模板继续演示管线")
-            content = gen_by_rule(topic, template, sent_pack=sent_pack)
-        else:
-            log(f"❌ 内容生成失败：{e}")
-            return 1
+        log(f"⚠️  AI 内容生成失败（{e}），已自动降级使用 rule 本地聚合继续推送。")
+        provider = "rule"
+        ai_degraded = True
+        content = _render_rule_content()
 
     # ---------- 模块③c：AI 分节压缩（每部分分别调用 AI 简化 + 压缩正文） ----------
     # 在内容指纹 / 分篇 / 推送之前完成，压缩结果即最终正文；
-    # 关闭开关（--no-ai-compress 或 AI_COMPRESS=0）或缺 Key 时自动跳过。
-    if getattr(args, "ai_compress", True):
+    # 关闭开关（--no-ai-compress 或 AI_COMPRESS=0）、缺 Key 或刚因 AI 异常降级时自动跳过。
+    if getattr(args, "ai_compress", True) and not ai_degraded:
         log("\n✂️ AI 分节压缩（逐节简化）…")
         content, comp_note = ai_compress_md(
             content, provider=provider, template=template,
