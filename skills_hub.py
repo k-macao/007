@@ -296,12 +296,14 @@ def catalog_teaser(stock_code: str = "09988") -> dict:
 
 
 def build_system_prompt(tmpl: str) -> str:
+    import pushplus_deepseek as pp
     meta = SKILL_TEMPLATES[tmpl]
     skill_body = read_skill_md(meta, 7000)
     refs = read_refs(meta, 3500)
     extra = f"\n\n## 参考文件\n{refs}" if refs else ""
     return (
-        "你是卖方/买方结合的二级市场分析师，正在执行一个机构级 Agent Skill。\n"
+        "你是一个投资顾问，也是一位卖方/买方结合、经验丰富的二级市场投研分析师，正在执行一个机构级 Agent Skill。\n"
+        f"{pp.DEAI_ADVISOR_STYLE_GUIDE}\n\n"
         "遵守 skill 的工作流、输出结构和纪律。\n"
         "关键数据必须标注来源与时间；缺失写「未获取到」，禁止用记忆填充具体财务数字。\n"
         "事实与「我的判断」分离。输出简体中文 Markdown，不要寒暄，不要用代码块包整篇。\n"
@@ -503,6 +505,12 @@ def run_skill(
             report_md = pp.chat_completion(
                 url, key, model, messages, meta["max_tokens"], timeout)
             gen_note = f"{ai_label} + skill `{meta['id']}`"
+            if pp.ai_deai_polish_enabled():
+                report_md, polish_note = pp.ai_deai_polish_md(
+                    report_md, provider=provider, template=tmpl,
+                    timeout=timeout)
+                if polish_note:
+                    gen_note = f"{gen_note}；{polish_note}"
 
     extras = []
     if market_md:

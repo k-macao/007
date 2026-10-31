@@ -471,7 +471,10 @@ def render_hk_brokers_rule(topic: str, pack: HkBrokersPack) -> str:
     a = pack.agg
     lines = [
         f"**{topic} · 香港券商新闻与数据（{pack.hours}h，"
-        f"{a.get('firms_hit', 0)}/{a.get('firms_total', len(FIRMS))} 家命中）**（本地聚合）",
+        f"{a.get('firms_hit', 0)}/{a.get('firms_total', len(FIRMS))} 家命中）**",
+        "",
+        "逛一圈中环与港资、中资券商的研究台，最直观的感受往往比枯燥的指数涨跌更鲜活——"
+        "毕竟经纪席位一边连着南向与海外资金的水温，一边直接感受着打新孖展和交易量的冷暖。",
         "",
     ]
     strip = _quote_strip(pack)
@@ -495,9 +498,15 @@ def render_hk_brokers_rule(topic: str, pack: HkBrokersPack) -> str:
         "偏空" if a.get("mean", 0) < -0.15 else "中性")
     lines += [
         "",
-        f"- **汇总**：{a.get('n', 0)} 条动态 / {a.get('firms_hit', 0)} 家，"
-        f"利好 {a.get('pos', 0)} / 利空 {a.get('neg', 0)} / 中性 {a.get('neu', 0)}，"
-        f"均值 {a.get('mean', 0):+.2f} → **{stance}**；股价快照 {a.get('quotes_hit', 0)} 家",
+        f"把这 {a.get('firms_hit', 0)} 家香港券商抛出的 {a.get('n', 0)} 条动态合在一起看"
+        f"（利好 {a.get('pos', 0)} 条、利空 {a.get('neg', 0)} 条、中性 {a.get('neu', 0)} 条，"
+        f"情绪均值 {a.get('mean', 0):+.2f}，同步抓到 {a.get('quotes_hit', 0)} 家上市券商实时股价快照），"
+        f"目前机构案头的风向整体处在**{stance}**区间。"
+        "说起来，香港本地与中资大行看港股向来很讲求“不见兔子不撒鹰”——"
+        "一边盯着高股息做底仓防守，一边又对盈利能兑现的科网龙头和热闹的 IPO 市场跃跃欲试。"
+        "在多数情况下，券商股自身的盘面冷暖就是市场交投意愿的晴雨表；接下来成交量能不能稳住，"
+        "或许比单纯喊几句口号更有说服力。",
+        "",
         "> 数据来源：多渠道公开新闻检索与机构研报摘要聚合，股价为实时行情源抓取时点值",
         "> ⚠️ 非投资建议，仅供参考，研报原文以各券商官方披露为准。",
     ]

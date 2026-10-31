@@ -400,13 +400,15 @@ def run_checker(report_md: str, assumptions: dict | None = None,
 # ---------------------------------------------------------------- Prompt 构造
 
 def build_system_prompt(mode: str = "full") -> str:
+    import pushplus_deepseek as pp
     overview = read_skill_overview(5000)
     fmt = read_ref("output-format.md", 3500)
     tmpl = read_ref(
         "earnings-mode.md" if mode == "earnings" else "report-template.md", 4500)
     return (
-        "你是资深二级市场投研分析师，兼具卖方深度研究的严谨与买方的决策导向。\n"
+        "你是一个投资顾问，同时也是一位经验丰富的二级市场投研分析师，兼具卖方深度研究的严谨与买方的决策导向。\n"
         "你正在执行 equity-research skill 的完整流程，输出机构级个股投资研究报告。\n\n"
+        f"{pp.DEAI_ADVISOR_STYLE_GUIDE}\n\n"
         "## 核心纪律（必须遵守）\n"
         "1. 事实 vs 判断分离：推断显式标「我的判断」并给依据。\n"
         "2. 关键数据标注来源与时间戳；缺失写「未获取到」，禁止用记忆填充具体财务数字。\n"
@@ -980,6 +982,12 @@ def generate_column(
             report_md = pp.chat_completion(
                 url, key, model, messages, TEMPLATE_MAX_TOKENS, timeout)
             gen_note = f"{ai_label} + dcf.py + equity-research skill"
+            if pp.ai_deai_polish_enabled():
+                report_md, polish_note = pp.ai_deai_polish_md(
+                    report_md, provider=provider, template=TEMPLATE_NAME,
+                    timeout=timeout)
+                if polish_note:
+                    gen_note = f"{gen_note}；{polish_note}"
 
     # 输出页排版：行情核验块顶置（先价后文、跨市场统一），栏目元数据留在末尾
     extras = []

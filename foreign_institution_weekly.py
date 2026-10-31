@@ -498,19 +498,37 @@ def render_foreign_weekly_rule(topic: str, pack: ForeignWeeklyPack) -> str:
                 tag = f"（{it.rating}）" if it.rating else ""
                 risk_hits.append(f"- **[国外投行 · {it.institution}]** {it.title}{tag}")
     if risk_hits:
+        risk_lines.append(
+            "先把防线划清楚。翻开这周外资大行的研报夹，唱多声里其实夹着几记颇为冷静的刹车声——"
+            "凡是机构主动下调评级或改口观望的地方，往往正对着市场最脆弱的预期软肋："
+        )
+        risk_lines.append("")
         risk_lines.extend(risk_hits[:5])
     elif a.get("n", 0) > 0:
-        risk_lines.append("- **窗口期风险扫描**：已命中外资研报暂以偏多/维持为主，仍需警惕高估值板块拥挤度、利率路径反复及机构预期修正风险。")
+        risk_lines.append(
+            "说起来，这周命中的外资研报表面上一团和气，没看到密集的下调评级。"
+            "但恰恰是这种一致看好的时候，更得在心里打个问号：热门资产的溢价是不是已经透支得差不多了？"
+            "一旦利率路径或盈利指引稍有闪失，原本拥挤的多头筹码随时可能反手兑现。"
+        )
     else:
-        risk_lines.append("- **数据盲区提示**：当前窗口暂无命中外资研报样本，需注意信息缺口期间的海外宏观与跨市场波动风险。")
+        risk_lines.append(
+            "坦白讲，这周窗口里还没抓到足够多的外资研报样本。"
+            "在信息偏薄的空档期，海外宏观数据与跨市场波动很容易放大盘面噪音，仓位上不妨多留一分余地。"
+        )
+    risk_lines.append("")
     risk_lines.append(
-        f"- **情绪分布观察**：外资研报利空 {a.get('neg', 0)} / 中性 {a.get('neu', 0)} / 利好 {a.get('pos', 0)}（共 {a.get('n', 0)} 篇），研报观点不构成单边确定性指引。"
+        f"从样本冷暖来看，这 {a.get('n', 0)} 篇外资报告里利空占 {a.get('neg', 0)} 篇、"
+        f"中性 {a.get('neu', 0)} 篇、利好 {a.get('pos', 0)} 篇。"
+        "在多数情况下，大行的纸面评级只是参考坐标，真正在牌桌上决定方向的，还得看资金愿不愿意掏真金白银跟进。"
     )
 
     table_lines = [
         "## 🏛 国外研报",
         "",
-        f"**{topic} · 国外专业投资机构一周研报（{pack.hours}h，{a.get('institutions_hit',0)}/{a.get('institutions_total',len(INSTITUTIONS))} 机构命中）**（本地聚合）",
+        f"**{topic} · 国外专业投资机构一周研报（{pack.hours}h，"
+        f"{a.get('institutions_hit',0)}/{a.get('institutions_total',len(INSTITUTIONS))} 机构命中）**",
+        "",
+        "把过去一周海外投行案头的重点报告摆到同一张桌面上，各家的算盘其实打得很清楚：",
         "",
         "| 机构 | 评级/方向 | 标题 | 来源 | 时间 |",
         "|---|---|---|---|---|",
@@ -525,16 +543,21 @@ def render_foreign_weekly_rule(topic: str, pack: ForeignWeeklyPack) -> str:
             rating = it.rating or it.sentiment
             ts = it.published.strftime("%m-%d") if it.published else "本周"
             table_lines.append(f"| {it.institution} | {rating} | {title} | {generalize_broker_source(it.source)} | {ts} |")
-    if len(table_lines) <= 6:
+    if len(table_lines) <= 8:
         table_lines.append("| — | — | 一周内未命中（见数据缺口） | — | — |")
 
     # 聚合与其他补充说明
     stance = "偏多" if a.get("mean",0) > 0.15 else ("偏空" if a.get("mean",0) < -0.15 else "中性")
+    covered = ", ".join([INSTITUTION_MAP[k]["name"] for k in pack.reports.keys()]) or "暂无命中机构"
     other_lines = [
         "## 📊 机构情绪汇总与补充说明",
         "",
-        f"- **汇总**：{a.get('n',0)} 篇研报 / {a.get('institutions_hit',0)} 机构，利好 {a.get('pos',0)} / 利空 {a.get('neg',0)} / 中性 {a.get('neu',0)}，均值 {a.get('mean',0):+.2f} → **{stance}**",
-        f"- **覆盖机构**：{', '.join([INSTITUTION_MAP[k]['name'] for k in pack.reports.keys()]) or '无'}",
+        f"合上这 {a.get('institutions_hit',0)} 家机构（{covered}）的 {a.get('n',0)} 篇研报，"
+        f"情绪均值停在 {a.get('mean',0):+.2f}（利好 {a.get('pos',0)} / 利空 {a.get('neg',0)} / 中性 {a.get('neu',0)}），"
+        f"整体天平处在**{stance}**一侧。实际上，外资大行很少会在同一时刻把话说死——"
+        "一边给高景气龙头抬目标价，一边又在估值偏贵的方向悄悄收紧口径。"
+        "那么面对这种冷热交织的研报图谱，我们该抓哪头？或许盯住业绩能持续兑现、且机构分歧正在收敛的方向，胜算会扎实得多。",
+        "",
         "> 数据来源：多渠道公开新闻检索与机构研报摘要聚合，逐机构隔离核验",
         "> ⚠️ 非投资建议，仅供参考，研报原文以机构官方披露为准。",
     ]
