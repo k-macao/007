@@ -298,6 +298,50 @@ class PushSentimentTest(unittest.TestCase):
         )
         self.assertLess(wrapped.index('核心研报正文'), wrapped.index('数据新鲜度 · 本次运行指纹'))
 
+    def test_selftest_and_main_resilient_when_hf_token_set(self):
+        import os
+        import hk_brokers as hb
+
+        dirty = {
+            'HF_TOKEN': 'hf_dirty_secret_token',
+            'HUGGINGFACE_API_KEY': 'hf_dirty_alias',
+            'SILICONFLOW_API_KEY': 'sf_dirty_key',
+            'SENTIMENT_ENGINE': 'hf',
+            'DEEPSEEK_API_KEY': '',
+            'OPENAI_API_KEY': '',
+        }
+        with patch.dict('os.environ', dirty, clear=False):
+            self.assertEqual(pp.selftest(), 0)
+            self.assertEqual(os.environ.get('HF_TOKEN'), 'hf_dirty_secret_token')
+
+        captured = []
+
+        def fake_post_form(url, fields, timeout=30):
+            captured.append((url, dict(fields)))
+            return 200, '{"code": 200, "msg": "ok"}'
+
+        with patch.dict(
+            'os.environ',
+            {'PUSHPLUS_TOKEN': 'tok-test', 'HF_TOKEN': 'hf_no_credits', 'DEEPSEEK_API_KEY': ''},
+            clear=False,
+        ), \
+             patch.object(hb, 'collect_hk_brokers', return_value=hb.demo_pack()), \
+             patch.object(pp, 'chat_completion', side_effect=pp.PushError('HTTP 402: no remaining credits')), \
+             patch.object(pp, 'http_post_form', side_effect=fake_post_form):
+            rc = pp.main([
+                '--template', 'hk_brokers',
+                '--topic', '港股市场',
+                '--channel', 'pushplus',
+                '--ai-provider', 'deepseek',
+                '--theme', 'dos',
+                '--hours', '96',
+                '--no-chart',
+                '--no-state',
+            ])
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(captured), 1)
+        self.assertIn('香港券商新闻与数据', captured[0][1]['content'])
+
 
 if __name__ == '__main__':
     unittest.main()

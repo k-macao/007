@@ -1541,10 +1541,14 @@ class _EnvSandbox:
 
 
 def _clear_ai_env() -> dict[str, str | None]:
-    names = list(INFERENCE_ENV_NAMES) + [
-        "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
-        "INFERENCE_GATEWAY_TOKEN",
-    ]
+    names = (
+        list(INFERENCE_ENV_NAMES)
+        + list(EXTRA_PROVIDER_KEYS)
+        + [
+            "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+            "HF_ENDPOINT_URL", "HF_MODEL", "INFERENCE_GATEWAY_TOKEN",
+        ]
+    )
     return {name: None for name in names}
 
 

@@ -63,6 +63,14 @@ jobs:
       # 「无 Key 时优雅跳过（正文完整）」这类断言误判。
       DEEPSEEK_API_KEY: ''
       OPENAI_API_KEY: ''
+      OPENAI_BASE_URL: ''
+      HF_TOKEN: ''
+      HUGGINGFACE_API_KEY: ''
+      HUGGINGFACEHUB_API_TOKEN: ''
+      INFERENCE_API_KEY: ''
+      INFERENCE_PROVIDER: ''
+      INFERENCE_BASE_URL: ''
+      SENTIMENT_ENGINE: ''
 
     steps:
       - name: Checkout

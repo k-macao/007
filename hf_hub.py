@@ -2050,8 +2050,12 @@ class _EnvSandbox:
 def _clear_hf_env() -> dict[str, str | None]:
     return {name: os.environ.get(name) for name in
             (*HF_TOKEN_ENVS, "HF_HUB_BASE", "HF_DATASETS_SERVER", "HF_TASK_API",
+             "HF_ENDPOINT_URL", "HF_MODEL", "SENTIMENT_ENGINE",
              "INFERENCE_BASE_URL", "INFERENCE_API_KEY", "INFERENCE_MODEL",
-             "INFERENCE_PROVIDER")}
+             "INFERENCE_PROVIDER", "INFERENCE_TIMEOUT", "INFERENCE_MAX_RETRIES",
+             "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+             "SILICONFLOW_API_KEY", "MOONSHOT_API_KEY", "ZHIPU_API_KEY",
+             "DASHSCOPE_API_KEY")}
 
 
 def _offline_env() -> dict[str, str | None]:

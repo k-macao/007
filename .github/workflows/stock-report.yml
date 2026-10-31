@@ -188,10 +188,18 @@ jobs:
       # step 级把两个 Key 置空做双保险 —— 即使 checkout 到旧版脚本，也不会因为
       # 仓库配了 DEEPSEEK_API_KEY 而真的联网压缩、导致
       # 「无 Key 时优雅跳过（正文完整）」这一项误判失败。
-      - name: Offline selftest (离线自检 · 全程屏蔽 AI Key，结果与 Secret 配置无关)
+      - name: Offline selftest (离线自检 · 全程屏蔽 AI/HF Key，结果与 Secret 配置无关)
         env:
           DEEPSEEK_API_KEY: ''
           OPENAI_API_KEY: ''
+          OPENAI_BASE_URL: ''
+          HF_TOKEN: ''
+          HUGGINGFACE_API_KEY: ''
+          HUGGINGFACEHUB_API_TOKEN: ''
+          INFERENCE_API_KEY: ''
+          INFERENCE_PROVIDER: ''
+          INFERENCE_BASE_URL: ''
+          SENTIMENT_ENGINE: ''
         run: python stock_report.py --selftest
 
       - name: Check secrets (只检查配置，不发送)

@@ -141,10 +141,18 @@ jobs:
           echo "HF_TOKEN set=${{ secrets.HF_TOKEN != '' }} SENTIMENT_ENGINE=${SENTIMENT_ENGINE:-auto}"
           python -V
 
-      - name: Offline selftest (离线自检 · 屏蔽 AI Key)
+      - name: Offline selftest (离线自检 · 屏蔽全部 AI/HF Key)
         env:
           DEEPSEEK_API_KEY: ''
           OPENAI_API_KEY: ''
+          OPENAI_BASE_URL: ''
+          HF_TOKEN: ''
+          HUGGINGFACE_API_KEY: ''
+          HUGGINGFACEHUB_API_TOKEN: ''
+          INFERENCE_API_KEY: ''
+          INFERENCE_PROVIDER: ''
+          INFERENCE_BASE_URL: ''
+          SENTIMENT_ENGINE: ''
         run: python pushplus_deepseek.py --selftest
 
       - name: Dry run (只生成内容，不推送)
