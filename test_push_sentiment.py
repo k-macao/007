@@ -249,22 +249,24 @@ class PushSentimentTest(unittest.TestCase):
         blk = pp.render_bofa_bb_char_block()
         widths = {len(ln) for ln in tbl.splitlines()}
         self.assertEqual(widths, {66})
-        self.assertTrue(all(ord(ch) < 128 for ch in tbl))
+        self.assertFalse(any(0x4E00 <= ord(ch) <= 0x9FFF for ch in tbl))
         self.assertEqual(find_brand_leaks(blk), [])
         self.assertIn('## 📊 美银牛熊指标 · BofA Bull & Bear Indicator (B&B)', blk)
         self.assertNotIn('## 🧭 美银牛熊指标', blk)
         self.assertNotIn('.---~~~~---.', tbl)
+        self.assertNotIn('[===]', tbl)
+        self.assertNotIn('######....', tbl)
         for token in (
             'Our BofA Bull & Bear Indicator is at 7.1... signal is Neutral.',
             'Chart 21: BofA Bull & Bear at 7.1  (Down to 7.1 from 7.2)',
-            '[===]', '[###]', 'Bar Chart',
+            '█████', '▓▓▓▓▓', '0-10 Gauge', 'Bar Chart',
             'Table 6: BofA B&B Indicator (Current Component Readings)',
             'Hedge Fund Positioning', '64%',
             'Equity Flow', '89%', 'V Bullish +',
             'Bond Flow', '62%',
             'Credit Market Technicals', '55%',
             'Global Stock Index Breadth', '21%', 'Bearish   -',
-            'FMS Positioning', '100%',
+            'FMS Positioning', '100%', '████████████████',
         ):
             self.assertIn(token, tbl)
 
@@ -289,6 +291,9 @@ class PushSentimentTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         html = captured[0][1]['content']
         self.assertIn('<pre', html)
+        self.assertIn('width:89%;', html)
+        self.assertIn('width:21%;', html)
+        self.assertIn('股票资金流向', html)
         self.assertLess(html.index('BofA Bull &amp; Bear Indicator (B&amp;B)'), html.index('港股市场'))
         self.assertLess(html.index('港股市场'), html.index('数据新鲜度 · 本次运行指纹'))
 

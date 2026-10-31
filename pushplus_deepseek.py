@@ -1485,7 +1485,7 @@ def load_bofa_bb_data() -> dict:
 
 
 def render_bofa_bb_char_table(data: dict | None = None) -> str:
-    """用纯等宽 ASCII 字符绘制 BofA Bull & Bear Indicator 柱状图（Chart 21）与六大分项柱状表（Table 6）。"""
+    """用高对比度实心方块字符（█▓▒░▄）绘制 BofA Bull & Bear 柱状图（Chart 21）与六大分项横向柱状图（Table 6）。"""
     d = data or load_bofa_bb_data()
     val = max(0.0, min(10.0, float(d.get("current", 7.1))))
     prev = d.get("previous", 7.2)
@@ -1495,17 +1495,13 @@ def render_bofa_bb_char_table(data: dict | None = None) -> str:
         or ("Buy" if val < 2.0 else ("Sell" if val > 8.0 else "Neutral"))
     )
 
-    width = 62  # 框内宽度 62 → 整行固定 66 列，纯 ASCII 字符跨端严格等宽对齐
+    line_w = 66  # 去除外框竖线干扰，保持每行严格 66 字符等宽且不含 CJK 宽字符
 
-    def row(txt: str = "") -> str:
-        t = txt[:width]
-        return "| " + t.ljust(width) + " |"
+    def pad(txt: str = "") -> str:
+        return txt[:line_w].ljust(line_w)
 
-    sep = "+-" + "-" * width + "-+"
-    tsep = "+------------------------------+------+------------+-------------+"
-
-    def trow(c1: str, c2: str, c3: str, c4: str) -> str:
-        return f"| {c1[:28]:<28} | {c2[:4]:>4} | {c3[:10]:<10} | {c4[:11]:<11} |"
+    hrule_bold = "═" * line_w
+    hrule_thin = "─" * line_w
 
     if abs(val - prev_f) < 1e-6:
         chg_note = f"Unchanged at {val:.1f}"
@@ -1514,12 +1510,14 @@ def render_bofa_bb_char_table(data: dict | None = None) -> str:
     else:
         chg_note = f"Up to {val:.1f} from {prev_f:.1f}"
 
+    # 6 组关键周期读数：最新值用全实心 █，前值用深灰块 ▓，历史峰值用 ▒，极值低点用底座块 ▄
     series = [
-        ("Mar'20", 0.0, "_"),
-        ("Oct'22", 0.0, "_"),
-        ("Mar'23", 0.4, "="),
-        ("Prev", prev_f, "="),
-        ("Latest", val, "#"),
+        ("Mar'20", "(Buy)", 0.0, "▄"),
+        ("Feb'21", "(Peak)", 7.7, "▒"),
+        ("Oct'22", "(Buy)", 0.0, "▄"),
+        ("Mar'23", "(Buy)", 0.4, "▒"),
+        ("Prev", "(Prev)", prev_f, "▓"),
+        ("Latest", "(Now)", val, "█"),
     ]
 
     def _bar_rows(v: float) -> int:
@@ -1529,75 +1527,90 @@ def render_bofa_bb_char_table(data: dict | None = None) -> str:
             return 1
         return max(1, min(10, int(round(v))))
 
-    heights = [_bar_rows(v) for _, v, _ in series]
+    heights = [_bar_rows(v) for _, _, v, _ in series]
     chart_lines: list[str] = []
-    if max(heights) >= 10:
-        cap_cells = [
-            (f"{v:.1f}".center(7) if heights[idx] == 10 else " " * 7)
-            for idx, (_, v, _) in enumerate(series)
-        ]
-        chart_lines.append(row("     " + "".join(cap_cells)))
+    top_lvl = 11 if max(heights) >= 10 else 10
 
     notes = {
-        10: f"  *{val:.1f} LATEST",
-        9: f"  Signal: {signal[:13]}",
-        8: "  <-- 8.0 Sell (8-10)",
-        5: "  Neutral Zone (2-8)",
-        2: "  <-- 2.0 Buy  (0-2)",
+        10: f" ★ {val:.1f}/10 {signal[:9]}",
+        8: " ◄ 8.0 Sell (>8)",
+        5: "   2-8 Neutral",
+        2: " ◄ 2.0 Buy  (<2)",
     }
-    for lvl in range(10, 0, -1):
-        bg = "-" if lvl in (8, 2) else " "
+    for lvl in range(top_lvl, 0, -1):
+        fill_bg = "─" if lvl == 8 else ("┈" if lvl == 2 else " ")
         cells: list[str] = []
-        for idx, (_lbl, v, ch) in enumerate(series):
+        for idx, (_lbl, _sub, v, ch) in enumerate(series):
             h = heights[idx]
             if lvl <= h:
-                if v < 1.0 and lvl == 1:
-                    cells.append(f"{bg}[...]{bg}")
-                else:
-                    cells.append(f"{bg}[{ch * 3}]{bg}")
-            elif lvl == h + 1:
-                cells.append(f"{v:.1f}".center(7, bg))
+                bar_ch = "▄" if (v < 1.0 and lvl == 1) else ch
+                cells.append(f"{fill_bg}{bar_ch * 5}{fill_bg}")
+            elif (lvl == h + 1 and h > 0) or (lvl == 1 and h == 0):
+                # 数值两侧留空格光晕，避免被阈值横线穿过导致看不清
+                cells.append(f" {v:.1f} ".center(7, fill_bg))
             else:
-                cells.append(bg * 7)
-        chart_lines.append(row(f" {lvl:>2} |" + "".join(cells) + notes.get(lvl, "")))
+                cells.append(fill_bg * 7)
+        if lvl in (8, 2):
+            axis = f" {lvl:>2} ┼"
+        elif lvl <= 10:
+            axis = f" {lvl:>2} ┤"
+        else:
+            axis = "    │"
+        chart_lines.append(pad(axis + "".join(cells) + notes.get(lvl, "")))
 
-    chart_lines.append(row("  0 +" + "-" * 35 + "+  Ext.Bear<2 | >8Bull"))
-    lbl_cells = [lbl.center(7) for lbl, _, _ in series]
-    chart_lines.append(row("     " + "".join(lbl_cells) + "  [###]=Now [===]=Prev"))
+    base_cells = [("─▄▄▄▄▄─" if h == 0 else "───┴───") for h in heights]
+    chart_lines.append(pad("  0 └" + "".join(base_cells) + "─  [0-10 Scale]"))
+    chart_lines.append(
+        pad("     " + "".join(lbl.center(7) for lbl, _, _, _ in series) + "  █████=Latest")
+    )
+    chart_lines.append(
+        pad("     " + "".join(sub.center(7) for _, sub, _, _ in series) + "  ▓▓▓▓▓=Prev")
+    )
+
+    # 20 格总读数横向区间尺（0─2 Buy | 2─8 Neutral | 8─10 Sell）
+    g_fill = max(0, min(20, int(round(val * 2.0))))
+    gauge = "".join(
+        ("█" if i < g_fill else "░") + ("│" if i in (3, 15) else "")
+        for i in range(20)
+    )
+    chart_lines.append(pad(""))
+    chart_lines.append(pad(f"  0-10 Gauge: [{gauge}]  {val:>4.1f}/10 ({signal})"))
+    chart_lines.append(pad("              0   2            8   10   Buy<2 | Neutral | >8Sell"))
 
     lines = [
-        sep,
-        row("BofA Bull & Bear Indicator (B&B)"),
-        row(f"Our BofA Bull & Bear Indicator is at {val:.1f}... signal is {signal}."),
-        sep,
-        row(f"Chart 21: BofA Bull & Bear at {val:.1f}  ({chg_note})"),
-        row(""),
+        hrule_bold,
+        pad(f"BofA Bull & Bear Indicator (B&B)              Latest: {val:.1f} / 10"),
+        pad(f"Our BofA Bull & Bear Indicator is at {val:.1f}... signal is {signal}."),
+        hrule_thin,
+        pad(f"Chart 21: BofA Bull & Bear at {val:.1f}  ({chg_note})"),
+        pad(""),
         *chart_lines,
-        tsep,
-        row("Table 6: BofA B&B Indicator (Current Component Readings)"),
-        tsep,
-        trow("Components", "Pctl", "Bar Chart", "Sentiment"),
-        tsep,
+        hrule_thin,
+        pad("Table 6: BofA B&B Indicator (Current Component Readings)"),
+        pad("Components                  Pctl  Bar Chart (0%──100%)  Sentiment"),
+        hrule_thin,
     ]
 
+    tag_map = {
+        "V Bullish": "▲ V Bullish +",
+        "Bullish": "▲ Bullish   +",
+        "Neutral": "● Neutral",
+        "Bearish": "▼ Bearish   -",
+        "V Bearish": "▼ V Bearish -",
+    }
     for comp in d.get("components", []):
         pct = max(0, min(100, int(round(float(comp.get("percentile", 0))))))
-        filled = max(0, min(10, int(round(pct / 10.0))))
-        meter = "#" * filled + "." * (10 - filled)
+        filled = max(0, min(16, int(round(pct * 16 / 100.0))))
+        meter = "█" * filled + "░" * (16 - filled)
         sent = str(comp.get("sentiment", "Neutral"))
-        tag_map = {
-            "V Bullish": "V Bullish +",
-            "Bullish": "Bullish   +",
-            "Bearish": "Bearish   -",
-            "V Bearish": "V Bearish -",
-        }
-        lines.append(trow(str(comp.get("name", "")), f"{pct}%", meter, tag_map.get(sent, sent)))
+        stag = tag_map.get(sent, f"● {sent}")
+        lines.append(pad(f"{str(comp.get('name', ''))[:26]:<26}  {pct:>3}%  {meter}  {stag}"))
 
     lines += [
-        tsep,
-        row("Source: BofA Global Investment Strategy, Bloomberg, EPFR,"),
-        row("        Lipper FMI, Global FMS, CFTC, MSCI | BofA RESEARCH"),
-        sep,
+        hrule_thin,
+        pad("Source: BofA Global Investment Strategy, Bloomberg, EPFR,"),
+        pad("        Lipper FMI, Global FMS, CFTC, MSCI | BofA RESEARCH"),
+        hrule_bold,
     ]
     return "\n".join(lines)
 
@@ -3675,6 +3688,245 @@ def _render_table(rows: list[str], theme_name: str = "game") -> str:
     )
 
 
+def _render_bofa_bb_html(code_text: str, theme_name: str = "game") -> str:
+    """将 BofA Bull & Bear 字符块升级渲染为手机端高对比度原生柱状图看板（纯内联 CSS、零表格、全主题适配）。"""
+    theme = _get_theme(theme_name)
+    code_bg = theme.get("code_bg", theme["card_bg"])
+    code_fg = theme.get("code_fg", theme["fg"])
+    code_font = theme.get("font_mono", theme["font"])
+    body_font = theme.get("font", code_font)
+    is_light = bool(theme.get("editorial") or theme_name == "klein")
+    plot_bg = theme.get("paper_tint", theme["bg"]) if is_light else code_bg
+    plot_hdr_fg = theme["fg"] if is_light else code_fg
+    neutral_bar_fg = theme["fg"] if is_light else theme["accent"]
+
+    m_head = re.search(
+        r"Indicator is at\s+(\d+(?:\.\d+)?)\.\.\.\s*signal is\s+([A-Za-z ]+?)\.",
+        code_text,
+    )
+    val = max(0.0, min(10.0, float(m_head.group(1)))) if m_head else 7.1
+    signal = m_head.group(2).strip() if m_head else (
+        "Buy" if val < 2.0 else ("Sell" if val > 8.0 else "Neutral")
+    )
+
+    m_chg = re.search(r"Chart 21:.*?\(([^)]+)\)", code_text)
+    chg_note = m_chg.group(1).strip() if m_chg else f"Latest {val:.1f}"
+    m_prev = re.search(r"from\s+(\d+(?:\.\d+)?)", chg_note)
+    prev_f = max(0.0, min(10.0, float(m_prev.group(1)))) if m_prev else val
+
+    sig_low = signal.lower()
+    if "buy" in sig_low or val < 2.0:
+        sig_fg, sig_bg, sig_cn, sig_arrow = theme["up"], theme["up_bg"], "反向买入", "▲"
+    elif "sell" in sig_low or val > 8.0:
+        sig_fg, sig_bg, sig_cn, sig_arrow = theme["down"], theme["down_bg"], "反向卖出", "▼"
+    else:
+        sig_fg = theme["fg"] if is_light else theme["accent"]
+        sig_bg = theme["accent"] if is_light else code_bg
+        sig_cn, sig_arrow = "中性区间", "●"
+
+    cn_lookup = {
+        str(c.get("name", "")).strip(): (
+            str(c.get("cn", "")).strip(),
+            str(c.get("sentiment_cn", "")).strip(),
+        )
+        for c in (DEFAULT_BOFA_BB_DATA.get("components", []) + load_bofa_bb_data().get("components", []))
+    }
+    prefix_lookup = [(k[:18], v) for k, v in cn_lookup.items() if k]
+
+    comp_rows: list[tuple[str, str, int, str, str]] = []
+    in_tbl6 = False
+    for raw_ln in code_text.splitlines():
+        if "Table 6:" in raw_ln:
+            in_tbl6 = True
+            continue
+        if not in_tbl6:
+            continue
+        if raw_ln.strip().startswith("Source:"):
+            break
+        m_c = re.match(
+            r"^\s*\|?\s*([A-Za-z][A-Za-z0-9 &/.\-']*?)\s+\|?\s*(\d{1,3})%\s+\|?\s*"
+            r"[█░#.=]+\s+\|?\s*(?:[▲▼●]\s*)?([A-Za-z +\-]+?)\s*\|?\s*$",
+            raw_ln,
+        )
+        if not m_c:
+            continue
+        en_name = m_c.group(1).strip()
+        pct = max(0, min(100, int(m_c.group(2))))
+        sent = re.sub(r"\s+[+\-]$", "", m_c.group(3).strip())
+        cn_name, scn = cn_lookup.get(en_name, ("", ""))
+        if not cn_name:
+            for pfx, pair in prefix_lookup:
+                if en_name.startswith(pfx):
+                    cn_name, scn = pair
+                    break
+        if not scn:
+            scn = (
+                "极度看多" if "V Bull" in sent else
+                "看多" if "Bull" in sent else
+                "极度看空" if "V Bear" in sent else
+                "看空" if "Bear" in sent else "中性"
+            )
+        comp_rows.append((en_name, cn_name, pct, sent, scn))
+
+    if not comp_rows:
+        for c in load_bofa_bb_data().get("components", []):
+            comp_rows.append((
+                str(c.get("name", "")),
+                str(c.get("cn", "")),
+                max(0, min(100, int(round(float(c.get("percentile", 0)))))),
+                str(c.get("sentiment", "Neutral")),
+                str(c.get("sentiment_cn", "中性")),
+            ))
+
+    # Chart 21：6 根纵向实心柱状图（固定像素高度，兼容微信富文本渲染器）
+    col_series = [
+        ("Mar'20", "Buy", 0.0, "buy"),
+        ("Feb'21", "Peak", 7.7, "hist"),
+        ("Oct'22", "Buy", 0.0, "buy"),
+        ("Mar'23", "Buy", 0.4, "buy"),
+        ("前值", "Prev", prev_f, "prev"),
+        ("最新", "Now", val, "now"),
+    ]
+    max_px = 84
+    vcols_html: list[str] = []
+    lbls_html: list[str] = []
+    for lbl, sub, v, kind in col_series:
+        bar_px = 4 if v <= 0.05 else max(7, int(round((v / 10.0) * max_px)))
+        if kind == "now":
+            b_bg = sig_fg if (val < 2.0 or val > 8.0) else theme["accent"]
+            b_bdr = f"2px solid {theme['fg']}" if is_light else f"1px solid {theme['fg']}"
+            v_fg = sig_fg
+            v_wt = "700"
+            lbl_fg = theme["fg"]
+        elif kind == "prev":
+            b_bg = theme["muted"]
+            b_bdr = f"1px solid {theme['border']}"
+            v_fg = theme["fg"]
+            v_wt = "600"
+            lbl_fg = theme["fg"]
+        elif kind == "buy":
+            b_bg = theme["up"]
+            b_bdr = f"1px solid {theme['up']}"
+            v_fg = theme["up"]
+            v_wt = "600"
+            lbl_fg = theme["muted"]
+        else:
+            b_bg = theme.get("hairline", theme["border"])
+            b_bdr = f"1px solid {theme['muted']}"
+            v_fg = theme["muted"]
+            v_wt = "600"
+            lbl_fg = theme["muted"]
+
+        vcols_html.append(
+            f'<div style="flex:1;display:flex;flex-direction:column;align-items:center;'
+            f'justify-content:flex-end;height:{max_px + 22}px;">'
+            f'<div style="font-family:{code_font};font-size:11px;font-weight:{v_wt};'
+            f'color:{v_fg};line-height:1.2;margin-bottom:3px;">{v:.1f}</div>'
+            f'<div style="width:72%;max-width:34px;height:{bar_px}px;'
+            f'background:{b_bg};border:{b_bdr};box-sizing:border-box;"></div>'
+            f'</div>'
+        )
+        lbls_html.append(
+            f'<div style="flex:1;text-align:center;padding-top:4px;">'
+            f'<div style="font-size:10px;font-weight:{"700" if kind == "now" else "400"};'
+            f'color:{lbl_fg};line-height:1.2;">{lbl}</div>'
+            f'<div style="font-family:{code_font};font-size:9px;color:{theme["muted"]};'
+            f'line-height:1.15;">{sub}</div></div>'
+        )
+
+    # Table 6：六大分项全宽横向高对比度柱状图
+    hbars_html: list[str] = []
+    for en_name, cn_name, pct, sent, scn in comp_rows:
+        s_low = sent.lower()
+        if "bull" in s_low:
+            c_fg, c_bg, c_bar, c_arr = theme["up"], theme["up_bg"], theme["up"], "▲"
+        elif "bear" in s_low:
+            c_fg, c_bg, c_bar, c_arr = theme["down"], theme["down_bg"], theme["down"], "▼"
+        else:
+            c_fg, c_bg, c_bar, c_arr = theme["muted"], theme["bg"], neutral_bar_fg, "●"
+
+        title_txt = (
+            f'<span style="font-weight:700;color:{theme["fg"]};">{cn_name}</span> '
+            f'<span style="font-family:{code_font};font-size:10px;color:{theme["muted"]};">{en_name}</span>'
+            if cn_name else
+            f'<span style="font-weight:700;color:{theme["fg"]};">{en_name}</span>'
+        )
+        badge_txt = f"{c_arr} {scn} · {sent}" if scn else f"{c_arr} {sent}"
+        hbars_html.append(
+            f'<div style="padding:6px 0;border-top:1px dashed {theme["border"]};">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">'
+            f'<div style="font-size:12px;line-height:1.3;">{title_txt}</div>'
+            f'<div style="white-space:nowrap;display:flex;align-items:center;gap:5px;">'
+            f'<span style="font-family:{code_font};font-size:13px;font-weight:700;'
+            f'color:{theme["fg"]};">{pct}%</span>'
+            f'<span style="font-size:10px;font-weight:700;color:{c_fg};background:{c_bg};'
+            f'border:1px solid {c_fg};padding:1px 5px;">{badge_txt}</span>'
+            f'</div></div>'
+            f'<div style="margin-top:4px;height:9px;background:{theme["bg"]};'
+            f'border:1px solid {theme["border"]};padding:1px;box-sizing:border-box;">'
+            f'<div style="width:{pct}%;height:100%;background:{c_bar};"></div>'
+            f'</div></div>'
+        )
+
+    esc_chg = chg_note.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    esc_sig = signal.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    scale_pct = max(2.0, min(100.0, val * 10.0))
+
+    return (
+        f'<div style="background:{theme["card_bg"]};border:1px solid {theme["border"]};'
+        f'margin:8px 0 10px;font-family:{body_font};color:{theme["fg"]};">'
+        f'<pre style="margin:0;padding:5px 10px;background:{code_bg};color:{code_fg};'
+        f'font-family:{code_font};font-size:10px;line-height:1.35;white-space:pre-wrap;'
+        f'border-bottom:1px solid {theme["border"]};">'
+        f'BofA Bull &amp; Bear Indicator (B&amp;B) · {esc_chg} · Signal: {esc_sig}</pre>'
+        f'<div style="padding:10px;">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">'
+        f'<div>'
+        f'<span style="font-family:{code_font};font-size:26px;font-weight:700;'
+        f'color:{sig_fg};line-height:1;">{val:.1f}</span>'
+        f'<span style="font-family:{code_font};font-size:12px;color:{theme["muted"]};"> / 10.0</span>'
+        f'<div style="font-size:11px;color:{theme["muted"]};margin-top:3px;">'
+        f'Chart 21 · {esc_chg}</div></div>'
+        f'<div style="font-size:11px;font-weight:700;color:{sig_fg};background:{sig_bg};'
+        f'border:1px solid {sig_fg};padding:4px 8px;white-space:nowrap;">'
+        f'{sig_arrow} {esc_sig.upper()} · {sig_cn}</div></div>'
+        f'<div style="margin-top:8px;">'
+        f'<div style="height:10px;background:{theme["bg"]};border:1px solid {theme["border"]};'
+        f'padding:1px;box-sizing:border-box;">'
+        f'<div style="width:{scale_pct:.1f}%;height:100%;background:{sig_fg};"></div></div>'
+        f'<div style="display:flex;justify-content:space-between;font-family:{code_font};'
+        f'font-size:10px;margin-top:3px;">'
+        f'<span style="color:{theme["up"]};">0─2 Buy(买入)</span>'
+        f'<span style="color:{theme["fg"]};font-weight:700;">2─8 Neutral(当前 {val:.1f})</span>'
+        f'<span style="color:{theme["down"]};">8─10 Sell(卖出)</span>'
+        f'</div></div>'
+        f'<div style="margin-top:10px;padding:8px;background:{plot_bg};'
+        f'border:1px solid {theme["border"]};">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;'
+        f'font-size:10px;color:{theme["muted"]};margin-bottom:4px;">'
+        f'<span style="font-weight:700;color:{plot_hdr_fg};">📊 Chart 21 · 周期极值与最新柱状对比</span>'
+        f'<span style="font-family:{code_font};">&gt;8 Sell · &lt;2 Buy</span></div>'
+        f'<div style="display:flex;align-items:flex-end;gap:6px;'
+        f'border-bottom:1px solid {theme["border"]};padding-top:4px;">'
+        f'{"".join(vcols_html)}</div>'
+        f'<div style="display:flex;gap:6px;">{"".join(lbls_html)}</div>'
+        f'</div>'
+        f'<div style="margin-top:10px;">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;'
+        f'margin-bottom:4px;">'
+        f'<span style="font-size:11px;font-weight:700;color:{theme["fg"]};">'
+        f'📊 Table 6 · 六大分项百分位柱状图</span>'
+        f'<span style="font-family:{code_font};font-size:10px;color:{theme["muted"]};">'
+        f'0% ─── 100%</span></div>'
+        f'{"".join(hbars_html)}'
+        f'</div>'
+        f'<div style="margin-top:6px;padding-top:5px;border-top:1px solid {theme["border"]};'
+        f'font-family:{code_font};font-size:9px;color:{theme["muted"]};">'
+        f'Source: BofA Global Investment Strategy, Bloomberg, EPFR, Lipper FMI, Global FMS, CFTC, MSCI</div>'
+        f'</div></div>'
+    )
+
+
 def md_to_html(md: str, theme_name: str = "game") -> str:
     """轻量 Markdown→HTML；所有主题使用内联样式，兼容 PushPlus/微信详情页。"""
     theme = _get_theme(theme_name)
@@ -3699,6 +3951,9 @@ def md_to_html(md: str, theme_name: str = "game") -> str:
             if i < len(lines) and lines[i].strip().startswith("```"):
                 i += 1  # 跳过闭合 ```
             code_text = "\n".join(code_lines)
+            if "BofA Bull & Bear Indicator (B&B)" in code_text and "Table 6:" in code_text:
+                html.append(_render_bofa_bb_html(code_text, theme_name))
+                continue
             # 转义以防止 HTML 注入，保留字符图原样
             esc = code_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             code_bg = theme.get("code_bg", theme["card_bg"])
@@ -3706,10 +3961,11 @@ def md_to_html(md: str, theme_name: str = "game") -> str:
             code_font = theme.get("font_mono", theme["font"])
             code_margin = "8px 0 10px" if theme.get("editorial") else "6px 0"
             code_padding = "8px 10px" if theme.get("editorial") else "8px"
+            code_lh = "1.22" if "█" in code_text else "1.45"
             html.append(
                 f'<pre style="background:{code_bg};border:1px solid {theme["border"]};'
                 f'padding:{code_padding};overflow-x:auto;font-family:{code_font};'
-                f'font-size:{theme["size"]};line-height:1.45;white-space:pre;'
+                f'font-size:{theme["size"]};line-height:{code_lh};white-space:pre;'
                 f'color:{code_fg};margin:{code_margin};">{esc}</pre>'
             )
             continue
@@ -5992,12 +6248,13 @@ def _selftest_impl() -> int:
         _bofa_tbl = render_bofa_bb_char_table()
         _bofa_blk = render_bofa_bb_char_block()
         from source_names import find_brand_leaks as _fbl
-        check("BofA 牛熊指标字符表严格等宽且纯 ASCII",
+        check("BofA 牛熊指标字符柱状图严格等宽且高对比实心块渲染",
               len({len(ln) for ln in _bofa_tbl.splitlines()}) == 1
-              and all(ord(ch) < 128 for ch in _bofa_tbl))
+              and not any(0x4E00 <= ord(ch) <= 0x9FFF for ch in _bofa_tbl)
+              and "█████" in _bofa_tbl and "▓▓▓▓▓" in _bofa_tbl and "░" in _bofa_tbl)
         check("BofA 牛熊指标字符表完整还原读数与六大分项",
               all(x in _bofa_tbl for x in (
-                  "7.1", "Down to 7.1 from 7.2", "Neutral",
+                  "7.1", "Down to 7.1 from 7.2", "Neutral", "0-10 Gauge",
                   "Hedge Fund Positioning", "64%",
                   "Equity Flow", "89%", "V Bullish",
                   "Bond Flow", "62%",
@@ -6005,6 +6262,12 @@ def _selftest_impl() -> int:
                   "Global Stock Index Breadth", "21%", "Bearish",
                   "FMS Positioning", "100%",
               )) and _fbl(_bofa_blk) == [])
+        for _th in ("dos", "guizang", "game", "monitor"):
+            _bofa_html = md_to_html(_bofa_blk, _th)
+            check(f"BofA 手机端 HTML 柱状图看板({_th})清晰无表格且含分项进度条",
+                  "<pre" in _bofa_html and "<table" not in _bofa_html
+                  and "width:89%;" in _bofa_html and "width:21%;" in _bofa_html
+                  and "股票资金流向" in _bofa_html and _fbl(_bofa_html) == [])
         _scrambled = (
             "### 🧭 数据新鲜度 · 本次运行指纹\n- 指纹 `deadbeef1234`\n\n"
             "## 📊 全市场快讯与机构动态\n\n- 主线A\n\n"
