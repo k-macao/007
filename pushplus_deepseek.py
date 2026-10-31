@@ -145,7 +145,8 @@ FACTORS = [
 FACTOR_COUNT = len(FACTORS)
 
 # ---------------- 品牌信息：全部结果的统一头部与尾注 ----------------
-BRAND_TITLE = "章鱼 AI 全景分析"
+BRAND_TITLE = "章鱼 AI.券商研报 007"
+SCHEDULED_PUSH_TITLE = BRAND_TITLE
 BRAND_SUBTITLE = "全网 AI 调研境内境外数据，由多个大模型混合部署。"
 BRAND_AUTHOR = "作者：章鱼 ai"
 BRAND_SLOGAN = ("全网境内外为你寻找蛛丝马迹-提供全景视野分析，由多模型协同推理决策，"
@@ -155,10 +156,10 @@ BRAND_SLOGAN = ("全网境内外为你寻找蛛丝马迹-提供全景视野分�
 BRAND_DISCLAIMER = "仅供参考，分析研究"
 
 
-def brand_header_md() -> str:
+def brand_header_md(title: str = "") -> str:
     """全部结果统一头部：只放标题和副标题。"""
     return "\n".join([
-        f"## 🐙 {BRAND_TITLE}",
+        f"## 🐙 {title or BRAND_TITLE}",
         f"> {BRAND_SUBTITLE}",
         "",
         "---",
@@ -175,9 +176,9 @@ def brand_footer_md() -> str:
     ])
 
 
-def add_branding(content: str) -> str:
+def add_branding(content: str, title: str = "") -> str:
     """给正文加品牌头和固定尾注，避免各调用点自行拼接而放错位置。"""
-    return f"{brand_header_md()}\n{content.rstrip()}\n\n{brand_footer_md()}"
+    return f"{brand_header_md(title)}\n{content.rstrip()}\n\n{brand_footer_md()}"
 
 # ================================================================ 基础工具
 
@@ -1286,6 +1287,441 @@ def render_feed_appendix(pack: FeedPack, new_keys: set | None = None) -> str:
     return "\n".join(lines)
 
 
+def _strip_edge_rules(md: str) -> str:
+    """剥离段落首尾多余空行与孤立 `---` 分隔线，避免拼接时出现双横线。"""
+    lines = (md or "").strip().splitlines()
+    while lines and (not lines[0].strip() or re.match(r"^-{3,}$", lines[0].strip())):
+        lines.pop(0)
+    while lines and (not lines[-1].strip() or re.match(r"^-{3,}$", lines[-1].strip())):
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
+def render_brief_risk_rule(feed_pack: FeedPack | None,
+                           fw_pack=None, hk_pack=None) -> str:
+    """无 AI Key / rule 降级时，基于已采集研报与快讯样本生成置顶风险点提示。"""
+    from source_names import generalize_source
+    lines = ["## ⚠️ 研报 AI 风险点提示", ""]
+    risk_hits: list[str] = []
+    seen_titles: set[str] = set()
+    caution_re = re.compile(
+        r"下调|减持|卖出|中性|谨慎|风险|承压|回调|警告|分歧|放缓|通胀|衰退|"
+        r"underweight|sell|neutral|downgrade|cut|risk|headwind",
+        re.I,
+    )
+
+    if fw_pack is not None:
+        for items in (getattr(fw_pack, "reports", None) or {}).values():
+            for it in items or []:
+                t = (getattr(it, "title", "") or "").strip()
+                k = _norm_text(t)
+                if not t or k in seen_titles:
+                    continue
+                rating = getattr(it, "rating", "") or ""
+                if (getattr(it, "sentiment", "") == "利空"
+                        or (getattr(it, "score", 0.0) or 0.0) < 0
+                        or caution_re.search(f"{t} {rating}")):
+                    seen_titles.add(k)
+                    tag = f"（{rating}）" if rating else ""
+                    risk_hits.append(
+                        f"- **[国外投行 · {getattr(it, 'institution', '外资机构')}]** {t}{tag}"
+                    )
+
+    if hk_pack is not None:
+        for items in (getattr(hk_pack, "reports", None) or {}).values():
+            for it in items or []:
+                t = (getattr(it, "title", "") or "").strip()
+                k = _norm_text(t)
+                if not t or k in seen_titles:
+                    continue
+                rating = getattr(it, "rating", "") or ""
+                if (getattr(it, "sentiment", "") == "利空"
+                        or (getattr(it, "score", 0.0) or 0.0) < 0
+                        or caution_re.search(f"{t} {rating}")):
+                    seen_titles.add(k)
+                    tag = f"（{rating}）" if rating else ""
+                    risk_hits.append(
+                        f"- **[香港券商 · {getattr(it, 'firm', '香港券商')}]** {t}{tag}"
+                    )
+
+    if feed_pack is not None:
+        neg_feed = [
+            it for lst in (feed_pack.items or {}).values()
+            for it in (lst or [])
+            if getattr(it, "label", "") == "利空" or (getattr(it, "score", 0.0) or 0.0) < 0
+        ]
+        neg_feed.sort(key=lambda x: getattr(x, "score", 0.0) or 0.0)
+        for it in neg_feed:
+            t = (getattr(it, "title", "") or "").strip()
+            k = _norm_text(t)
+            if not t or k in seen_titles:
+                continue
+            seen_titles.add(k)
+            src = generalize_source(getattr(it, "source", "") or "市场快讯")
+            risk_hits.append(f"- **[快讯风险信号 · {src}]** {t}（情绪 {it.score:+.2f}）")
+            if len(risk_hits) >= 5:
+                break
+
+    if risk_hits:
+        lines.extend(risk_hits[:5])
+    else:
+        total_n = (
+            (feed_pack.agg.get("n", 0) if feed_pack is not None else 0)
+            + (fw_pack.agg.get("n", 0) if fw_pack is not None and getattr(fw_pack, "agg", None) else 0)
+            + (hk_pack.agg.get("n", 0) if hk_pack is not None and getattr(hk_pack, "agg", None) else 0)
+        )
+        if total_n > 0:
+            lines.append(
+                "- **窗口期风险扫描**：当前命中研报与快讯暂未出现集中评级下调标题，"
+                "仍需警惕高热度板块拥挤度、宏观利率汇率预期摆动及机构分歧等市场级风险。"
+            )
+        else:
+            lines.append(
+                "- **数据盲区提示**：当前窗口有效快讯/研报样本不足，"
+                "需警惕休市或接口异常期间的信息盲区与跨市场波动风险。"
+            )
+
+    if feed_pack is not None and feed_pack.agg:
+        a = feed_pack.agg
+        lines.append(
+            f"- **全市场利空与情绪压力**：利空样本 {a.get('neg', 0)}/{a.get('n', 0)} 条"
+            f"（情绪均值 {a.get('mean', 0.0):+.2f}，多头概率锚点 ≈ {a.get('综合多头概率锚点', 50)}%），"
+            "单一信号需结合多源交叉验证。"
+        )
+    return "\n".join(lines)
+
+
+def render_brief_foreign_rule(fw_pack=None, *,
+                              columns_enabled: bool = True,
+                              has_detail: bool = False) -> str:
+    """无 AI Key / rule 降级时，生成排在第二部分的「国外研报」摘要头。"""
+    lines = ["## 🏛 国外研报"]
+    if not columns_enabled:
+        lines += ["", "- 当前已关闭简报机构栏目（`BRIEF_COLUMNS=0`），本次未采集国外投行研报。"]
+    elif fw_pack is not None and getattr(fw_pack, "agg", {}).get("n", 0) > 0:
+        a = fw_pack.agg
+        stance = "偏多" if a.get("mean", 0) > 0.15 else ("偏空" if a.get("mean", 0) < -0.15 else "中性")
+        lines += [
+            "",
+            f"- **机构覆盖与情绪汇总**：近 {fw_pack.hours}h 命中 "
+            f"{a.get('institutions_hit', 0)}/{a.get('institutions_total', 12)} 家国外专业投行，"
+            f"共 {a.get('n', 0)} 篇研报（利好 {a.get('pos', 0)} / 利空 {a.get('neg', 0)} / "
+            f"中性 {a.get('neu', 0)}，情绪均值 {a.get('mean', 0):+.2f} → **{stance}**）。",
+        ]
+    elif not has_detail:
+        lines += ["", "- 本次窗口内未采集到新增国外投行研报标题（不补造数据）。"]
+    return "\n".join(lines)
+
+
+def render_market_brief_rule(topic: str, feed_pack: FeedPack,
+                             fw_pack=None, hk_pack=None, *,
+                             columns_enabled: bool = True,
+                             has_foreign_detail: bool = False) -> str:
+    """rule 降级全市场简报：严格遵循 ① 研报 AI 风险点提示 → ② 国外研报 → ③ 其他内容。"""
+    risk_md = render_brief_risk_rule(feed_pack, fw_pack=fw_pack, hk_pack=hk_pack)
+    foreign_md = render_brief_foreign_rule(
+        fw_pack, columns_enabled=columns_enabled, has_detail=has_foreign_detail
+    )
+    other_md = "## 📊 全市场快讯与机构动态\n\n" + render_feed_rule(topic, feed_pack)
+    return "\n\n".join([risk_md, foreign_md, other_md])
+
+
+DEFAULT_BOFA_BB_DATA: dict = {
+    "current": 7.1,
+    "previous": 7.2,
+    "signal": "Neutral",
+    "signal_cn": "中性",
+    "components": [
+        {"name": "Hedge Fund Positioning", "cn": "对冲基金仓位",
+         "percentile": 64, "sentiment": "Neutral", "sentiment_cn": "中性"},
+        {"name": "Equity Flow", "cn": "股票资金流向",
+         "percentile": 89, "sentiment": "V Bullish", "sentiment_cn": "极度看多"},
+        {"name": "Bond Flow", "cn": "债券资金流向",
+         "percentile": 62, "sentiment": "Neutral", "sentiment_cn": "中性"},
+        {"name": "Credit Market Technicals", "cn": "信贷市场技术面",
+         "percentile": 55, "sentiment": "Neutral", "sentiment_cn": "中性"},
+        {"name": "Global Stock Index Breadth", "cn": "全球股指广度",
+         "percentile": 21, "sentiment": "Bearish", "sentiment_cn": "看空"},
+        {"name": "FMS Positioning", "cn": "基金经理调查仓位",
+         "percentile": 100, "sentiment": "V Bullish", "sentiment_cn": "极度看多"},
+    ],
+}
+
+
+def load_bofa_bb_data() -> dict:
+    """读取美银牛熊指标（BofA Bull & Bear Indicator）最新快照；支持 BOFA_BB_JSON 环境变量覆盖。"""
+    raw = env("BOFA_BB_JSON")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict) and "current" in parsed:
+                merged = dict(DEFAULT_BOFA_BB_DATA)
+                merged.update(parsed)
+                return merged
+        except Exception:  # noqa: BLE001
+            pass
+    return DEFAULT_BOFA_BB_DATA
+
+
+def render_bofa_bb_char_table(data: dict | None = None) -> str:
+    """用纯等宽 ASCII 字符绘制 BofA Bull & Bear Indicator 仪表盘（Chart 21）与六大分项表（Table 6）。"""
+    d = data or load_bofa_bb_data()
+    val = max(0.0, min(10.0, float(d.get("current", 7.1))))
+    prev = d.get("previous", 7.2)
+    prev_f = float(prev) if prev is not None else val
+    signal = str(
+        d.get("signal")
+        or ("Buy" if val < 2.0 else ("Sell" if val > 8.0 else "Neutral"))
+    )
+
+    width = 62  # 框内宽度 62 → 整行固定 66 列，纯 ASCII 字符跨端严格等宽对齐
+
+    def row(txt: str = "") -> str:
+        t = txt[:width]
+        return "| " + t.ljust(width) + " |"
+
+    sep = "+-" + "-" * width + "-+"
+    tsep = "+------------------------------+------+------------+-------------+"
+
+    def trow(c1: str, c2: str, c3: str, c4: str) -> str:
+        return f"| {c1[:28]:<28} | {c2[:4]:>4} | {c3[:10]:<10} | {c4[:11]:<11} |"
+
+    if abs(val - prev_f) < 1e-6:
+        chg_note = f"Unchanged at {val:.1f}"
+    elif val < prev_f:
+        chg_note = f"Down to {val:.1f} from {prev_f:.1f}"
+    else:
+        chg_note = f"Up to {val:.1f} from {prev_f:.1f}"
+
+    bar_len = 40  # 0..10 对应 40 格（每 1.0 单位 = 4 格）
+    pos = max(0, min(bar_len, int(round((val / 10.0) * bar_len))))
+
+    tick_buf = [" "] * (bar_len + 2)
+    for t in (0, 2, 4, 6, 8, 10):
+        idx = t * 4 - (1 if t == 10 else 0)
+        for k, ch in enumerate(str(t)):
+            tick_buf[idx + k] = ch
+    tick_str = "".join(tick_buf).rstrip()
+
+    track = []
+    for i in range(bar_len + 1):
+        if i == pos:
+            track.append("^")
+        elif i % 4 == 0:
+            track.append("|")
+        elif i < 8 or i > 32:
+            track.append("=")
+        else:
+            track.append("-")
+    track_str = "".join(track)
+
+    ptr_label = f"[{val:.1f} LATEST]"
+    ptr_buf = [" "] * width
+    p_start = max(0, min(width - len(ptr_label), 9 + pos - len(ptr_label) // 2))
+    for k, ch in enumerate(ptr_label):
+        ptr_buf[p_start + k] = ch
+
+    if val >= 6.0:
+        d1 = f"               .---~~~~---.       {val:.1f} LATEST"
+        d2 = "            .-~   4    6   ~-.     /"
+        d3 = "          /    2         /  8  \\  v"
+        d4 = " [0.4]   |  BUY         /  SELL |   Historical Lows:"
+    elif val <= 4.0:
+        d1 = f"  {val:.1f} LATEST   .---~~~~---."
+        d2 = "     \\      .-~   4    6   ~-."
+        d3 = "      v   /    2  \\         8  \\"
+        d4 = " [0.4]   |  BUY    \\       SELL |   Historical Lows:"
+    else:
+        d1 = f"               .---~~~~---.  [{val:.1f} LATEST]"
+        d2 = "            .-~   4  | 6   ~-."
+        d3 = "          /    2     |      8  \\"
+        d4 = " [0.4]   |  BUY      |     SELL |   Historical Lows:"
+
+    lines = [
+        sep,
+        row("BofA Bull & Bear Indicator (B&B)"),
+        row(f"Our BofA Bull & Bear Indicator is at {val:.1f}... signal is {signal}."),
+        sep,
+        row(f"Chart 21: BofA Bull & Bear at {val:.1f}  ({chg_note})"),
+        row(""),
+        row(d1),
+        row(d2),
+        row(d3),
+        row(d4),
+        row(" Mar'23  | 0          o      10 |   * 0.4 (Mar'23)"),
+        row(" [0.0]   +----------------------+   * 0.0 (Mar'20 / Oct'22)"),
+        row(""),
+        row("         " + tick_str),
+        row("         " + track_str),
+        row("".join(ptr_buf)),
+        row("         [BUY:0-2 |       NEUTRAL: 2-8      |SELL:8-10]"),
+        row("         Ext.Bear                            Ext.Bull"),
+        tsep,
+        row("Table 6: BofA B&B Indicator (Current Component Readings)"),
+        tsep,
+        trow("Components", "Pctl", "Reading", "Sentiment"),
+        tsep,
+    ]
+
+    for comp in d.get("components", []):
+        pct = max(0, min(100, int(round(float(comp.get("percentile", 0))))))
+        filled = max(0, min(10, int(round(pct / 10.0))))
+        meter = "#" * filled + "." * (10 - filled)
+        sent = str(comp.get("sentiment", "Neutral"))
+        tag_map = {
+            "V Bullish": "V Bullish +",
+            "Bullish": "Bullish   +",
+            "Bearish": "Bearish   -",
+            "V Bearish": "V Bearish -",
+        }
+        lines.append(trow(str(comp.get("name", "")), f"{pct}%", meter, tag_map.get(sent, sent)))
+
+    lines += [
+        tsep,
+        row("Source: BofA Global Investment Strategy, Bloomberg, EPFR,"),
+        row("        Lipper FMI, Global FMS, CFTC, MSCI | BofA RESEARCH"),
+        sep,
+    ]
+    return "\n".join(lines)
+
+
+def render_bofa_bb_char_block(data: dict | None = None) -> str:
+    """生成置顶在报告开头的「美银牛熊指标（BofA Bull & Bear Indicator）」字符表区块。"""
+    d = data or load_bofa_bb_data()
+    val = float(d.get("current", 7.1))
+    prev = d.get("previous", 7.2)
+    prev_f = float(prev) if prev is not None else val
+    signal = str(
+        d.get("signal")
+        or ("Buy" if val < 2.0 else ("Sell" if val > 8.0 else "Neutral"))
+    )
+    signal_cn = str(
+        d.get("signal_cn")
+        or ("反向买入" if val < 2.0 else ("反向卖出" if val > 8.0 else "中性"))
+    )
+    delta = val - prev_f
+    if abs(delta) < 1e-6:
+        delta_cn = f"与前值 {prev_f:.1f} 持平"
+    elif delta < 0:
+        delta_cn = f"较前值 {prev_f:.1f} 回落 {abs(delta):.1f}"
+    else:
+        delta_cn = f"较前值 {prev_f:.1f} 上升 {delta:.1f}"
+
+    cn_parts = []
+    for comp in d.get("components", []):
+        cn = comp.get("cn") or comp.get("name") or ""
+        pct = int(round(float(comp.get("percentile", 0))))
+        scn = comp.get("sentiment_cn") or comp.get("sentiment") or ""
+        if "看多" in scn or "看空" in scn:
+            cn_parts.append(f"{cn} `{pct}%`（**{scn}**）")
+        else:
+            cn_parts.append(f"{cn} `{pct}%`（{scn}）")
+
+    char_box = render_bofa_bb_char_table(d)
+    lines = [
+        "## 🧭 美银牛熊指标 · BofA Bull & Bear Indicator (B&B)",
+        "",
+        "```text",
+        char_box,
+        "```",
+        "",
+        f"- **指标读数**：最新 **{val:.1f}**（{delta_cn}）→ 当前信号 **{signal}（{signal_cn}）**"
+        "（`<2.0` 极度看空为反向买入区，`>8.0` 极度看多为反向卖出区）",
+    ]
+    if cn_parts:
+        lines.append("- **六大分项构成（Table 6）**：" + "｜".join(cn_parts))
+    return "\n".join(lines)
+
+
+def arrange_brief_layout(body_md: str, *,
+                         foreign_detail_md: str = "",
+                         fallback_risk_md: str = "",
+                         fallback_foreign_md: str = "",
+                         other_blocks: list[str] | None = None,
+                         leading_md: str | None = None,
+                         include_bofa_bb: bool = True,
+                         freshness_md: str = "") -> str:
+    """强制简报章节顺序：
+    ⓪ 开头：BofA Bull & Bear Indicator 字符仪表盘与分项构成表
+    ① 研报 AI 风险点提示
+    ② 国外研报（含国外机构一周研报明细）
+    ③ 其他内容（全市场快讯与机构动态、香港券商新闻与数据、金融情绪复核等）
+    ④ 最后：数据新鲜度 · 本次运行指纹
+    """
+    lead_secs: list[str] = []
+    risk_secs: list[str] = []
+    foreign_secs: list[str] = []
+    other_secs: list[str] = []
+    fresh_secs: list[str] = []
+
+    for raw_sec in split_md_sections(body_md or ""):
+        sec = _strip_edge_rules(raw_sec)
+        if not sec:
+            continue
+        first_line = sec.splitlines()[0].strip()
+        is_heading = bool(re.match(r"^#{1,3}\s+\S", first_line))
+        if is_heading and "数据新鲜度" in first_line:
+            fresh_secs.append(sec)
+        elif is_heading and ("BofA Bull & Bear" in first_line or "美银牛熊指标" in first_line):
+            lead_secs.append(sec)
+        elif is_heading and "风险" in first_line:
+            risk_secs.append(sec)
+        elif is_heading and any(k in first_line for k in ("国外", "外资", "海外投行", "国际投行")):
+            foreign_secs.append(sec)
+        else:
+            other_secs.append(sec)
+
+    if leading_md is not None:
+        part0 = _strip_edge_rules(leading_md)
+    elif lead_secs:
+        part0 = "\n\n".join(lead_secs)
+    elif include_bofa_bb:
+        part0 = _strip_edge_rules(render_bofa_bb_char_block())
+    else:
+        part0 = ""
+
+    part1 = "\n\n".join(risk_secs) if risk_secs else _strip_edge_rules(fallback_risk_md)
+    if not part1:
+        part1 = "## ⚠️ 研报 AI 风险点提示\n\n- 当前窗口暂无额外风险点提示。"
+
+    clean_fk = _strip_edge_rules(foreign_detail_md)
+    base_foreign = "\n\n".join(foreign_secs) if foreign_secs else _strip_edge_rules(fallback_foreign_md)
+    if not base_foreign:
+        base_foreign = "## 🏛 国外研报"
+    if clean_fk and clean_fk not in base_foreign:
+        part2 = f"{base_foreign}\n\n{clean_fk}"
+    elif base_foreign == "## 🏛 国外研报":
+        part2 = f"{base_foreign}\n\n- 本次窗口内暂无新增国外投行研报明细。"
+    else:
+        part2 = base_foreign
+
+    tail_items: list[str] = []
+    if other_secs:
+        tail_items.append("\n\n".join(other_secs))
+    for blk in (other_blocks or []):
+        cleaned = _strip_edge_rules(blk)
+        if not cleaned:
+            continue
+        first_ln = cleaned.splitlines()[0].strip()
+        if "数据新鲜度" in first_ln:
+            fresh_secs.append(cleaned)
+        else:
+            tail_items.append(cleaned)
+    part3 = "\n\n---\n\n".join(tail_items)
+
+    clean_fresh = _strip_edge_rules(freshness_md)
+    if clean_fresh:
+        fresh_secs.append(clean_fresh)
+    # 去重保序，「数据新鲜度 · 本次运行指纹」固定排在全文最后
+    dedup_fresh: list[str] = []
+    for fs in fresh_secs:
+        if fs not in dedup_fresh:
+            dedup_fresh.append(fs)
+    part_last = "\n\n---\n\n".join(dedup_fresh)
+
+    return "\n\n---\n\n".join(p for p in (part0, part1, part2, part3, part_last) if p)
+
+
 # ---------- 量价情绪动量：Yahoo 小时线（近48h 涨跌 + 量比）----------
 
 def compute_price_momentum(closes: list[float], vols: list[float],
@@ -1572,28 +2008,38 @@ def build_messages(template: str, topic: str, context: str,
             + RULES_TAIL)
     elif template == "feedscan":
         if is_market_wide_topic(topic):
-            # 每日简报并入的栏目（数据段存在时才要求 AI 写对应小节）
-            columns_note = ""
+            # 每日简报并入的栏目：严格固定顺序 ① 研报 AI 风险点提示 → ② 国外研报 → ③ 其他内容
+            hk_note = ""
             if "【香港券商新闻与数据" in context:
-                columns_note += (
+                hk_note = (
                     "- **香港券商动态**：一小节概括香港券商最新研报/新闻标题要点，"
                     "附上市券商股价表现（只引用下方同名数据段给定内容）\n")
             if "【国外机构一周研报" in context:
-                columns_note += (
-                    "- **国外投行研报**：一小节逐家列出国外投行最新研报标题与"
-                    "评级要点（只引用下方同名数据段给定内容并注明机构）\n")
+                foreign_guide = (
+                    "- 逐家列出国外投行最新研报标题与评级/方向要点，归纳跨机构共识与分歧"
+                    "（只引用上下文「国外机构一周研报」数据段给定内容并注明机构，不得编造）\n")
+            else:
+                foreign_guide = (
+                    "- 若上下文存在外资投行观点则提炼注明机构；若无独立国外研报数据段，"
+                    "如实写明「本次窗口内暂无新增国外投行研报命中，详见下方状态说明」，不得臆造\n")
             user = (
-                "基于以下最近 24h 全市场快讯数据（已本地预打标，含各源情绪指标），"
+                "基于以下研报与最近 24h 全市场快讯数据（已本地预打标，含各源情绪指标），"
                 "输出一份不针对单只股票的全市场市场情报简报。\n\n"
-                f"{context}\n\n严格按此格式输出：\n\n"
-                "## 全市场快讯情绪扫描\n\n"
+                f"{context}\n\n"
+                "严格按以下固定先后顺序输出（顺序不可调换：① 研报 AI 风险点提示放开头 → "
+                "② 国外研报放第二 → ③ 其他内容放后面）：\n\n"
+                "## ⚠️ 研报 AI 风险点提示\n\n"
+                "- 放在最开头：结合研报与市场快讯，集中提炼 3~5 条当前最需警惕的市场级风险、"
+                "机构评级下调/观点分歧预警，或接下来需要验证的风险触发信号（每条注明依据来源）\n\n"
+                "## 🏛 国外研报\n\n"
+                + foreign_guide + "\n"
+                "## 📊 全市场快讯与机构动态\n\n"
                 "| 来源 | 样本 | 利好/利空/中性 | 情绪分 | 市场信号 |\n"
                 "|---|---|---|---|---|\n（逐源罗列，不可用源注明）\n\n"
                 "- **市场情绪温度**：偏暖/偏冷一句话 + 综合情绪锚点%\n"
                 "- **三大市场主线**：跨源归纳，每条标注支撑来源与可信度\n"
                 "- **板块映射**：受益/承压板块各 2~3 个；没有足够证据时标明未知\n"
-                "- **风险与观察**：2~3 条市场级风险或接下来需要验证的信号\n"
-                + columns_note
+                + hk_note
                 + "- **数据缺口**：注明失效/无返回来源，不补造数据\n\n"
                 "重要约束：只做宏观、市场与板块层面的概览；禁止输出任何单只股票的研报、"
                 "评级、目标价、买卖点或个股投资建议。快讯即使提到公司，也只可作为新闻事实，"
@@ -1603,8 +2049,13 @@ def build_messages(template: str, topic: str, context: str,
             user = (
                 f"基于以下 48h 内全市场快讯数据（已本地预打标，含各源情绪指标），"
                 f"输出一份全市场情绪扫描报告，并评估对关注标的「{topic}」的传导。\n\n"
-                f"{context}\n\n严格按此格式输出：\n\n"
-                "## 全市场快讯情绪扫描\n\n"
+                f"{context}\n\n"
+                "严格按以下固定先后顺序输出（① 研报 AI 风险点提示放开头 → ② 国外研报放第二 → ③ 其他内容放后面）：\n\n"
+                "## ⚠️ 研报 AI 风险点提示\n\n"
+                f"- 提炼 2~3 条与宏观/行业及「{topic}」相关的核心风险点与失效触发信号\n\n"
+                "## 🏛 国外研报\n\n"
+                "- 若上下文含国外投行研报观点则逐条注明机构提炼；若无独立数据段则注明「本次无单独国外研报数据段」\n\n"
+                "## 📊 全市场快讯情绪扫描\n\n"
                 "| 来源 | 样本 | 利好/利空/中性 | 情绪分 | 多头概率 |\n"
                 "|---|---|---|---|---|\n（逐源罗列，不可用源注明）\n\n"
                 "- **全市场情绪温度**：偏暖/偏冷一句话 + 综合多头概率%"
@@ -1769,15 +2220,17 @@ def build_messages(template: str, topic: str, context: str,
         user = (
             f"基于以下国外专业投资机构一周研报数据（高盛/摩根士丹利/摩根大通/美银/花旗/瑞银/德银/巴克莱/汇丰/晨星/伯恩斯坦/野村等，窗口 168h），"
             f"为主题「{topic}」撰写一份国外机构一周研报栏目。\n\n{ctx}\n\n"
-            "严格按此格式输出：\n\n"
-            "## 国外专业投资机构一周研报\n\n"
+            "严格按以下固定先后顺序输出（① 研报 AI 风险点提示放开头 → ② 国外研报放第二 → ③ 其他内容放后面）：\n\n"
+            "## ⚠️ 研报 AI 风险点提示\n\n"
+            "- 提炼 3~5 条外资研报揭示的核心风险点、评级下调预警、机构分歧或需观察信号（注明机构与触发条件）\n\n"
+            "## 🏛 国外专业投资机构一周研报\n\n"
             "| 机构 | 核心观点 | 评级/方向 | 目标价/关键判断 | 成立概率% | 依据来源 |\n"
             "|---|---|---|---|---|---|\n"
             "（逐机构 1-2 行，至少覆盖 5 家，含高盛/大摩/小摩/美银/瑞银，缺失标明“本周无更新”）\n\n"
             "- **全球策略主线**：归纳 3 条跨机构共识或分歧，每条标注支撑机构数与可信度\n"
+            "- **评级调整汇总**：本周上调/下调各 2-3 条，含标的、旧/新评级、理由一句\n\n"
+            "## 📊 板块映射与下周关注\n\n"
             "- **板块与标的映射**：利多板块/利空板块各 2-3 个，关联标的举例\n"
-            "- **评级调整汇总**：本周上调/下调各 2-3 条，含标的、旧/新评级、理由一句\n"
-            "- **风险与分歧**：2-3 条机构间分歧或需观察信号\n"
             "- **下周关注**：2-3 个催化剂（财报/议息/数据）\n\n"
             "要求：所有观点标注来源机构与时间；不展示链接；缺失写“未获取到”；概率取整数%；简体中文 Markdown。"
             + RULES_TAIL)
@@ -2055,12 +2508,17 @@ def _ai_endpoint(provider: str) -> tuple[str, str, str]:
 def split_md_sections(md: str) -> list[str]:
     """把 Markdown 正文按一级/二级标题切成「部分」；### 及更小标题归属上一节。
 
-    首个标题之前的导语文本也算独立一部分。返回不含空节。
+    首个标题之前的导语文本也算独立一部分。围栏代码块内的 `#` 不切节。返回不含空节。
     """
     parts: list[str] = []
     cur: list[str] = []
+    in_fence = False
     for line in md.splitlines():
-        if re.match(r"^#{1,2}\s+\S", line) and cur:
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            cur.append(line)
+            continue
+        if not in_fence and re.match(r"^#{1,2}\s+\S", line) and cur:
             parts.append("\n".join(cur).strip())
             cur = [line]
         else:
@@ -4901,14 +5359,14 @@ def selftest() -> int:
                                "财联社 热门", "雪球 热门股票", "格隆汇 事件",
                                "法布财经 快讯", "法布财经 头条"))
                 + "\n\n**金十数据（50/50）**\n" + "\n".join(feed_item for _ in range(50)))
-    brief_html = themed_html("章鱼 AI 全景分析", brief_md, theme_name="dos")
+    brief_html = themed_html(BRAND_TITLE, brief_md, theme_name="dos")
     check("市场简报正文超过单篇上限（必须分篇才不会被微信静默丢弃）",
           _utf8_len(brief_html) > SPLIT_LIMIT)
-    brief_parts = split_md_for_html("章鱼 AI 全景分析", brief_md, "dos",
-                                       limit=SPLIT_LIMIT)
+    brief_parts = split_md_for_html(BRAND_TITLE, brief_md, "dos",
+                                    limit=SPLIT_LIMIT)
     check("市场简报自动分篇且每篇都在安全线内",
           brief_parts is not None and 2 <= len(brief_parts) <= WECHAT_HTML_MAX_PARTS
-          and all(_utf8_len(themed_html("章鱼 AI 全景分析", p, theme_name="dos",
+          and all(_utf8_len(themed_html(BRAND_TITLE, p, theme_name="dos",
                                         continuation=(i > 0), part_no=i + 1,
                                         part_count=len(brief_parts)))
                   <= SPLIT_LIMIT
@@ -4922,7 +5380,7 @@ def selftest() -> int:
           and any("快讯原始明细（续上篇）" in p for p in brief_parts))
     check("DOS 分篇标题栏标出 PART n/m（读者知道这是续篇）",
           brief_parts is not None and len(brief_parts) > 1
-          and "PART 2/" in themed_html("章鱼 AI 全景分析", brief_parts[1],
+          and "PART 2/" in themed_html(BRAND_TITLE, brief_parts[1],
                                        theme_name="dos", continuation=True,
                                        part_no=2, part_count=len(brief_parts)))
 
@@ -5255,6 +5713,63 @@ def selftest() -> int:
             "feedscan", "全球市场早报", "【24h 全市场快讯数据】")[1]["content"]
         check("无栏目数据时简报提示词不强求券商小节",
               "**香港券商动态**" not in _brief_plain)
+        check("每日简报提示词固定顺序：风险点提示→国外研报→其他内容",
+              _brief_prompt.index("## ⚠️ 研报 AI 风险点提示")
+              < _brief_prompt.index("## 🏛 国外研报")
+              < _brief_prompt.index("## 📊 全市场快讯与机构动态"))
+        import foreign_institution_weekly as fiw
+        _fw_demo = fiw.demo_pack()
+        _fw_prompt = build_messages(
+            "foreign_weekly", "全球市场",
+            fiw.foreign_weekly_context(_fw_demo))[1]["content"]
+        check("国外研报提示词固定顺序：风险点提示→国外研报→其他内容",
+              _fw_prompt.index("## ⚠️ 研报 AI 风险点提示")
+              < _fw_prompt.index("## 🏛 国外专业投资机构一周研报")
+              < _fw_prompt.index("## 📊 板块映射与下周关注"))
+        _rule_brief = render_market_brief_rule(
+            "全球市场早报", fp, fw_pack=_fw_demo, hk_pack=hb.demo_pack(),
+            columns_enabled=True, has_foreign_detail=True)
+        check("rule 简报固定顺序：风险点提示→国外研报→其他内容",
+              _rule_brief.index("## ⚠️ 研报 AI 风险点提示")
+              < _rule_brief.index("## 🏛 国外研报")
+              < _rule_brief.index("## 📊 全市场快讯与机构动态"))
+        _bofa_tbl = render_bofa_bb_char_table()
+        _bofa_blk = render_bofa_bb_char_block()
+        from source_names import find_brand_leaks as _fbl
+        check("BofA 牛熊指标字符表严格等宽且纯 ASCII",
+              len({len(ln) for ln in _bofa_tbl.splitlines()}) == 1
+              and all(ord(ch) < 128 for ch in _bofa_tbl))
+        check("BofA 牛熊指标字符表完整还原读数与六大分项",
+              all(x in _bofa_tbl for x in (
+                  "7.1", "Down to 7.1 from 7.2", "Neutral",
+                  "Hedge Fund Positioning", "64%",
+                  "Equity Flow", "89%", "V Bullish",
+                  "Bond Flow", "62%",
+                  "Credit Market Technicals", "55%",
+                  "Global Stock Index Breadth", "21%", "Bearish",
+                  "FMS Positioning", "100%",
+              )) and _fbl(_bofa_blk) == [])
+        _scrambled = (
+            "### 🧭 数据新鲜度 · 本次运行指纹\n- 指纹 `deadbeef1234`\n\n"
+            "## 📊 全市场快讯与机构动态\n\n- 主线A\n\n"
+            "## 🏛 国外研报\n\n- 高盛维持买入\n\n"
+            "## ⚠️ 研报 AI 风险点提示\n\n- 警惕通胀反弹"
+        )
+        _arranged = arrange_brief_layout(
+            _scrambled,
+            foreign_detail_md=fiw.render_foreign_weekly_appendix(_fw_demo, max_per_inst=1),
+            other_blocks=[
+                hb.render_hk_brokers_appendix(hb.demo_pack(), max_per_firm=1),
+            ],
+        )
+        check("重排器强制顺序：BofA字符表(开头)→风险点提示→国外研报(+明细)→其他内容→数据新鲜度(最后)",
+              _arranged.index("BofA Bull & Bear Indicator (B&B)")
+              < _arranged.index("## ⚠️ 研报 AI 风险点提示")
+              < _arranged.index("## 🏛 国外研报")
+              < _arranged.index("国外机构一周研报明细")
+              < _arranged.index("## 📊 全市场快讯与机构动态")
+              < _arranged.index("香港券商新闻与数据")
+              < _arranged.index("数据新鲜度 · 本次运行指纹"))
     except Exception as e:  # noqa: BLE001
         check(f"香港券商栏目集成异常: {e}", False)
 
@@ -5392,6 +5907,12 @@ def selftest() -> int:
           and brand.rstrip().endswith(brand_footer_md().rstrip()))
     check("品牌头尾可渲染为 HTML", BRAND_TITLE in md_to_html(brand)
           and BRAND_AUTHOR in md_to_html(brand))
+    check("定时推送默认标题=章鱼 AI.券商研报 007",
+          BRAND_TITLE == "章鱼 AI.券商研报 007"
+          and SCHEDULED_PUSH_TITLE == "章鱼 AI.券商研报 007")
+    check("支持 --title 自定义推送标题",
+          parse_args(["--title", "章鱼 AI.券商研报 007"]).title == "章鱼 AI.券商研报 007"
+          and "自定义标题" in add_branding("正文", title="自定义标题"))
 
     log("⑤ 内容指纹与跨运行状态")
     from types import SimpleNamespace as NS
@@ -5512,6 +6033,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--template", default="brief", choices=TEMPLATES,
                    help="分析框架：" + "/".join(TEMPLATES))
     p.add_argument("--topic", default="", help="分析标的/主题（或环境变量 TOPIC）")
+    p.add_argument("--title", default="",
+                   help="自定义推送标题（或环境变量 PUSH_TITLE；默认 章鱼 AI.券商研报 007）")
     p.add_argument("--context", default="",
                    help="背景信息/复盘细节（或环境变量 CONTEXT）")
     p.add_argument("--hk-code", default="", dest="hk_code",
@@ -5536,6 +6059,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--no-chart", action="store_true", dest="no_chart",
                    help="关闭字符模拟图（默认：给 --hk-code 时自动生成字符模拟走势图并"
                         "嵌入推送正文顶部，纯字符无需上传）")
+    p.add_argument("--no-bofa-bb", action="store_true", dest="no_bofa_bb",
+                   help="关闭置顶的 BofA Bull & Bear Indicator 字符表（也可用环境变量 BOFA_BB_BLOCK=0 关闭）")
     p.add_argument("--no-ai-compress", action="store_false", dest="ai_compress",
                    default=True,
                    help="关闭 AI 分节压缩（默认开启：正文按章节逐节调用 AI 简化+压缩，"
@@ -5613,8 +6138,13 @@ def main(argv: list[str]) -> int:
 
     # ---------- 模块②b：feedscan 模板采集 13 源全市场快讯（含 DeepSeek 搜索）----------
     feed_pack = None
-    # 每日全市场简报并入的栏目附录（香港券商 + 国外投行研报），在下方填充；
-    # 最终附录重算处需再次拼接，先在这里初始化保证作用域内始终有值
+    # 每日全市场简报并入的栏目：国外投行研报单独拎出以便固定排在第二部分，
+    # 香港券商及其他内容排在第三部分；先在这里初始化保证作用域内始终有值
+    brief_columns_enabled = False
+    brief_foreign_pack = None
+    brief_hk_pack = None
+    brief_foreign_appendix_md = ""
+    brief_hk_appendix_md = ""
     brief_columns_appendix_md = ""
     if template == "feedscan":
         log(f"\n📡 正在采集 13 源全市场快讯（{args.hours}h 窗口，含 DeepSeek 搜索）…")
@@ -5645,41 +6175,15 @@ def main(argv: list[str]) -> int:
             f"{feed_pack.agg['综合多头概率锚点']}%")
         # 快讯仅供分析使用，不在报告中展示原始明细。
         appendix_md = ""
-        user_context = feed_context(topic, feed_pack)
+        base_feed_ctx = feed_context(topic, feed_pack)
+        user_context = base_feed_ctx
 
         # 每日全市场简报并入栏目（仅全市场主题；环境变量 BRIEF_COLUMNS=0
-        # 可关闭）：🏦 香港券商新闻与数据（96h）+ 🏛 国外投行研报标题（72h）。
+        # 可关闭）：先采集 🏛 国外投行研报标题（72h），再采集 🏦 香港券商新闻与数据（96h）。
         # 采集失败/无命中只如实记缺口，绝不用演示数据填充正式推送。
-        if is_market_wide_topic(topic) and env("BRIEF_COLUMNS") != "0":
+        brief_columns_enabled = is_market_wide_topic(topic) and env("BRIEF_COLUMNS") != "0"
+        if brief_columns_enabled:
             _col_ctx_parts: list[str] = []
-            _col_apx_parts: list[str] = []
-            try:
-                from hk_brokers import (collect_hk_brokers,
-                                        hk_brokers_context,
-                                        render_hk_brokers_appendix)
-                log("\n🏦 简报栏目：香港券商新闻与数据（96h，12 家）…")
-                _hk_pack = collect_hk_brokers(
-                    topic="港股市场", hours=96,
-                    timeout=min(args.timeout, 12))
-                log(f"  → {_hk_pack.agg.get('n', 0)} 条 / "
-                    f"{_hk_pack.agg.get('firms_hit', 0)}/12 家，"
-                    f"股价快照 {_hk_pack.agg.get('quotes_hit', 0)} 家")
-                for _e in _hk_pack.errors[:4]:
-                    log(f"  ⚠️  {_e}")
-                if _hk_pack.agg.get("n", 0):
-                    _col_ctx_parts.append(
-                        hk_brokers_context(_hk_pack, max_per_firm=2))
-                    _col_apx_parts.append(render_hk_brokers_appendix(
-                        _hk_pack, max_per_firm=2))
-                else:
-                    _col_apx_parts.append(
-                        "---\n🏦 **香港券商新闻与数据**\n\n- ⚠️ 本次未采集到（"
-                        + "；".join(_hk_pack.errors[:3]) + "）")
-            except Exception as ex:  # noqa: BLE001 —— 栏目失败不拖累简报
-                log(f"  ⚠️ 香港券商栏目采集失败：{ex}")
-                _col_apx_parts.append(
-                    "---\n🏦 **香港券商新闻与数据**\n\n"
-                    f"- ⚠️ 采集失败：{str(ex)[:120]}")
             try:
                 from foreign_institution_weekly import (
                     collect_foreign_weekly, foreign_weekly_context,
@@ -5688,30 +6192,57 @@ def main(argv: list[str]) -> int:
                 _fw_pack = collect_foreign_weekly(
                     topic="全球市场", hours=72,
                     timeout=min(args.timeout, 12))
+                brief_foreign_pack = _fw_pack
                 log(f"  → {_fw_pack.agg.get('n', 0)} 篇 / "
                     f"{_fw_pack.agg.get('institutions_hit', 0)}/12 家")
                 for _e in _fw_pack.errors[:4]:
                     log(f"  ⚠️  {_e}")
                 if _fw_pack.agg.get("n", 0):
                     _col_ctx_parts.append(foreign_weekly_context(_fw_pack))
-                    _col_apx_parts.append(render_foreign_weekly_appendix(
-                        _fw_pack, max_per_inst=2))
+                    brief_foreign_appendix_md = render_foreign_weekly_appendix(
+                        _fw_pack, max_per_inst=2)
                 else:
-                    _col_apx_parts.append(
+                    brief_foreign_appendix_md = (
                         "---\n🏛 **国外投行研报标题**\n\n- ⚠️ 本次未采集到（"
-                        + "；".join(_fw_pack.errors[:3]) + "）")
+                        + "；".join(sanitize_error(x) for x in _fw_pack.errors[:3]) + "）")
             except Exception as ex:  # noqa: BLE001
                 log(f"  ⚠️ 国外投行研报栏目采集失败：{ex}")
-                _col_apx_parts.append(
+                brief_foreign_appendix_md = (
                     "---\n🏛 **国外投行研报标题**\n\n"
-                    f"- ⚠️ 采集失败：{str(ex)[:120]}")
+                    f"- ⚠️ 采集失败：{sanitize_error(ex)[:120]}")
+            try:
+                from hk_brokers import (collect_hk_brokers,
+                                        hk_brokers_context,
+                                        render_hk_brokers_appendix)
+                log("\n🏦 简报栏目：香港券商新闻与数据（96h，12 家）…")
+                _hk_pack = collect_hk_brokers(
+                    topic="港股市场", hours=96,
+                    timeout=min(args.timeout, 12))
+                brief_hk_pack = _hk_pack
+                log(f"  → {_hk_pack.agg.get('n', 0)} 条 / "
+                    f"{_hk_pack.agg.get('firms_hit', 0)}/12 家，"
+                    f"股价快照 {_hk_pack.agg.get('quotes_hit', 0)} 家")
+                for _e in _hk_pack.errors[:4]:
+                    log(f"  ⚠️  {_e}")
+                if _hk_pack.agg.get("n", 0):
+                    _col_ctx_parts.append(
+                        hk_brokers_context(_hk_pack, max_per_firm=2))
+                    brief_hk_appendix_md = render_hk_brokers_appendix(
+                        _hk_pack, max_per_firm=2)
+                else:
+                    brief_hk_appendix_md = (
+                        "---\n🏦 **香港券商新闻与数据**\n\n- ⚠️ 本次未采集到（"
+                        + "；".join(sanitize_error(x) for x in _hk_pack.errors[:3]) + "）")
+            except Exception as ex:  # noqa: BLE001 —— 栏目失败不拖累简报
+                log(f"  ⚠️ 香港券商栏目采集失败：{ex}")
+                brief_hk_appendix_md = (
+                    "---\n🏦 **香港券商新闻与数据**\n\n"
+                    f"- ⚠️ 采集失败：{sanitize_error(ex)[:120]}")
+            # 把国外投行研报与香港券商上下文放在快讯前面，方便 AI 先写风险点提示与国外研报
             if _col_ctx_parts:
-                user_context = (f"{user_context}\n\n"
-                                + "\n\n".join(_col_ctx_parts))
-            if _col_apx_parts:
-                brief_columns_appendix_md = "\n\n".join(_col_apx_parts)
-                appendix_md = (f"{appendix_md}\n\n"
-                               f"{brief_columns_appendix_md}")
+                user_context = "\n\n".join(_col_ctx_parts + [base_feed_ctx])
+            brief_columns_appendix_md = "\n\n".join(
+                p for p in (brief_foreign_appendix_md, brief_hk_appendix_md) if p)
 
     # ---------- 模块②c：NewsNow 10源热榜聚合（知乎/抖音/微博/虎扑/AI hot/联合早报/香港01/今日头条/百度/B站） ----------
     newsnow_pack = None
@@ -5838,7 +6369,12 @@ def main(argv: list[str]) -> int:
             if template == "sentiment" and sent_pack is not None:
                 content = render_sentiment_rule(topic, code4sent, sent_pack)
             elif template == "feedscan" and feed_pack is not None:
-                content = render_feed_rule(topic, feed_pack)
+                content = render_market_brief_rule(
+                    topic, feed_pack,
+                    fw_pack=brief_foreign_pack, hk_pack=brief_hk_pack,
+                    columns_enabled=brief_columns_enabled,
+                    has_foreign_detail=bool(brief_foreign_appendix_md),
+                )
             elif template == "newsnow" and newsnow_pack is not None:
                 try:
                     from newsnow_sources import render_newsnow_rule
@@ -5872,7 +6408,12 @@ def main(argv: list[str]) -> int:
                 if template == "sentiment" and sent_pack is not None:
                     content = render_sentiment_rule(topic, code4sent, sent_pack)
                 elif template == "feedscan" and feed_pack is not None:
-                    content = render_feed_rule(topic, feed_pack)
+                    content = render_market_brief_rule(
+                        topic, feed_pack,
+                        fw_pack=brief_foreign_pack, hk_pack=brief_hk_pack,
+                        columns_enabled=brief_columns_enabled,
+                        has_foreign_detail=bool(brief_foreign_appendix_md),
+                    )
                 elif template == "newsnow" and newsnow_pack is not None:
                     try:
                         from newsnow_sources import render_newsnow_rule
@@ -5931,7 +6472,8 @@ def main(argv: list[str]) -> int:
     skey = run_state_key(template, topic, hk_code_raw)
     prev = st["runs"].get(skey) or {}
 
-    item_keys = gather_item_keys(sent_pack, feed_pack, newsnow_pack, locals().get("foreign_weekly_pack"))
+    active_fw_pack = locals().get("foreign_weekly_pack") or brief_foreign_pack
+    item_keys = gather_item_keys(sent_pack, feed_pack, newsnow_pack, active_fw_pack)
     new_items = diff_item_keys(item_keys, prev.get("item_keys", {})) \
         if prev else {}
     new_key_set = {k for keys in new_items.values() for k in keys}
@@ -5966,8 +6508,8 @@ def main(argv: list[str]) -> int:
         anchor_parts.append(
             f"热榜样本 {newsnow_pack.agg.get('total', 0)} 条"
             f"/{newsnow_pack.agg.get('sources_ok', 0)}/{newsnow_pack.agg.get('sources_total', 10)} 源")
-    # 国外机构一周研报（新增）
-    fw_pack = locals().get("foreign_weekly_pack")
+    # 国外机构一周研报（独立栏目或简报内嵌栏目）
+    fw_pack = active_fw_pack
     if fw_pack is not None:
         extra_points["foreign_n"] = fw_pack.agg.get("n")
         extra_points["foreign_hit"] = fw_pack.agg.get("institutions_hit")
@@ -6011,19 +6553,23 @@ def main(argv: list[str]) -> int:
             log(f"  ⚠️ 差异化重试失败，沿用原内容：{e}")
 
     # 附录：把「上次推送后新增」的样本标注 🆕
+    foreign_detail_md = ""
+    other_appendix_blocks: list[str] = []
     if template in ("sentiment", "analysis") and sent_pack is not None:
         appendix_md = render_sentiment_appendix(sent_pack,
                                                 new_keys=new_key_set)
     elif template == "feedscan" and feed_pack is not None:
-        # 隐藏快讯原始明细，保留香港券商、国外投行等简报栏目附录。
-        appendix_md = "\n\n".join(filter(None, [
-            render_feed_financial_sentiment_push(feed_pack),
-            brief_columns_appendix_md,
-        ]))
+        # 国外投行研报明细并入第二部分「国外研报」，其余（香港券商、金融情绪复核等）归入第三部分「其他内容」
+        foreign_detail_md = brief_foreign_appendix_md
+        other_appendix_blocks = [
+            b for b in (brief_hk_appendix_md, render_feed_financial_sentiment_push(feed_pack)) if b
+        ]
+        appendix_md = "\n\n---\n\n".join(other_appendix_blocks)
     elif template == "foreign_weekly" and locals().get("foreign_weekly_pack") is not None:
         try:
             from foreign_institution_weekly import render_foreign_weekly_appendix
-            appendix_md = render_foreign_weekly_appendix(locals().get("foreign_weekly_pack"))
+            foreign_detail_md = render_foreign_weekly_appendix(locals().get("foreign_weekly_pack"))
+            appendix_md = ""
         except Exception:
             pass
 
@@ -6035,25 +6581,46 @@ def main(argv: list[str]) -> int:
         new_items=new_items, first_run=not prev,
         anchor_line=anchor_line, state_enabled=state_enabled)
 
-    if template == "analysis" and provider != "rule" \
-            and not validate_analysis(content):
-        content += "\n\n> ⚠️ 本次模型输出未通过框架格式校验，以上为原始返回，仅供参考。"
-    if data_md:
-        content += "\n\n" + data_md
-    if appendix_md:
-        content += "\n\n" + appendix_md
-
-    # 字符模拟图：紧跟新鲜度看板、位于正文顶部；任何失败自动降级为空串（兼容 --no-kline）
+    # 字符模拟图：任何失败自动降级为空串（兼容 --no-kline）
     no_chart = bool(getattr(args, "no_chart", False) or getattr(args, "no_kline", False))
     chart_md = make_chart_block(hk_code_raw, quotes, no_chart)
 
-    # 新鲜度看板固定在品牌头之后、AI 正文之前；
-    # 所有模板/通道/dry-run 走同一个组装函数：作者和研究提示固定在推送正文最后一行。
-    content = add_branding(freshness_md + "\n\n---\n\n" + chart_md
-                           + content.rstrip())
+    # 推送标题保持品牌名（支持 --title / PUSH_TITLE 覆盖）：不展示渠道名、主题、标的或时间。
+    title = (getattr(args, "title", "") or env("PUSH_TITLE") or SCHEDULED_PUSH_TITLE).strip()
 
-    # 推送标题保持品牌名：不展示渠道名、主题、标的或时间。
-    title = BRAND_TITLE
+    show_bofa_bb = not (getattr(args, "no_bofa_bb", False) or env("BOFA_BB_BLOCK") == "0")
+    bofa_bb_md = render_bofa_bb_char_block() if show_bofa_bb else ""
+
+    if template in ("feedscan", "foreign_weekly"):
+        # 严格固定顺序：⓪ BofA 牛熊指标字符表（开头）→ ① 研报 AI 风险点提示 →
+        # ② 国外研报 → ③ 其他内容 → ④ 数据新鲜度·本次运行指纹（最后）
+        ordered_body = arrange_brief_layout(
+            content,
+            foreign_detail_md=foreign_detail_md,
+            fallback_risk_md=render_brief_risk_rule(
+                feed_pack, fw_pack=active_fw_pack, hk_pack=brief_hk_pack),
+            fallback_foreign_md=render_brief_foreign_rule(
+                active_fw_pack,
+                columns_enabled=(brief_columns_enabled if template == "feedscan" else True),
+                has_detail=bool(foreign_detail_md),
+            ),
+            other_blocks=[chart_md, data_md, *(other_appendix_blocks or [appendix_md])],
+            leading_md=bofa_bb_md,
+            include_bofa_bb=show_bofa_bb,
+            freshness_md=freshness_md,
+        )
+        content = add_branding(ordered_body, title=title)
+    else:
+        if template == "analysis" and provider != "rule" \
+                and not validate_analysis(content):
+            content += "\n\n> ⚠️ 本次模型输出未通过框架格式校验，以上为原始返回，仅供参考。"
+        body_parts = [
+            _strip_edge_rules(p)
+            for p in (bofa_bb_md, chart_md, content, data_md, appendix_md, freshness_md)
+            if _strip_edge_rules(p)
+        ]
+        # 所有模板/通道/dry-run 走同一个组装函数：数据新鲜度固定排在正文最后，作者和研究提示固定在尾注最后一行。
+        content = add_branding("\n\n---\n\n".join(body_parts), title=title)
     log("\n📝 生成的内容：")
     log("-" * 60)
     log(f"# {title}\n\n{content}")

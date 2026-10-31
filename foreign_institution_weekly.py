@@ -488,7 +488,28 @@ def collect_foreign_weekly(topic: str = "全球市场", hours: int = DEFAULT_HOU
 def render_foreign_weekly_rule(topic: str, pack: ForeignWeeklyPack) -> str:
     from source_names import generalize_broker_source, sanitize_error
     a = pack.agg
-    lines = [
+    risk_lines = ["## ⚠️ 研报 AI 风险点提示", ""]
+    risk_hits = []
+    for inst_key in [it["key"] for it in INSTITUTIONS]:
+        for it in (pack.reports.get(inst_key) or []):
+            hay = f"{it.title} {it.rating} {it.summary}"
+            if (it.sentiment == "利空" or it.score < 0
+                    or re.search(r"下调|减持|卖出|中性|谨慎|风险|承压|回调|underweight|sell|neutral|downgrade", hay, re.I)):
+                tag = f"（{it.rating}）" if it.rating else ""
+                risk_hits.append(f"- **[国外投行 · {it.institution}]** {it.title}{tag}")
+    if risk_hits:
+        risk_lines.extend(risk_hits[:5])
+    elif a.get("n", 0) > 0:
+        risk_lines.append("- **窗口期风险扫描**：已命中外资研报暂以偏多/维持为主，仍需警惕高估值板块拥挤度、利率路径反复及机构预期修正风险。")
+    else:
+        risk_lines.append("- **数据盲区提示**：当前窗口暂无命中外资研报样本，需注意信息缺口期间的海外宏观与跨市场波动风险。")
+    risk_lines.append(
+        f"- **情绪分布观察**：外资研报利空 {a.get('neg', 0)} / 中性 {a.get('neu', 0)} / 利好 {a.get('pos', 0)}（共 {a.get('n', 0)} 篇），研报观点不构成单边确定性指引。"
+    )
+
+    table_lines = [
+        "## 🏛 国外研报",
+        "",
         f"**{topic} · 国外专业投资机构一周研报（{pack.hours}h，{a.get('institutions_hit',0)}/{a.get('institutions_total',len(INSTITUTIONS))} 机构命中）**（本地聚合）",
         "",
         "| 机构 | 评级/方向 | 标题 | 来源 | 时间 |",
@@ -503,13 +524,14 @@ def render_foreign_weekly_rule(topic: str, pack: ForeignWeeklyPack) -> str:
             title = title.replace("|", "/")
             rating = it.rating or it.sentiment
             ts = it.published.strftime("%m-%d") if it.published else "本周"
-            lines.append(f"| {it.institution} | {rating} | {title} | {generalize_broker_source(it.source)} | {ts} |")
-    if len(lines) <= 4:
-        lines.append("| — | — | 一周内未命中（见数据缺口） | — | — |")
+            table_lines.append(f"| {it.institution} | {rating} | {title} | {generalize_broker_source(it.source)} | {ts} |")
+    if len(table_lines) <= 6:
+        table_lines.append("| — | — | 一周内未命中（见数据缺口） | — | — |")
 
-    # 聚合
+    # 聚合与其他补充说明
     stance = "偏多" if a.get("mean",0) > 0.15 else ("偏空" if a.get("mean",0) < -0.15 else "中性")
-    lines += [
+    other_lines = [
+        "## 📊 机构情绪汇总与补充说明",
         "",
         f"- **汇总**：{a.get('n',0)} 篇研报 / {a.get('institutions_hit',0)} 机构，利好 {a.get('pos',0)} / 利空 {a.get('neg',0)} / 中性 {a.get('neu',0)}，均值 {a.get('mean',0):+.2f} → **{stance}**",
         f"- **覆盖机构**：{', '.join([INSTITUTION_MAP[k]['name'] for k in pack.reports.keys()]) or '无'}",
@@ -517,11 +539,11 @@ def render_foreign_weekly_rule(topic: str, pack: ForeignWeeklyPack) -> str:
         "> ⚠️ 非投资建议，仅供参考，研报原文以机构官方披露为准。",
     ]
     if pack.errors:
-        lines.append("")
-        lines.append("**数据缺口**")
+        other_lines.append("")
+        other_lines.append("**数据缺口**")
         for e in pack.errors[:8]:
-            lines.append(f"- ⚠️ {sanitize_error(e)}")
-    return "\n".join(lines)
+            other_lines.append(f"- ⚠️ {sanitize_error(e)}")
+    return "\n\n".join(["\n".join(risk_lines), "\n".join(table_lines), "\n".join(other_lines)])
 
 def foreign_weekly_context(pack: ForeignWeeklyPack) -> str:
     from source_names import generalize_broker_source, sanitize_error
@@ -581,6 +603,8 @@ def selftest() -> int:
 
     md = render_foreign_weekly_rule("全球市场", pack)
     check("渲染含表格与机构", "| 机构 |" in md and "Goldman" in md and "一周研报" in md)
+    check("渲染顺序：风险点提示→国外研报→其他内容",
+          md.index("研报 AI 风险点提示") < md.index("## 🏛 国外研报") < md.index("## 📊 机构情绪汇总与补充说明"))
 
     ctx = foreign_weekly_context(pack)
     check("上下文含机构与情绪", "Goldman" in ctx and "利好" in ctx)
