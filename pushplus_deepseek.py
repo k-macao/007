@@ -1229,7 +1229,7 @@ def feed_context(topic: str, pack: FeedPack) -> str:
 def render_feed_rule(topic: str, pack: FeedPack) -> str:
     from source_names import sanitize_error
     clean_errs = [sanitize_error(e) for e in pack.errors]
-    lines = [f"**{topic} · 全市场快讯情绪扫描**（rule 本地计算，未经 AI 综合）",
+    lines = [f"**{topic} · 全市场快讯情绪盘点**",
              "", "| 来源 | 样本 | 利好/利空/中性 | 情绪分 | 代表快讯 |",
              "|---|---|---|---|---|"]
     for spec in FEED_SPECS:
@@ -1256,12 +1256,18 @@ def render_feed_rule(topic: str, pack: FeedPack) -> str:
     a = pack.agg
     anchor = a.get("综合多头概率锚点", 50)
     stance = "偏多" if anchor >= 55 else ("偏空" if anchor <= 45 else "中性")
-    lines += ["",
-              f"- **全市场情绪温度**：均值 {a['mean']:+.2f}"
-              f"（{a['pos']}利好/{a['neg']}利空/{a['neu']}中性，"
-              f"共 {a['n']} 条 / {a['n_sources']}/13 源）",
-              f"- **综合判断**：{stance}，综合多头概率 ≈ **{anchor}%**",
-              "", "> ⚠️ 非投资建议，仅供参考。"]
+    lines += [
+        "",
+        f"把这 {a['n_sources']}/13 路信源抓回来的 {a['n']} 条快讯摊在桌面上看，"
+        f"眼下的全市场**情绪温度**大致落在 {a['mean']:+.2f}"
+        f"（利好 {a['pos']} 条、利空 {a['neg']} 条、中性 {a['neu']} 条），"
+        f"多头胜率锚点停在 **{anchor}%** 附近，盘面底色处在**{stance}**区间。"
+        "说起来，快讯刷屏的速度永远比真金白银调仓快半拍。在多数情况下，"
+        "与其顺着热闹标题追风，不如盯着分歧找预期差——当消息面一阵风吹过，"
+        "哪些方向真有买盘持续承接，哪些只是盘中虚晃一枪？这或许才是接下来更值得琢磨的地方。",
+        "",
+        "> ⚠️ 非投资建议，仅供参考。",
+    ]
     return "\n".join(lines)
 
 
@@ -1363,6 +1369,11 @@ def render_brief_risk_rule(feed_pack: FeedPack | None,
                 break
 
     if risk_hits:
+        lines.append(
+            "先把丑话说在前面。盘面上热闹归热闹，但下面这几处暗礁眼下还真不能假装看不见——"
+            "尤其是机构开始收紧口径的地方，往往藏着资金最真实的顾虑："
+        )
+        lines.append("")
         lines.extend(risk_hits[:5])
     else:
         total_n = (
@@ -1372,21 +1383,25 @@ def render_brief_risk_rule(feed_pack: FeedPack | None,
         )
         if total_n > 0:
             lines.append(
-                "- **窗口期风险扫描**：当前命中研报与快讯暂未出现集中评级下调标题，"
-                "仍需警惕高热度板块拥挤度、宏观利率汇率预期摆动及机构分歧等市场级风险。"
+                "说起来，这轮窗口期里各大机构倒是没集中亮出降级红牌。但盘面越是顺风顺水，"
+                "我们反而越得留个心眼：热门赛道的筹码是不是已经挤在窄门里了？"
+                "一旦海外利率路径或汇率预期轻轻晃一下，拥挤交易松动起来往往不打招呼。"
             )
         else:
             lines.append(
-                "- **数据盲区提示**：当前窗口有效快讯/研报样本不足，"
-                "需警惕休市或接口异常期间的信息盲区与跨市场波动风险。"
+                "坦白讲，眼下这个时间窗抓到的有效快讯和研报样本偏少——或许正赶上休市空窗，"
+                "又或许是部分公开信源暂时卡壳。越是这种像在薄雾里开车的时刻，"
+                "越别急着重仓押单边，等跨市场的暗流看清了再落子也不迟。"
             )
 
     if feed_pack is not None and feed_pack.agg:
         a = feed_pack.agg
+        lines.append("")
         lines.append(
-            f"- **全市场利空与情绪压力**：利空样本 {a.get('neg', 0)}/{a.get('n', 0)} 条"
-            f"（情绪均值 {a.get('mean', 0.0):+.2f}，多头概率锚点 ≈ {a.get('综合多头概率锚点', 50)}%），"
-            "单一信号需结合多源交叉验证。"
+            f"翻看这批快讯底稿，利空消息占了 {a.get('neg', 0)}/{a.get('n', 0)} 条"
+            f"（情绪均值 {a.get('mean', 0.0):+.2f}，多头胜率锚点大概在 {a.get('综合多头概率锚点', 50)}% 上下）。"
+            "实际上，在多数情况下，单靠一两条刺耳标题未必能砸出深坑；"
+            "真正要追问一句的是：这些零散的逆风信号，接下来会不会和资金面形成共振？"
         )
     return "\n".join(lines)
 
@@ -1397,19 +1412,25 @@ def render_brief_foreign_rule(fw_pack=None, *,
     """无 AI Key / rule 降级时，生成排在第二部分的「国外研报」摘要头。"""
     lines = ["## 🏛 国外研报"]
     if not columns_enabled:
-        lines += ["", "- 当前已关闭简报机构栏目（`BRIEF_COLUMNS=0`），本次未采集国外投行研报。"]
+        lines += ["", "当前简报已关闭机构栏目开关（`BRIEF_COLUMNS=0`），这轮暂未拉取外资投行研报。"]
     elif fw_pack is not None and getattr(fw_pack, "agg", {}).get("n", 0) > 0:
         a = fw_pack.agg
         stance = "偏多" if a.get("mean", 0) > 0.15 else ("偏空" if a.get("mean", 0) < -0.15 else "中性")
         lines += [
             "",
-            f"- **机构覆盖与情绪汇总**：近 {fw_pack.hours}h 命中 "
-            f"{a.get('institutions_hit', 0)}/{a.get('institutions_total', 12)} 家国外专业投行，"
-            f"共 {a.get('n', 0)} 篇研报（利好 {a.get('pos', 0)} / 利空 {a.get('neg', 0)} / "
-            f"中性 {a.get('neu', 0)}，情绪均值 {a.get('mean', 0):+.2f} → **{stance}**）。",
+            f"把目光转向海外大行的研究案头。过去 {fw_pack.hours} 小时里，"
+            f"{a.get('institutions_hit', 0)}/{a.get('institutions_total', 12)} 家外资投行"
+            f"端出了 {a.get('n', 0)} 份研报（利好 {a.get('pos', 0)} 篇、利空 {a.get('neg', 0)} 篇、"
+            f"中性 {a.get('neu', 0)} 篇，情绪均值 {a.get('mean', 0):+.2f}，整体天平处在**{stance}**一侧）。"
+            "说起来，外资席位向来习惯嘴上留三分余地、手头看真金白银——"
+            "这几份报告摆在一起，他们到底在加码哪条主线，又在对谁悄悄撤梯子？不妨顺着下面的明细逐家拆解：",
         ]
     elif not has_detail:
-        lines += ["", "- 本次窗口内未采集到新增国外投行研报标题（不补造数据）。"]
+        lines += [
+            "",
+            "实际上，这个时间窗里外资大行还没放出新的公开研报标题。"
+            "与其硬凑观点，不如先留白，等下一轮评级动作落定再看。",
+        ]
     return "\n".join(lines)
 
 
@@ -1975,6 +1996,49 @@ def render_sentiment_rule(topic: str, code: str | None, pack: SentPack) -> str:
 
 RULES_TAIL = "末尾固定一行「⚠️ 非投资建议，仅供参考」。"
 
+# ================================================================ “去AI化”投资顾问文风与润色规范
+
+DEAI_ADVISOR_STYLE_GUIDE = (
+    "【写作身份与“去AI化”核心原则（全程严格执行）】\n"
+    "你是一个投资顾问。请你作为一位经验丰富的投研分析师来撰写和打磨全文，遵循以下核心原则：\n"
+    "1. 使用自然、流畅、有节奏感的中文，模仿资深专栏作者或一线财经记者手笔。"
+    "避免使用“首先、其次、最后”、“总之”、“综上所述”、“应该注意的是”等机械式逻辑连接词。"
+    "将被动态转为主动语态，避免长句堆砌，讲究长短句交错。\n"
+    "2. 增加人性化细节：在合适位置加入适度的个人投研见解、盘面场景化描述或具象比喻（避免老套比喻）。"
+    "打破模板结构，避免生硬的“总分总”或刻板并列式，调整段落衔接，让逻辑自然过渡。\n"
+    "3. 加入适度冗余：在不影响核心信息与数据准确性的前提下，可自然插入少量口语化插入语"
+    "（如“说起来”、“实际上”）、限定词（如“在多数情况下”、“或许”）或轻微的语气词，"
+    "使文本更像真人分析师的思考推演过程。\n"
+    "4. 避免完美主义：适度收敛绝对化口吻，让论点看起来更像经验派分析师的个人判断而非绝对真理。"
+    "替换掉“值得注意的是”、“毫无疑问”、“一般来说”等AI高频词汇；使用更具体、生动的动词和名词，减少空洞抽象词汇。\n"
+    "5. 可随机将部分陈述句改为反问句或设问句，增强与读者的互动感。"
+    "直接输出成稿全文，无需解释修改了哪里。"
+)
+
+DEAI_POLISH_SYSTEM = (
+    "你是一个投资顾问，也是一位经验丰富的投研分析师。"
+    "你的任务是对给定投研文章进行“去AI化”深度润色。"
+    "请直接输出润色后的简体中文 Markdown 全文，无需解释修改了哪里，不要寒暄，不要在最外层套代码围栏。"
+    "标注信息来源时保持原文给定的泛化来源名（如财经电报源、宏观快讯源、实时快讯主源、公开新闻检索等），不得点名具体第三方网站或 App。"
+)
+
+DEAI_POLISH_PROMPT = (
+    "你是一个投资顾问。请你作为一位经验丰富的投研分析师，协助我将以下文章进行“去AI化”润色。"
+    "请遵循以下核心原则：使用自然、流畅有节奏感的中文。模仿资深作者或记者手笔。"
+    "避免使用“首先、其次、最后”、“总之”、“综上所述”、“应该注意的是”等机械式逻辑连接词。"
+    "将被动态转为主动语态，避免长句堆砌、长短句交错。\n\n"
+    "增加人性化细节：在合适位置加入适度的个人见解、场景化描述或具象比喻（避免老套比喻）。"
+    "打破模板结构，如果原文结构是明显的“总分总”或“并列式”，请调整段落衔接，让逻辑自然过渡。"
+    "加入适度冗余：在不影响核心信息的前提下，可插入少量口语化插入语（如“说起来”、“实际上”）、"
+    "限定词（如“在多数情况下”、“或许”）或轻微的语气词，使文本更像真人思考过程。"
+    "避免完美主义：可轻微调整论点，使其看起来更像个人观点而非绝对真理。"
+    "替换掉“值得注意的是”、“毫无疑问”、“一般来说”等AI高频词汇。使用更具体、生动的动词和名词，减少抽象词汇。\n\n"
+    "可随机将部分陈述句改为反问句或设问句，增强互动感。"
+    "（结构与事实底线：保留原文已有的 # / ## 章节标题行、Markdown 数据表格及全部真实数值/百分比/机构名，不编造数据；"
+    "占位符如 @@CODE_FENCE_0@@ 原样保留。）"
+    "请直接输出润色后的全文，无需解释修改了哪里。\n\n"
+)
+
 
 def _ctx_line(context: str) -> str:
     if context:
@@ -2024,23 +2088,25 @@ def build_messages(template: str, topic: str, context: str,
                     "如实写明「本次窗口内暂无新增国外投行研报命中，详见下方状态说明」，不得臆造\n")
             user = (
                 "基于以下研报与最近 24h 全市场快讯数据（已本地预打标，含各源情绪指标），"
-                "输出一份不针对单只股票的全市场市场情报简报。\n\n"
+                "以资深投资顾问与经验丰富的投研分析师笔触，输出一份不针对单只股票的全市场市场情报简报。\n\n"
                 f"{context}\n\n"
-                "严格按以下固定先后顺序输出（顺序不可调换：① 研报 AI 风险点提示放开头 → "
-                "② 国外研报放第二 → ③ 其他内容放后面）：\n\n"
+                "请严格保留以下三个章节标题及先后顺序（顺序不可调换：① 研报 AI 风险点提示放开头 → "
+                "② 国外研报放第二 → ③ 其他内容放后面；各节内部打破生硬“总分总”与机械并列罗列，"
+                "用自然流畅、长短句交错的投顾手笔衔接，穿插适度见解、具象场景与设问/反问）：\n\n"
                 "## ⚠️ 研报 AI 风险点提示\n\n"
-                "- 放在最开头：结合研报与市场快讯，集中提炼 3~5 条当前最需警惕的市场级风险、"
-                "机构评级下调/观点分歧预警，或接下来需要验证的风险触发信号（每条注明依据来源）\n\n"
+                "- 放在最开头：结合研报与市场快讯，用老练分析师提醒客户留意暗礁的口吻，"
+                "剖析 3~5 个当前最需警惕的市场级风险、机构评级下调/观点分歧预警，或接下来需要盯紧的风险触发信号（注明依据来源）\n\n"
                 "## 🏛 国外研报\n\n"
                 + foreign_guide + "\n"
                 "## 📊 全市场快讯与机构动态\n\n"
                 "| 来源 | 样本 | 利好/利空/中性 | 情绪分 | 市场信号 |\n"
                 "|---|---|---|---|---|\n（逐源罗列，不可用源注明）\n\n"
-                "- **市场情绪温度**：偏暖/偏冷一句话 + 综合情绪锚点%\n"
-                "- **三大市场主线**：跨源归纳，每条标注支撑来源与可信度\n"
-                "- **板块映射**：受益/承压板块各 2~3 个；没有足够证据时标明未知\n"
+                "表格之后请用自然连贯的段落（避免机械套话）串联讲清：\n"
+                "- **市场情绪温度**：冷暖体感 + 综合情绪锚点%\n"
+                "- **市场核心主线**：跨源盘面线索、资金博弈方向与支撑来源\n"
+                "- **板块映射**：受益与承压方向（证据不足处坦诚说明）\n"
                 + hk_note
-                + "- **数据缺口**：注明失效/无返回来源，不补造数据\n\n"
+                + "- **数据缺口**：顺带交代失效或无返回来源，不补造数据\n\n"
                 "重要约束：只做宏观、市场与板块层面的概览；禁止输出任何单只股票的研报、"
                 "评级、目标价、买卖点或个股投资建议。快讯即使提到公司，也只可作为新闻事实，"
                 "不得把正文写成个股页。不得臆造数据。"
@@ -2258,17 +2324,22 @@ def build_messages(template: str, topic: str, context: str,
         except Exception:
             pass
         if template == "brief":
-            user = (f"请围绕「{topic}」生成一份今日简报：3~5 个要点，"
-                    "每个要点一句话；结尾一句小结。\n\n" + ctx)
+            user = (
+                f"请以资深投资顾问与投研分析师手笔，围绕「{topic}」写一份今日晨会随笔简报："
+                "3~5 个核心观察自然衔接推进，长短句交错，可带一两句设问或盘面感触，避免生硬罗列。\n\n"
+                + ctx + RULES_TAIL)
         else:
             user = (
-                f"请围绕「{topic}」按模板「{template}」生成一份研究备忘录。\n\n"
+                f"请以经验丰富的投研分析师手笔，围绕「{topic}」按模板「{template}」撰写一份去AI化的深度研究备忘录。\n\n"
                 + ctx + RULES_TAIL)
-    system = ("你是一位严谨的跨市场分析师，深耕港股/A股市场，熟悉宏观与行业政策。"
-              "输出必须是简体中文 Markdown，不要寒暄，不要使用代码块，"
-              "所有概率用整数百分比表示。"
-              "标注信息来源时一律使用上下文给定的泛化来源名（如财经电报源、宏观快讯源、"
-              "实时快讯主源、公开新闻检索、实时行情主源等），不得点名具体第三方网站或 App 名称。")
+    system = (
+        f"{DEAI_ADVISOR_STYLE_GUIDE}\n\n"
+        "【合规与格式硬约束】\n"
+        "深耕港股/A股与全球跨市场投研，输出必须是简体中文 Markdown，不要寒暄，不要使用代码块包裹整篇，"
+        "所有概率用整数百分比表示。"
+        "标注信息来源时一律使用上下文给定的泛化来源名（如财经电报源、宏观快讯源、"
+        "实时快讯主源、公开新闻检索、实时行情主源等），不得点名具体第三方网站或 App 名称。"
+    )
     return [{"role": "system", "content": system},
             {"role": "user", "content": user}]
 
@@ -2401,9 +2472,14 @@ def gen_by_rule(topic: str, template: str,
                 f"- 运行时间：{now}（北京时间）",
                 "> ⚠️ 非投资建议，仅供参考。"])
     return "\n".join([
-        f"**{topic} · {TEMPLATE_TITLES.get(template, '简报')}**", "",
-        f"- 运行时间：{now}（北京时间）", "",
-        "> ⚠️ 非投资建议，仅供参考。"])
+        f"**{topic} · {TEMPLATE_TITLES.get(template, '简报')}**",
+        "",
+        f"说起来，眼下围绕「{topic}」的盘面信号还在陆续沉淀（记录时间：{now} 北京时间）。"
+        "在多数情况下，与其在消息真空期勉强下定论，不如先盯紧资金流向与核心估值安全垫——"
+        "等真正的催化落到台面上，市场自然会给出更清晰的答案。",
+        "",
+        "> ⚠️ 非投资建议，仅供参考。",
+    ])
 
 
 def chat_completion(url: str, api_key: str, model: str, messages: list[dict],
@@ -2432,18 +2508,179 @@ def chat_completion(url: str, api_key: str, model: str, messages: list[dict],
 COMPRESS_MIN_PART_CHARS = 160   # 短于该字符数的分节不值得一次 AI 调用
 COMPRESS_MAX_PARTS = 12         # 单次最多压缩的分节数（防 API 调用失控）
 
-AI_COMPRESS_SYSTEM = "你是投研推送的精简编辑，任务是把给出的每一节内容简化、压缩。"
+AI_COMPRESS_SYSTEM = (
+    "你是资深投资顾问与投研专栏主编，任务是在精简压缩每一节内容的同时，"
+    "保持自然、流畅、长短句交错的“去AI化”真人手笔。"
+)
 
 AI_COMPRESS_RULES = (
-    "请大幅简化并压缩下面这一节投研内容，严格遵守：\n"
+    "请精炼下面这一节投研内容，严格遵守：\n"
     "1) 第一行标题必须原样保留（# / ## 标题不得改动、不得删除）；\n"
     "2) 保留全部关键结论与数字：方向判断、概率%、价格、估值、目标位、样本数；\n"
-    "3) 因子/象限等表格必须逐行保留（行名与百分比不得删），只精简文字描述；\n"
-    "4) 删除铺垫、重复、客套与冗余修辞，合并同类要点；\n"
+    "3) 因子/象限等表格必须逐行保留（行名与百分比不得删），只精炼文字描述；\n"
+    "4) 禁用“首先、其次、最后”、“总之”、“综上所述”、“应该注意的是”、“值得注意的是”、“毫无疑问”、“一般来说”等机械AI套话，"
+    "采用主动语态、生动具体的动词与长短句交错节奏，保留适度投顾口吻与设问；\n"
     "5) 不得新增事实，不得改变任何结论方向；\n"
-    "6) 直接输出压缩后的这一节（Markdown），不要任何前言、解释或代码围栏；\n"
-    "7) 目标：压缩到原字数的 40%~60%。"
+    "6) 直接输出精炼后的这一节（Markdown），不要任何前言、解释或代码围栏；\n"
+    "7) 目标：压缩到原字数的 40%~65%。"
 )
+
+DEAI_POLISH_MIN_CHARS = 120
+
+_DEAI_CLICHE_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(^|[。！？；\n]\s*)(?:首先|第一)[，,、]\s*"), r"\1先看眼下最紧要的一环，"),
+    (re.compile(r"(^|[。！？；\n]\s*)(?:其次|第二)[，,、]\s*"), r"\1再往下深挖一层，"),
+    (re.compile(r"(^|[。！？；\n]\s*)(?:再次|第三)[，,、]\s*"), r"\1顺着这条线索看，"),
+    (re.compile(r"(^|[。！？；\n]\s*)最后[，,、]\s*"), r"\1落到盘面应对上，"),
+    (re.compile(r"(?:综上所述|总而言之)[，,、]?\s*"), "把这些线索拼在一起看，"),
+    (re.compile(r"(^|[。！？；\n]\s*)总之[，,、]\s*"), r"\1说白了，"),
+    (re.compile(r"(?:应该注意的是|需要注意的是)[，,、]?\s*"), "这里得留个心眼，"),
+    (re.compile(r"值得注意的是[，,、]?\s*"), "有意思的是，"),
+    (re.compile(r"毫无疑问[，,、]?\s*"), "坦白讲，"),
+    (re.compile(r"一般来说[，,、]?\s*"), "在多数情况下，"),
+    (re.compile(r"(?:不难发现|显而易见)[，,、]?\s*"), "翻开盘面就能看到，"),
+)
+
+
+def ai_deai_polish_enabled() -> bool:
+    """“去AI化”投顾润色总开关：默认开启；AI_DEAI_POLISH=0/false/off/no 关闭。"""
+    raw = (env("AI_DEAI_POLISH") or "").strip().lower()
+    if raw in ("0", "false", "off", "no"):
+        return False
+    return True
+
+
+def deai_scrub_cliches(md: str) -> str:
+    """离线兜底词句去AI化：跳过围栏代码块与表头分隔线，替换机械连接词与AI高频套话。"""
+    if not md:
+        return md
+    out_lines: list[str] = []
+    in_fence = False
+    for line in md.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            out_lines.append(line)
+            continue
+        if in_fence or not stripped or re.match(r"^#{1,6}\s+", stripped):
+            out_lines.append(line)
+            continue
+        if stripped.startswith("|") and re.fullmatch(r"[\s|:\-]+", stripped):
+            out_lines.append(line)
+            continue
+        new_line = line
+        for pat, repl in _DEAI_CLICHE_RULES:
+            new_line = pat.sub(repl, new_line)
+        out_lines.append(new_line)
+    return "\n".join(out_lines)
+
+
+def _mask_fenced_blocks(md: str) -> tuple[str, list[str]]:
+    """把围栏代码块替换为占位符，防止润色模型误改字符表/代码。"""
+    blocks: list[str] = []
+
+    def _sub(m: re.Match[str]) -> str:
+        idx = len(blocks)
+        blocks.append(m.group(0))
+        return f"@@CODE_FENCE_{idx}@@"
+
+    masked = re.sub(r"```[\s\S]*?```", _sub, md)
+    return masked, blocks
+
+
+def _restore_fenced_blocks(md: str, blocks: list[str]) -> str:
+    txt = md
+    for idx, blk in enumerate(blocks):
+        txt = txt.replace(f"@@CODE_FENCE_{idx}@@", blk)
+    return txt
+
+
+def _deai_clean_output(out: str, original_masked: str, blocks: list[str],
+                       *, template: str = "") -> str | None:
+    """清洗并校验去AI化润色输出；不满足结构/质量底线时返回 None 触发原稿回退。"""
+    txt = (out or "").strip()
+    if txt.startswith("```") and not original_masked.lstrip().startswith("@@CODE_FENCE_"):
+        txt = re.sub(r"^```[a-zA-Z]*\s*\n?", "", txt)
+        txt = re.sub(r"\n?```\s*$", "", txt).strip()
+    # 剥离模型偶发违背指令附带的开场白/尾注说明
+    txt = re.sub(
+        r"^(?:好的|没问题|当然|以下是|这是)[^\n]{0,45}(?:润色|修改|版本|全文)[^\n]*[：:]\s*\n+",
+        "",
+        txt,
+    ).strip()
+    txt = re.sub(
+        r"\n+(?:---\s*\n+)?(?:修改说明|润色说明|说明)[：:][\s\S]*$",
+        "",
+        txt,
+    ).strip()
+    if not txt or len(txt) < max(40, int(len(original_masked) * 0.35)):
+        return None
+    # 若原稿含二级章节标题，润色稿不得把二级标题全部抹平
+    orig_h2 = re.findall(r"(?m)^##\s+.+$", original_masked)
+    if orig_h2 and not re.search(r"(?m)^##\s+\S", txt):
+        return None
+    # 若存在代码围栏占位符，必须全部在输出中保留
+    for idx in range(len(blocks)):
+        if f"@@CODE_FENCE_{idx}@@" not in txt:
+            return None
+    restored = _restore_fenced_blocks(txt, blocks)
+    restored = deai_scrub_cliches(restored)
+    try:
+        from source_names import generalize_markdown_sources
+        restored = generalize_markdown_sources(restored)
+    except Exception:  # noqa: BLE001
+        pass
+    if template == "analysis":
+        orig_full = _restore_fenced_blocks(original_masked, blocks)
+        if validate_analysis(orig_full) and not validate_analysis(restored):
+            return None
+    return restored
+
+
+def ai_deai_polish_md(md: str, *, provider: str, template: str = "",
+                      timeout: int = 30) -> tuple[str, str]:
+    """以资深投资顾问与投研分析师口吻对正文执行“去AI化”润色。
+
+    - 开关关闭（AI_DEAI_POLISH=0 或 --no-deai-polish）：原样返回；
+    - 无可用 AI Key 或短文本：执行确定性去AI化词句清洗（deai_scrub_cliches）；
+    - 有可用 AI Key：调用大模型按 DEAI_POLISH_PROMPT 全文润色，异常或丢结构自动回退。
+    """
+    if not md or not md.strip():
+        return md, ""
+    if not ai_deai_polish_enabled():
+        return md, ""
+    scrubbed = deai_scrub_cliches(md)
+    if provider == "rule":
+        return scrubbed, "rule 模式已执行本地去AI化词句润色"
+    url, model, key = _ai_endpoint(provider)
+    if not key and provider != "openai":
+        url2, model2, key2 = _ai_endpoint("openai")
+        if key2:
+            url, model, key = url2, model2, key2
+    if not key and provider == "openai":
+        url2, model2, key2 = _ai_endpoint("deepseek")
+        if key2:
+            url, model, key = url2, model2, key2
+    if not key:
+        return scrubbed, "未配置 AI Key，已执行本地去AI化词句润色"
+    if len(scrubbed.strip()) < DEAI_POLISH_MIN_CHARS:
+        return scrubbed, ""
+
+    masked, blocks = _mask_fenced_blocks(scrubbed)
+    max_toks = max(1200, min(4096, int(len(masked) * 1.6)))
+    try:
+        out = chat_completion(
+            url, key, model,
+            [{"role": "system", "content": DEAI_POLISH_SYSTEM},
+             {"role": "user", "content": DEAI_POLISH_PROMPT + masked}],
+            max_toks, timeout, temperature=0.65)
+        cleaned = _deai_clean_output(out, masked, blocks, template=template)
+        if cleaned is None:
+            return scrubbed, "去AI化润色输出未通过结构校验，沿用底稿并清洗机械套话"
+        return cleaned, f"已完成投顾“去AI化”润色（{len(md)} → {len(cleaned)} 字）"
+    except PushError as e:
+        log(f"  ⚠️ 去AI化润色调用失败，保留底稿：{e}")
+        return scrubbed, "去AI化润色接口异常，已回退底稿并清洗机械套话"
 
 
 def ai_compress_enabled() -> bool:
@@ -5036,7 +5273,7 @@ _SELFTEST_MASKED_ENVS: tuple[str, ...] = (
     "HF_TOKEN", "HUGGINGFACE_API_KEY", "HUGGINGFACEHUB_API_TOKEN",
     "HF_ENDPOINT_URL", "HF_MODEL",
     "SILICONFLOW_API_KEY", "MOONSHOT_API_KEY", "ZHIPU_API_KEY", "DASHSCOPE_API_KEY",
-    "SENTIMENT_ENGINE",
+    "SENTIMENT_ENGINE", "AI_DEAI_POLISH",
 )
 
 
@@ -5910,6 +6147,66 @@ def _selftest_impl() -> int:
         else:
             os.environ["AI_COMPRESS"] = old_env
 
+    log("③i2 去AI化投顾润色（词句清洗 + 投顾人设提示词 + 失败回退）")
+    check("去AI化提示词含投资顾问与经验丰富投研分析师设定",
+          "你是一个投资顾问" in DEAI_POLISH_PROMPT
+          and "经验丰富的投研分析师" in DEAI_POLISH_PROMPT
+          and "去AI化" in DEAI_POLISH_PROMPT
+          and "无需解释修改了哪里" in DEAI_POLISH_PROMPT)
+    check("build_messages 系统提示已注入去AI化投顾文风",
+          "你是一个投资顾问" in build_messages("feedscan", "全球市场早报", "")[0]["content"]
+          and "长短句交错" in build_messages("feedscan", "全球市场早报", "")[0]["content"])
+    raw_cliche = (
+        "## ⚠️ 研报 AI 风险点提示\n\n"
+        "首先，市场估值偏高。其次，毫无疑问利率仍有变数。最后，值得注意的是情绪偏热。"
+        "综上所述，一般来说追高需谨慎。\n\n```text\n首先，代码块内原样保留\n```"
+    )
+    scrubbed_txt = deai_scrub_cliches(raw_cliche)
+    check("离线词句清洗剥离机械连接词与AI套话",
+          all(w not in scrubbed_txt.split("```")[0]
+              for w in ("首先，", "其次，", "最后，", "综上所述", "毫无疑问", "值得注意的是", "一般来说"))
+          and "首先，代码块内原样保留" in scrubbed_txt)
+    old_dp = os.environ.get("AI_DEAI_POLISH")
+    try:
+        os.environ["AI_DEAI_POLISH"] = "0"
+        check("AI_DEAI_POLISH=0 关闭润色", ai_deai_polish_enabled() is False)
+        p_off, p_note = ai_deai_polish_md(raw_cliche, provider="deepseek")
+        check("关闭润色时原样返回", p_off == raw_cliche and p_note == "")
+        os.environ.pop("AI_DEAI_POLISH", None)
+        check("去AI化润色默认开启", ai_deai_polish_enabled() is True)
+        p_nokey, nokey_note = ai_deai_polish_md(raw_cliche, provider="deepseek")
+        check("无 Key 时执行本地词句去AI化",
+              "毫无疑问" not in p_nokey and "本地去AI化" in nokey_note)
+        real_cc_dp = chat_completion
+
+        def fake_polish_cc(*a, **k):
+            return (
+                "好的，这是为您润色后的全文：\n\n"
+                "## ⚠️ 研报 AI 风险点提示\n\n"
+                "说起来，眼下部分热门赛道的估值已经不算便宜。实际上，利率路径或许还有反复，"
+                "这时候盲目追高真的划算吗？在多数情况下，先看清筹码松动与否更稳妥。\n\n"
+                "@@CODE_FENCE_0@@\n\n"
+                "修改说明：已替换连接词并加入反问句。"
+            )
+
+        globals()["chat_completion"] = fake_polish_cc
+        try:
+            os.environ["DEEPSEEK_API_KEY"] = "sk-test"
+            p_ok, ok_note = ai_deai_polish_md(raw_cliche, provider="deepseek")
+        finally:
+            globals()["chat_completion"] = real_cc_dp
+            os.environ.pop("DEEPSEEK_API_KEY", None)
+        check("去AI化润色剥离首尾废话且保留代码块与标题",
+              p_ok.startswith("## ⚠️ 研报 AI 风险点提示")
+              and "修改说明" not in p_ok
+              and "首先，代码块内原样保留" in p_ok
+              and "已完成投顾" in ok_note)
+    finally:
+        if old_dp is None:
+            os.environ.pop("AI_DEAI_POLISH", None)
+        else:
+            os.environ["AI_DEAI_POLISH"] = old_dp
+
     log("④ 全部模板可构造")
     for t in TEMPLATES:
         try:
@@ -6085,6 +6382,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    default=True,
                    help="关闭 AI 分节压缩（默认开启：正文按章节逐节调用 AI 简化+压缩，"
                         "失败自动回退原文；也可用环境变量 AI_COMPRESS=0 关闭）")
+    p.add_argument("--no-deai-polish", action="store_false", dest="deai_polish",
+                   default=True,
+                   help="关闭投资顾问“去AI化”润色（默认开启；也可用环境变量 AI_DEAI_POLISH=0 关闭）")
     return p.parse_args(argv)
 
 
@@ -6453,6 +6753,18 @@ def main(argv: list[str]) -> int:
             timeout=args.timeout)
         if comp_note:
             log(f"  → {comp_note}")
+
+    # ---------- 模块③d：投资顾问“去AI化”润色 ----------
+    if getattr(args, "deai_polish", True):
+        if not ai_degraded and provider != "rule":
+            log("\n🖋️ 投资顾问“去AI化”润色…")
+            content, polish_note = ai_deai_polish_md(
+                content, provider=provider, template=template,
+                timeout=args.timeout)
+            if polish_note:
+                log(f"  → {polish_note}")
+        else:
+            content = deai_scrub_cliches(content)
 
     # ---------- 模块③b：内容指纹 + 与上次推送的新鲜度对比 ----------
     state_enabled = not args.no_state

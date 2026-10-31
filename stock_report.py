@@ -420,6 +420,14 @@ def run_report(raw_code: str, *, channel: str = "console",
         if comp_note:
             gen_note = f"{gen_note}；{comp_note}"
 
+    # ---- ②c 投资顾问“去AI化”润色 ----
+    if pp.ai_deai_polish_enabled():
+        report_md, polish_note = pp.ai_deai_polish_md(
+            report_md, provider=provider, template=template,
+            timeout=push_timeout)
+        if polish_note and provider != "rule":
+            gen_note = f"{gen_note}；{polish_note}"
+
     # ---- ③ 组装研报正文（行情快照 → 研报正文 → 新鲜度看板/字符图/附录由 wrap 包装）----
     targets = pp.channel_targets(channel)
     # 真实推送但所有目标通道均缺少推送 Secret 时，只生成并完整打印正文，

@@ -342,6 +342,117 @@ class PushSentimentTest(unittest.TestCase):
         self.assertEqual(len(captured), 1)
         self.assertIn('香港券商新闻与数据', captured[0][1]['content'])
 
+    def test_deai_investment_advisor_polish_and_rule_style(self):
+        import equity_research_column as erc
+        import foreign_institution_weekly as fiw
+        import hk_brokers as hb
+        import skills_hub as sh
+
+        for phrase in (
+            '你是一个投资顾问',
+            '经验丰富的投研分析师',
+            '“去AI化”润色',
+            '首先、其次、最后',
+            '说起来',
+            '实际上',
+            '在多数情况下',
+            '或许',
+            '值得注意的是',
+            '毫无疑问',
+            '一般来说',
+            '反问句或设问句',
+            '无需解释修改了哪里',
+        ):
+            self.assertIn(phrase, pp.DEAI_POLISH_PROMPT)
+
+        self.assertIn('你是一个投资顾问', pp.build_messages('feedscan', '全球市场早报', '')[0]['content'])
+        self.assertIn('你是一个投资顾问', erc.build_system_prompt('full'))
+        self.assertIn('你是一个投资顾问', sh.build_system_prompt('morning_note'))
+
+        fake_feed = pp.FeedPack(
+            hours=24,
+            items={},
+            agg={
+                'n': 0, 'pos': 0, 'neg': 0, 'neu': 0,
+                'mean': 0.0, 'n_sources': 0, '综合多头概率锚点': 50,
+            },
+        )
+        draft_md = (
+            '## ⚠️ 研报 AI 风险点提示\n\n'
+            '首先，科技股估值处于高位。其次，毫无疑问利率路径存在分歧。'
+            '综上所述，值得注意的是短期追高风险偏大，投资者需要保持警惕并控制仓位节奏。\n\n'
+            '## 🏛 国外研报\n\n'
+            '一般来说，高盛与摩根士丹利近期对科技硬件给出偏积极评级，小摩则下调新能源车预期。\n\n'
+            '## 📊 全市场快讯与机构动态\n\n'
+            '整体来看，南向资金仍在寻找高股息安全垫与业绩确定性标的。'
+        )
+        polished_md = (
+            '好的，以下是润色后的全文：\n\n'
+            '## ⚠️ 研报 AI 风险点提示\n\n'
+            '说起来，热门科技股的估值眼下已经不算便宜。实际上，市场对利率路径的算盘还在打架——'
+            '这时候闭眼追高真的划算吗？在多数情况下，先把仓位安全垫垫厚一点或许更从容。\n\n'
+            '## 🏛 国外研报\n\n'
+            '高盛和大摩还在给算力硬件递梯子，小摩却对电动车毛利率泼了一盆冷水，外资席位的分歧摆在明面上。\n\n'
+            '## 📊 全市场快讯与机构动态\n\n'
+            '南向资金一边蹲守高股息做防守，一边盯着财报真能兑现的龙头。\n\n'
+            '修改说明：已去除机械连接词并加入反问句。'
+        )
+        llm_calls = []
+
+        def fake_cc(url, key, model, messages, *args, **kwargs):
+            llm_calls.append(messages)
+            if len(llm_calls) == 1:
+                return draft_md
+            return polished_md
+
+        captured = []
+
+        def fake_post_form(url, fields, timeout=30):
+            captured.append((url, dict(fields)))
+            return 200, '{"code": 200, "msg": "ok"}'
+
+        with patch.dict(
+            'os.environ',
+            {'PUSHPLUS_TOKEN': 'tok-test', 'DEEPSEEK_API_KEY': 'sk-test', 'BRIEF_COLUMNS': '1'},
+            clear=False,
+        ), \
+             patch.object(pp, 'collect_feeds', return_value=fake_feed), \
+             patch.object(fiw, 'collect_foreign_weekly', return_value=fiw.demo_pack()), \
+             patch.object(hb, 'collect_hk_brokers', return_value=hb.demo_pack()), \
+             patch.object(pp, 'chat_completion', side_effect=fake_cc), \
+             patch.object(pp, 'http_post_form', side_effect=fake_post_form):
+            rc = pp.main([
+                '--template', 'feedscan',
+                '--topic', '全球市场早报',
+                '--channel', 'pushplus',
+                '--ai-provider', 'deepseek',
+                '--theme', 'dos',
+                '--hours', '24',
+                '--no-chart',
+                '--no-ai-compress',
+                '--no-state',
+            ])
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(llm_calls), 2)
+        self.assertIn('“去AI化”润色', llm_calls[1][1]['content'])
+        html = captured[0][1]['content']
+        self.assertIn('这时候闭眼追高真的划算吗', html)
+        self.assertNotIn('修改说明', html)
+        self.assertLess(html.index('BofA Bull &amp; Bear Indicator (B&amp;B)'), html.index('研报 AI 风险点提示'))
+        self.assertLess(html.index('研报 AI 风险点提示'), html.index('🏛 国外研报'))
+        self.assertLess(html.index('金融情绪复核'), html.index('数据新鲜度 · 本次运行指纹'))
+
+        # Verify rule-mode narratives also avoid AI clichés and use natural advisor cadence
+        rule_brief = pp.render_market_brief_rule(
+            '全球市场早报', fake_feed, fw_pack=fiw.demo_pack(), hk_pack=hb.demo_pack(),
+            columns_enabled=True, has_foreign_detail=True,
+        )
+        rule_fw = fiw.render_foreign_weekly_rule('全球市场', fiw.demo_pack())
+        rule_hk = hb.render_hk_brokers_rule('港股市场', hb.demo_pack())
+        for txt in (rule_brief, rule_fw, rule_hk):
+            for banned in ('首先，', '其次，', '最后，', '综上所述', '毫无疑问', '值得注意的是', '一般来说'):
+                self.assertNotIn(banned, txt)
+
 
 if __name__ == '__main__':
     unittest.main()
