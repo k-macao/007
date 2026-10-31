@@ -136,17 +136,23 @@ class PushSentimentTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(len(captured), 1)
         html = captured[0][1]['content']
+        idx_bofa = html.index('BofA Bull &amp; Bear Indicator (B&amp;B)')
         idx_risk = html.index('研报 AI 风险点提示')
         idx_foreign = html.index('🏛 国外研报')
         idx_foreign_detail = html.index('国外机构一周研报明细')
         idx_other_feed = html.index('全市场快讯与机构动态')
         idx_hk = html.index('香港券商新闻与数据')
-        idx_freshness = html.index('数据新鲜度')
+        idx_sentiment = html.index('金融情绪复核')
+        idx_freshness = html.index('数据新鲜度 · 本次运行指纹')
+        idx_footer = html.rindex('仅供参考，分析研究')
+        self.assertLess(idx_bofa, idx_risk)
         self.assertLess(idx_risk, idx_foreign)
         self.assertLess(idx_foreign, idx_foreign_detail)
         self.assertLess(idx_foreign_detail, idx_other_feed)
         self.assertLess(idx_other_feed, idx_hk)
-        self.assertLess(idx_hk, idx_freshness)
+        self.assertLess(idx_hk, idx_sentiment)
+        self.assertLess(idx_sentiment, idx_freshness)
+        self.assertLess(idx_freshness, idx_footer)
 
     def test_feedscan_ai_scrambles_sections_still_reordered(self):
         import foreign_institution_weekly as fiw
@@ -195,11 +201,13 @@ class PushSentimentTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(len(captured), 1)
         html = captured[0][1]['content']
+        self.assertLess(html.index('BofA Bull &amp; Bear Indicator (B&amp;B)'), html.index('研报 AI 风险点提示'))
         self.assertLess(html.index('研报 AI 风险点提示'), html.index('🏛 国外研报'))
         self.assertLess(html.index('🏛 国外研报'), html.index('国外机构一周研报明细'))
         self.assertLess(html.index('国外机构一周研报明细'), html.index('全市场快讯与机构动态'))
         self.assertLess(html.index('全市场快讯与机构动态'), html.index('香港券商新闻与数据'))
-        self.assertLess(html.index('香港券商新闻与数据'), html.index('数据新鲜度'))
+        self.assertLess(html.index('香港券商新闻与数据'), html.index('金融情绪复核'))
+        self.assertLess(html.index('金融情绪复核'), html.index('数据新鲜度 · 本次运行指纹'))
 
     def test_foreign_weekly_section_order(self):
         import foreign_institution_weekly as fiw
@@ -227,10 +235,68 @@ class PushSentimentTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(len(captured), 1)
         html = captured[0][1]['content']
+        self.assertLess(html.index('BofA Bull &amp; Bear Indicator (B&amp;B)'), html.index('研报 AI 风险点提示'))
         self.assertLess(html.index('研报 AI 风险点提示'), html.index('🏛 国外研报'))
         self.assertLess(html.index('🏛 国外研报'), html.index('国外机构一周研报明细'))
         self.assertLess(html.index('国外机构一周研报明细'), html.index('机构情绪汇总与补充说明'))
-        self.assertLess(html.index('机构情绪汇总与补充说明'), html.index('数据新鲜度'))
+        self.assertLess(html.index('机构情绪汇总与补充说明'), html.index('数据新鲜度 · 本次运行指纹'))
+
+    def test_bofa_bb_char_table_and_freshness_last_across_templates(self):
+        import stock_report as sr
+        from source_names import find_brand_leaks
+
+        tbl = pp.render_bofa_bb_char_table()
+        blk = pp.render_bofa_bb_char_block()
+        widths = {len(ln) for ln in tbl.splitlines()}
+        self.assertEqual(widths, {66})
+        self.assertTrue(all(ord(ch) < 128 for ch in tbl))
+        self.assertEqual(find_brand_leaks(blk), [])
+        for token in (
+            'Our BofA Bull & Bear Indicator is at 7.1... signal is Neutral.',
+            'Chart 21: BofA Bull & Bear at 7.1  (Down to 7.1 from 7.2)',
+            'Table 6: BofA B&B Indicator (Current Component Readings)',
+            'Hedge Fund Positioning', '64%',
+            'Equity Flow', '89%', 'V Bullish +',
+            'Bond Flow', '62%',
+            'Credit Market Technicals', '55%',
+            'Global Stock Index Breadth', '21%', 'Bearish   -',
+            'FMS Positioning', '100%',
+        ):
+            self.assertIn(token, tbl)
+
+        captured = []
+
+        def fake_post_form(url, fields, timeout=30):
+            captured.append((url, dict(fields)))
+            return 200, '{"code": 200, "msg": "ok"}'
+
+        with patch.dict('os.environ', {'PUSHPLUS_TOKEN': 'tok-test'}, clear=False), \
+             patch.object(pp, 'http_post_form', side_effect=fake_post_form):
+            rc = pp.main([
+                '--template', 'brief',
+                '--topic', '港股市场',
+                '--channel', 'pushplus',
+                '--ai-provider', 'rule',
+                '--theme', 'dos',
+                '--no-chart',
+                '--no-ai-compress',
+                '--no-state',
+            ])
+        self.assertEqual(rc, 0)
+        html = captured[0][1]['content']
+        self.assertIn('<pre', html)
+        self.assertLess(html.index('BofA Bull &amp; Bear Indicator (B&amp;B)'), html.index('港股市场'))
+        self.assertLess(html.index('港股市场'), html.index('数据新鲜度 · 本次运行指纹'))
+
+        wrapped, _meta = sr.wrap_with_latest_features(
+            '## 核心研报正文\n\n- 关键结论',
+            raw_code='09988', template='analysis', topic='HK09988 阿里巴巴',
+            hours=48, no_chart=True, quote={
+                'price': 16.8, 'name': '阿里巴巴', 'source_label': '演示',
+                'prev_close': 16.6, 'change_pct': 1.2, 'time': '2026-08-13 15:00',
+            }, sent_pack=None, persist_state=False,
+        )
+        self.assertLess(wrapped.index('核心研报正文'), wrapped.index('数据新鲜度 · 本次运行指纹'))
 
 
 if __name__ == '__main__':

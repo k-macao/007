@@ -266,11 +266,13 @@ def wrap_with_latest_features(
             appendix_md = ""
 
     chart_md = pp.make_chart_block(raw_code, quotes, no_chart)
-    # 输出页排版：新鲜度看板（元信息）→ 字符走势图 → 行情快照+正文 → 十七平台附录；
+    # 输出页排版：字符走势图 → 行情快照+正文 → 十七平台附录 → 数据新鲜度·本次运行指纹（固定放最后）；
     # 分隔线与空行统一由 tidy_report_md 去重压缩，页面更简洁
-    pieces = [freshness_md, chart_md, body_md.rstrip()]
+    pieces = [chart_md, body_md.rstrip()]
     if appendix_md:
         pieces.append(appendix_md)
+    if freshness_md:
+        pieces.append(freshness_md)
     content = pp.add_branding(tidy_report_md("\n\n".join(p for p in pieces if p)))
 
     if persist_state:
@@ -617,6 +619,7 @@ def _selftest_impl() -> int:
             "prev_close": 16.6, "change_pct": 1.2, "time": "2026-08-13 15:00",
         }, sent_pack=None, persist_state=False)
     check("包装含新鲜度看板", "数据新鲜度" in wrapped and "内容指纹" in wrapped)
+    check("新鲜度看板固定在正文最后", wrapped.index("演示正文") < wrapped.index("数据新鲜度"))
     check("包装含品牌头尾", pp.BRAND_TITLE in wrapped
           and wrapped.rstrip().endswith(
               f"**{pp.BRAND_AUTHOR} · {pp.BRAND_DISCLAIMER}**"))

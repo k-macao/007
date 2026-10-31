@@ -1426,33 +1426,259 @@ def render_market_brief_rule(topic: str, feed_pack: FeedPack,
     return "\n\n".join([risk_md, foreign_md, other_md])
 
 
+DEFAULT_BOFA_BB_DATA: dict = {
+    "current": 7.1,
+    "previous": 7.2,
+    "signal": "Neutral",
+    "signal_cn": "中性",
+    "components": [
+        {"name": "Hedge Fund Positioning", "cn": "对冲基金仓位",
+         "percentile": 64, "sentiment": "Neutral", "sentiment_cn": "中性"},
+        {"name": "Equity Flow", "cn": "股票资金流向",
+         "percentile": 89, "sentiment": "V Bullish", "sentiment_cn": "极度看多"},
+        {"name": "Bond Flow", "cn": "债券资金流向",
+         "percentile": 62, "sentiment": "Neutral", "sentiment_cn": "中性"},
+        {"name": "Credit Market Technicals", "cn": "信贷市场技术面",
+         "percentile": 55, "sentiment": "Neutral", "sentiment_cn": "中性"},
+        {"name": "Global Stock Index Breadth", "cn": "全球股指广度",
+         "percentile": 21, "sentiment": "Bearish", "sentiment_cn": "看空"},
+        {"name": "FMS Positioning", "cn": "基金经理调查仓位",
+         "percentile": 100, "sentiment": "V Bullish", "sentiment_cn": "极度看多"},
+    ],
+}
+
+
+def load_bofa_bb_data() -> dict:
+    """读取美银牛熊指标（BofA Bull & Bear Indicator）最新快照；支持 BOFA_BB_JSON 环境变量覆盖。"""
+    raw = env("BOFA_BB_JSON")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict) and "current" in parsed:
+                merged = dict(DEFAULT_BOFA_BB_DATA)
+                merged.update(parsed)
+                return merged
+        except Exception:  # noqa: BLE001
+            pass
+    return DEFAULT_BOFA_BB_DATA
+
+
+def render_bofa_bb_char_table(data: dict | None = None) -> str:
+    """用纯等宽 ASCII 字符绘制 BofA Bull & Bear Indicator 仪表盘（Chart 21）与六大分项表（Table 6）。"""
+    d = data or load_bofa_bb_data()
+    val = max(0.0, min(10.0, float(d.get("current", 7.1))))
+    prev = d.get("previous", 7.2)
+    prev_f = float(prev) if prev is not None else val
+    signal = str(
+        d.get("signal")
+        or ("Buy" if val < 2.0 else ("Sell" if val > 8.0 else "Neutral"))
+    )
+
+    width = 62  # 框内宽度 62 → 整行固定 66 列，纯 ASCII 字符跨端严格等宽对齐
+
+    def row(txt: str = "") -> str:
+        t = txt[:width]
+        return "| " + t.ljust(width) + " |"
+
+    sep = "+-" + "-" * width + "-+"
+    tsep = "+------------------------------+------+------------+-------------+"
+
+    def trow(c1: str, c2: str, c3: str, c4: str) -> str:
+        return f"| {c1[:28]:<28} | {c2[:4]:>4} | {c3[:10]:<10} | {c4[:11]:<11} |"
+
+    if abs(val - prev_f) < 1e-6:
+        chg_note = f"Unchanged at {val:.1f}"
+    elif val < prev_f:
+        chg_note = f"Down to {val:.1f} from {prev_f:.1f}"
+    else:
+        chg_note = f"Up to {val:.1f} from {prev_f:.1f}"
+
+    bar_len = 40  # 0..10 对应 40 格（每 1.0 单位 = 4 格）
+    pos = max(0, min(bar_len, int(round((val / 10.0) * bar_len))))
+
+    tick_buf = [" "] * (bar_len + 2)
+    for t in (0, 2, 4, 6, 8, 10):
+        idx = t * 4 - (1 if t == 10 else 0)
+        for k, ch in enumerate(str(t)):
+            tick_buf[idx + k] = ch
+    tick_str = "".join(tick_buf).rstrip()
+
+    track = []
+    for i in range(bar_len + 1):
+        if i == pos:
+            track.append("^")
+        elif i % 4 == 0:
+            track.append("|")
+        elif i < 8 or i > 32:
+            track.append("=")
+        else:
+            track.append("-")
+    track_str = "".join(track)
+
+    ptr_label = f"[{val:.1f} LATEST]"
+    ptr_buf = [" "] * width
+    p_start = max(0, min(width - len(ptr_label), 9 + pos - len(ptr_label) // 2))
+    for k, ch in enumerate(ptr_label):
+        ptr_buf[p_start + k] = ch
+
+    if val >= 6.0:
+        d1 = f"               .---~~~~---.       {val:.1f} LATEST"
+        d2 = "            .-~   4    6   ~-.     /"
+        d3 = "          /    2         /  8  \\  v"
+        d4 = " [0.4]   |  BUY         /  SELL |   Historical Lows:"
+    elif val <= 4.0:
+        d1 = f"  {val:.1f} LATEST   .---~~~~---."
+        d2 = "     \\      .-~   4    6   ~-."
+        d3 = "      v   /    2  \\         8  \\"
+        d4 = " [0.4]   |  BUY    \\       SELL |   Historical Lows:"
+    else:
+        d1 = f"               .---~~~~---.  [{val:.1f} LATEST]"
+        d2 = "            .-~   4  | 6   ~-."
+        d3 = "          /    2     |      8  \\"
+        d4 = " [0.4]   |  BUY      |     SELL |   Historical Lows:"
+
+    lines = [
+        sep,
+        row("BofA Bull & Bear Indicator (B&B)"),
+        row(f"Our BofA Bull & Bear Indicator is at {val:.1f}... signal is {signal}."),
+        sep,
+        row(f"Chart 21: BofA Bull & Bear at {val:.1f}  ({chg_note})"),
+        row(""),
+        row(d1),
+        row(d2),
+        row(d3),
+        row(d4),
+        row(" Mar'23  | 0          o      10 |   * 0.4 (Mar'23)"),
+        row(" [0.0]   +----------------------+   * 0.0 (Mar'20 / Oct'22)"),
+        row(""),
+        row("         " + tick_str),
+        row("         " + track_str),
+        row("".join(ptr_buf)),
+        row("         [BUY:0-2 |       NEUTRAL: 2-8      |SELL:8-10]"),
+        row("         Ext.Bear                            Ext.Bull"),
+        tsep,
+        row("Table 6: BofA B&B Indicator (Current Component Readings)"),
+        tsep,
+        trow("Components", "Pctl", "Reading", "Sentiment"),
+        tsep,
+    ]
+
+    for comp in d.get("components", []):
+        pct = max(0, min(100, int(round(float(comp.get("percentile", 0))))))
+        filled = max(0, min(10, int(round(pct / 10.0))))
+        meter = "#" * filled + "." * (10 - filled)
+        sent = str(comp.get("sentiment", "Neutral"))
+        tag_map = {
+            "V Bullish": "V Bullish +",
+            "Bullish": "Bullish   +",
+            "Bearish": "Bearish   -",
+            "V Bearish": "V Bearish -",
+        }
+        lines.append(trow(str(comp.get("name", "")), f"{pct}%", meter, tag_map.get(sent, sent)))
+
+    lines += [
+        tsep,
+        row("Source: BofA Global Investment Strategy, Bloomberg, EPFR,"),
+        row("        Lipper FMI, Global FMS, CFTC, MSCI | BofA RESEARCH"),
+        sep,
+    ]
+    return "\n".join(lines)
+
+
+def render_bofa_bb_char_block(data: dict | None = None) -> str:
+    """生成置顶在报告开头的「美银牛熊指标（BofA Bull & Bear Indicator）」字符表区块。"""
+    d = data or load_bofa_bb_data()
+    val = float(d.get("current", 7.1))
+    prev = d.get("previous", 7.2)
+    prev_f = float(prev) if prev is not None else val
+    signal = str(
+        d.get("signal")
+        or ("Buy" if val < 2.0 else ("Sell" if val > 8.0 else "Neutral"))
+    )
+    signal_cn = str(
+        d.get("signal_cn")
+        or ("反向买入" if val < 2.0 else ("反向卖出" if val > 8.0 else "中性"))
+    )
+    delta = val - prev_f
+    if abs(delta) < 1e-6:
+        delta_cn = f"与前值 {prev_f:.1f} 持平"
+    elif delta < 0:
+        delta_cn = f"较前值 {prev_f:.1f} 回落 {abs(delta):.1f}"
+    else:
+        delta_cn = f"较前值 {prev_f:.1f} 上升 {delta:.1f}"
+
+    cn_parts = []
+    for comp in d.get("components", []):
+        cn = comp.get("cn") or comp.get("name") or ""
+        pct = int(round(float(comp.get("percentile", 0))))
+        scn = comp.get("sentiment_cn") or comp.get("sentiment") or ""
+        if "看多" in scn or "看空" in scn:
+            cn_parts.append(f"{cn} `{pct}%`（**{scn}**）")
+        else:
+            cn_parts.append(f"{cn} `{pct}%`（{scn}）")
+
+    char_box = render_bofa_bb_char_table(d)
+    lines = [
+        "## 🧭 美银牛熊指标 · BofA Bull & Bear Indicator (B&B)",
+        "",
+        "```text",
+        char_box,
+        "```",
+        "",
+        f"- **指标读数**：最新 **{val:.1f}**（{delta_cn}）→ 当前信号 **{signal}（{signal_cn}）**"
+        "（`<2.0` 极度看空为反向买入区，`>8.0` 极度看多为反向卖出区）",
+    ]
+    if cn_parts:
+        lines.append("- **六大分项构成（Table 6）**：" + "｜".join(cn_parts))
+    return "\n".join(lines)
+
+
 def arrange_brief_layout(body_md: str, *,
                          foreign_detail_md: str = "",
                          fallback_risk_md: str = "",
                          fallback_foreign_md: str = "",
-                         other_blocks: list[str] | None = None) -> str:
-    """强制简报章节顺序：① 研报 AI 风险点提示（开头）→ ② 国外研报（第二）→ ③ 其他内容。
-
-    无论正文来自大模型还是 rule 降级（即便模型输出章节顺序漂移或漏写小节标题），
-    组装层均按二级标题拆解并重排，同时把国外投行研报明细并入第二部分「国外研报」，
-    将香港券商、全市场快讯、金融情绪复核与数据新鲜度看板统一归入第三部分「其他内容」。
+                         other_blocks: list[str] | None = None,
+                         leading_md: str | None = None,
+                         include_bofa_bb: bool = True,
+                         freshness_md: str = "") -> str:
+    """强制简报章节顺序：
+    ⓪ 开头：BofA Bull & Bear Indicator 字符仪表盘与分项构成表
+    ① 研报 AI 风险点提示
+    ② 国外研报（含国外机构一周研报明细）
+    ③ 其他内容（全市场快讯与机构动态、香港券商新闻与数据、金融情绪复核等）
+    ④ 最后：数据新鲜度 · 本次运行指纹
     """
+    lead_secs: list[str] = []
     risk_secs: list[str] = []
     foreign_secs: list[str] = []
     other_secs: list[str] = []
+    fresh_secs: list[str] = []
 
     for raw_sec in split_md_sections(body_md or ""):
         sec = _strip_edge_rules(raw_sec)
         if not sec:
             continue
         first_line = sec.splitlines()[0].strip()
-        is_heading = bool(re.match(r"^#{1,2}\s+\S", first_line))
-        if is_heading and "风险" in first_line:
+        is_heading = bool(re.match(r"^#{1,3}\s+\S", first_line))
+        if is_heading and "数据新鲜度" in first_line:
+            fresh_secs.append(sec)
+        elif is_heading and ("BofA Bull & Bear" in first_line or "美银牛熊指标" in first_line):
+            lead_secs.append(sec)
+        elif is_heading and "风险" in first_line:
             risk_secs.append(sec)
         elif is_heading and any(k in first_line for k in ("国外", "外资", "海外投行", "国际投行")):
             foreign_secs.append(sec)
         else:
             other_secs.append(sec)
+
+    if leading_md is not None:
+        part0 = _strip_edge_rules(leading_md)
+    elif lead_secs:
+        part0 = "\n\n".join(lead_secs)
+    elif include_bofa_bb:
+        part0 = _strip_edge_rules(render_bofa_bb_char_block())
+    else:
+        part0 = ""
 
     part1 = "\n\n".join(risk_secs) if risk_secs else _strip_edge_rules(fallback_risk_md)
     if not part1:
@@ -1474,11 +1700,26 @@ def arrange_brief_layout(body_md: str, *,
         tail_items.append("\n\n".join(other_secs))
     for blk in (other_blocks or []):
         cleaned = _strip_edge_rules(blk)
-        if cleaned:
+        if not cleaned:
+            continue
+        first_ln = cleaned.splitlines()[0].strip()
+        if "数据新鲜度" in first_ln:
+            fresh_secs.append(cleaned)
+        else:
             tail_items.append(cleaned)
     part3 = "\n\n---\n\n".join(tail_items)
 
-    return "\n\n---\n\n".join(p for p in (part1, part2, part3) if p)
+    clean_fresh = _strip_edge_rules(freshness_md)
+    if clean_fresh:
+        fresh_secs.append(clean_fresh)
+    # 去重保序，「数据新鲜度 · 本次运行指纹」固定排在全文最后
+    dedup_fresh: list[str] = []
+    for fs in fresh_secs:
+        if fs not in dedup_fresh:
+            dedup_fresh.append(fs)
+    part_last = "\n\n---\n\n".join(dedup_fresh)
+
+    return "\n\n---\n\n".join(p for p in (part0, part1, part2, part3, part_last) if p)
 
 
 # ---------- 量价情绪动量：Yahoo 小时线（近48h 涨跌 + 量比）----------
@@ -5492,7 +5733,24 @@ def selftest() -> int:
               _rule_brief.index("## ⚠️ 研报 AI 风险点提示")
               < _rule_brief.index("## 🏛 国外研报")
               < _rule_brief.index("## 📊 全市场快讯与机构动态"))
+        _bofa_tbl = render_bofa_bb_char_table()
+        _bofa_blk = render_bofa_bb_char_block()
+        from source_names import find_brand_leaks as _fbl
+        check("BofA 牛熊指标字符表严格等宽且纯 ASCII",
+              len({len(ln) for ln in _bofa_tbl.splitlines()}) == 1
+              and all(ord(ch) < 128 for ch in _bofa_tbl))
+        check("BofA 牛熊指标字符表完整还原读数与六大分项",
+              all(x in _bofa_tbl for x in (
+                  "7.1", "Down to 7.1 from 7.2", "Neutral",
+                  "Hedge Fund Positioning", "64%",
+                  "Equity Flow", "89%", "V Bullish",
+                  "Bond Flow", "62%",
+                  "Credit Market Technicals", "55%",
+                  "Global Stock Index Breadth", "21%", "Bearish",
+                  "FMS Positioning", "100%",
+              )) and _fbl(_bofa_blk) == [])
         _scrambled = (
+            "### 🧭 数据新鲜度 · 本次运行指纹\n- 指纹 `deadbeef1234`\n\n"
             "## 📊 全市场快讯与机构动态\n\n- 主线A\n\n"
             "## 🏛 国外研报\n\n- 高盛维持买入\n\n"
             "## ⚠️ 研报 AI 风险点提示\n\n- 警惕通胀反弹"
@@ -5502,16 +5760,16 @@ def selftest() -> int:
             foreign_detail_md=fiw.render_foreign_weekly_appendix(_fw_demo, max_per_inst=1),
             other_blocks=[
                 hb.render_hk_brokers_appendix(hb.demo_pack(), max_per_firm=1),
-                "### 🧭 数据新鲜度 · 本次运行指纹\n- 指纹 `deadbeef1234`",
             ],
         )
-        check("重排器强制顺序：风险点提示→国外研报(+明细)→其他内容",
-              _arranged.index("## ⚠️ 研报 AI 风险点提示")
+        check("重排器强制顺序：BofA字符表(开头)→风险点提示→国外研报(+明细)→其他内容→数据新鲜度(最后)",
+              _arranged.index("BofA Bull & Bear Indicator (B&B)")
+              < _arranged.index("## ⚠️ 研报 AI 风险点提示")
               < _arranged.index("## 🏛 国外研报")
               < _arranged.index("国外机构一周研报明细")
               < _arranged.index("## 📊 全市场快讯与机构动态")
               < _arranged.index("香港券商新闻与数据")
-              < _arranged.index("数据新鲜度"))
+              < _arranged.index("数据新鲜度 · 本次运行指纹"))
     except Exception as e:  # noqa: BLE001
         check(f"香港券商栏目集成异常: {e}", False)
 
@@ -5801,6 +6059,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--no-chart", action="store_true", dest="no_chart",
                    help="关闭字符模拟图（默认：给 --hk-code 时自动生成字符模拟走势图并"
                         "嵌入推送正文顶部，纯字符无需上传）")
+    p.add_argument("--no-bofa-bb", action="store_true", dest="no_bofa_bb",
+                   help="关闭置顶的 BofA Bull & Bear Indicator 字符表（也可用环境变量 BOFA_BB_BLOCK=0 关闭）")
     p.add_argument("--no-ai-compress", action="store_false", dest="ai_compress",
                    default=True,
                    help="关闭 AI 分节压缩（默认开启：正文按章节逐节调用 AI 简化+压缩，"
@@ -6328,8 +6588,12 @@ def main(argv: list[str]) -> int:
     # 推送标题保持品牌名（支持 --title / PUSH_TITLE 覆盖）：不展示渠道名、主题、标的或时间。
     title = (getattr(args, "title", "") or env("PUSH_TITLE") or SCHEDULED_PUSH_TITLE).strip()
 
+    show_bofa_bb = not (getattr(args, "no_bofa_bb", False) or env("BOFA_BB_BLOCK") == "0")
+    bofa_bb_md = render_bofa_bb_char_block() if show_bofa_bb else ""
+
     if template in ("feedscan", "foreign_weekly"):
-        # 研报简报严格固定顺序：① 研报 AI 风险点提示（开头）→ ② 国外研报（第二）→ ③ 其他内容
+        # 严格固定顺序：⓪ BofA 牛熊指标字符表（开头）→ ① 研报 AI 风险点提示 →
+        # ② 国外研报 → ③ 其他内容 → ④ 数据新鲜度·本次运行指纹（最后）
         ordered_body = arrange_brief_layout(
             content,
             foreign_detail_md=foreign_detail_md,
@@ -6340,20 +6604,23 @@ def main(argv: list[str]) -> int:
                 columns_enabled=(brief_columns_enabled if template == "feedscan" else True),
                 has_detail=bool(foreign_detail_md),
             ),
-            other_blocks=[chart_md, data_md, *(other_appendix_blocks or [appendix_md]), freshness_md],
+            other_blocks=[chart_md, data_md, *(other_appendix_blocks or [appendix_md])],
+            leading_md=bofa_bb_md,
+            include_bofa_bb=show_bofa_bb,
+            freshness_md=freshness_md,
         )
         content = add_branding(ordered_body, title=title)
     else:
         if template == "analysis" and provider != "rule" \
                 and not validate_analysis(content):
             content += "\n\n> ⚠️ 本次模型输出未通过框架格式校验，以上为原始返回，仅供参考。"
-        if data_md:
-            content += "\n\n" + data_md
-        if appendix_md:
-            content += "\n\n" + appendix_md
-        # 所有模板/通道/dry-run 走同一个组装函数：作者和研究提示固定在推送正文最后一行。
-        content = add_branding(freshness_md + "\n\n---\n\n" + chart_md
-                               + content.rstrip(), title=title)
+        body_parts = [
+            _strip_edge_rules(p)
+            for p in (bofa_bb_md, chart_md, content, data_md, appendix_md, freshness_md)
+            if _strip_edge_rules(p)
+        ]
+        # 所有模板/通道/dry-run 走同一个组装函数：数据新鲜度固定排在正文最后，作者和研究提示固定在尾注最后一行。
+        content = add_branding("\n\n---\n\n".join(body_parts), title=title)
     log("\n📝 生成的内容：")
     log("-" * 60)
     log(f"# {title}\n\n{content}")
