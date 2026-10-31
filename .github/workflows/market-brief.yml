@@ -40,6 +40,7 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       # 可选：强制情绪引擎（auto / llm / lexicon / hf），留空=auto；仓库变量同名可配。
       SENTIMENT_ENGINE: ${{ vars.SENTIMENT_ENGINE }}
+      PUSH_TITLE: '章鱼 AI.券商研报 007'
       PUSH_STATE_PATH: output/market_push_state.json
       PYTHONUNBUFFERED: '1'
 
@@ -100,6 +101,7 @@ jobs:
             python pushplus_deepseek.py \
               --template feedscan \
               --topic "$REPORT_TOPIC" \
+              --title "$PUSH_TITLE" \
               --channel pushplus \
               --ai-provider deepseek \
               --theme dos \
@@ -111,6 +113,7 @@ jobs:
             python pushplus_deepseek.py \
               --template feedscan \
               --topic "$REPORT_TOPIC" \
+              --title "$PUSH_TITLE" \
               --channel pushplus \
               --ai-provider deepseek \
               --theme dos \

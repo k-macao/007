@@ -145,7 +145,8 @@ FACTORS = [
 FACTOR_COUNT = len(FACTORS)
 
 # ---------------- 品牌信息：全部结果的统一头部与尾注 ----------------
-BRAND_TITLE = "章鱼 AI 全景分析"
+BRAND_TITLE = "章鱼 AI.券商研报 007"
+SCHEDULED_PUSH_TITLE = BRAND_TITLE
 BRAND_SUBTITLE = "全网 AI 调研境内境外数据，由多个大模型混合部署。"
 BRAND_AUTHOR = "作者：章鱼 ai"
 BRAND_SLOGAN = ("全网境内外为你寻找蛛丝马迹-提供全景视野分析，由多模型协同推理决策，"
@@ -155,10 +156,10 @@ BRAND_SLOGAN = ("全网境内外为你寻找蛛丝马迹-提供全景视野分�
 BRAND_DISCLAIMER = "仅供参考，分析研究"
 
 
-def brand_header_md() -> str:
+def brand_header_md(title: str = "") -> str:
     """全部结果统一头部：只放标题和副标题。"""
     return "\n".join([
-        f"## 🐙 {BRAND_TITLE}",
+        f"## 🐙 {title or BRAND_TITLE}",
         f"> {BRAND_SUBTITLE}",
         "",
         "---",
@@ -175,9 +176,9 @@ def brand_footer_md() -> str:
     ])
 
 
-def add_branding(content: str) -> str:
+def add_branding(content: str, title: str = "") -> str:
     """给正文加品牌头和固定尾注，避免各调用点自行拼接而放错位置。"""
-    return f"{brand_header_md()}\n{content.rstrip()}\n\n{brand_footer_md()}"
+    return f"{brand_header_md(title)}\n{content.rstrip()}\n\n{brand_footer_md()}"
 
 # ================================================================ 基础工具
 
@@ -4901,14 +4902,14 @@ def selftest() -> int:
                                "财联社 热门", "雪球 热门股票", "格隆汇 事件",
                                "法布财经 快讯", "法布财经 头条"))
                 + "\n\n**金十数据（50/50）**\n" + "\n".join(feed_item for _ in range(50)))
-    brief_html = themed_html("章鱼 AI 全景分析", brief_md, theme_name="dos")
+    brief_html = themed_html(BRAND_TITLE, brief_md, theme_name="dos")
     check("市场简报正文超过单篇上限（必须分篇才不会被微信静默丢弃）",
           _utf8_len(brief_html) > SPLIT_LIMIT)
-    brief_parts = split_md_for_html("章鱼 AI 全景分析", brief_md, "dos",
-                                       limit=SPLIT_LIMIT)
+    brief_parts = split_md_for_html(BRAND_TITLE, brief_md, "dos",
+                                    limit=SPLIT_LIMIT)
     check("市场简报自动分篇且每篇都在安全线内",
           brief_parts is not None and 2 <= len(brief_parts) <= WECHAT_HTML_MAX_PARTS
-          and all(_utf8_len(themed_html("章鱼 AI 全景分析", p, theme_name="dos",
+          and all(_utf8_len(themed_html(BRAND_TITLE, p, theme_name="dos",
                                         continuation=(i > 0), part_no=i + 1,
                                         part_count=len(brief_parts)))
                   <= SPLIT_LIMIT
@@ -4922,7 +4923,7 @@ def selftest() -> int:
           and any("快讯原始明细（续上篇）" in p for p in brief_parts))
     check("DOS 分篇标题栏标出 PART n/m（读者知道这是续篇）",
           brief_parts is not None and len(brief_parts) > 1
-          and "PART 2/" in themed_html("章鱼 AI 全景分析", brief_parts[1],
+          and "PART 2/" in themed_html(BRAND_TITLE, brief_parts[1],
                                        theme_name="dos", continuation=True,
                                        part_no=2, part_count=len(brief_parts)))
 
@@ -5392,6 +5393,12 @@ def selftest() -> int:
           and brand.rstrip().endswith(brand_footer_md().rstrip()))
     check("品牌头尾可渲染为 HTML", BRAND_TITLE in md_to_html(brand)
           and BRAND_AUTHOR in md_to_html(brand))
+    check("定时推送默认标题=章鱼 AI.券商研报 007",
+          BRAND_TITLE == "章鱼 AI.券商研报 007"
+          and SCHEDULED_PUSH_TITLE == "章鱼 AI.券商研报 007")
+    check("支持 --title 自定义推送标题",
+          parse_args(["--title", "章鱼 AI.券商研报 007"]).title == "章鱼 AI.券商研报 007"
+          and "自定义标题" in add_branding("正文", title="自定义标题"))
 
     log("⑤ 内容指纹与跨运行状态")
     from types import SimpleNamespace as NS
@@ -5512,6 +5519,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--template", default="brief", choices=TEMPLATES,
                    help="分析框架：" + "/".join(TEMPLATES))
     p.add_argument("--topic", default="", help="分析标的/主题（或环境变量 TOPIC）")
+    p.add_argument("--title", default="",
+                   help="自定义推送标题（或环境变量 PUSH_TITLE；默认 章鱼 AI.券商研报 007）")
     p.add_argument("--context", default="",
                    help="背景信息/复盘细节（或环境变量 CONTEXT）")
     p.add_argument("--hk-code", default="", dest="hk_code",
@@ -6047,13 +6056,13 @@ def main(argv: list[str]) -> int:
     no_chart = bool(getattr(args, "no_chart", False) or getattr(args, "no_kline", False))
     chart_md = make_chart_block(hk_code_raw, quotes, no_chart)
 
+    # 推送标题保持品牌名（支持 --title / PUSH_TITLE 覆盖）：不展示渠道名、主题、标的或时间。
+    title = (getattr(args, "title", "") or env("PUSH_TITLE") or SCHEDULED_PUSH_TITLE).strip()
+
     # 新鲜度看板固定在品牌头之后、AI 正文之前；
     # 所有模板/通道/dry-run 走同一个组装函数：作者和研究提示固定在推送正文最后一行。
     content = add_branding(freshness_md + "\n\n---\n\n" + chart_md
-                           + content.rstrip())
-
-    # 推送标题保持品牌名：不展示渠道名、主题、标的或时间。
-    title = BRAND_TITLE
+                           + content.rstrip(), title=title)
     log("\n📝 生成的内容：")
     log("-" * 60)
     log(f"# {title}\n\n{content}")
