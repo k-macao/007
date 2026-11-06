@@ -99,6 +99,9 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       SENTIMENT_ENGINE: ${{ vars.SENTIMENT_ENGINE }}
       PUSH_STATE_PATH: output/columns_push_state.json
+      # 美银牛熊指标自动刷新（周更快照过期时抓公开新闻），0 可关闭
+      BOFA_BB_AUTO: '1'
+      BOFA_BB_SNAPSHOT: output/bofa_bb_snapshot.json
       PYTHONUNBUFFERED: '1'
 
     steps:
@@ -113,7 +116,9 @@ jobs:
       - name: Restore push state (新鲜度看板跨运行对比)
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: output/columns_push_state.json
+          path: |
+            output/columns_push_state.json
+            output/bofa_bb_snapshot.json
           key: columns-state-${{ github.run_id }}
           restore-keys: |
             columns-state-

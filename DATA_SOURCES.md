@@ -51,6 +51,22 @@
 - **容错**：429/502/503/504 指数退避重试 2 次；无 Key 时抛错由上层记“跳过”；空数组视为未命中而非错误
 - **接入**：`stock_news_scan.py` 自动注册为第 8 财经源，`pushplus_deepseek.py` 作为 feedscan 第 13 源，`source_check_db.py` 离线/在线均覆盖
 
+### 美银牛熊指标 Bull & Bear（`pushplus_deepseek.py` 置顶字符表，2026-11-06 改为可自动刷新）
+
+| 优先级 | 来源 | 端点/位置 | 说明 |
+|---|---|---|---|
+| ① | `BOFA_BB_JSON` | 环境变量 | 手工注入核对后的快照（`current`/`previous`/`as_of`/`components`），不联网、优先级最高 |
+| ② | 快照文件 | `output/bofa_bb_snapshot.json`（`BOFA_BB_SNAPSHOT` 可改） | 自动刷新结果落盘，工作流用 `actions/cache` 持久化 |
+| ③ | 内置兜底 | `DEFAULT_BOFA_BB_DATA` | 最近一次已知公开读数 + `as_of`，不会伪装成「最新」 |
+
+- **无官方接口**：B&B 只出现在 BofA 付费周报 *The Flow Show*，仓库不做任何伪造或爬取付费内容；
+  自动刷新走公开新闻 RSS，只接受标题里明确出现指标名、读数落在 0–10、且 30 天内的条目
+- **过期判定**：`BOFA_BB_REFRESH_DAYS=6`（触发刷新）、`BOFA_BB_STALE_DAYS=10`（正文标注已过期）；
+  正文与文末新鲜度看板都会打印「数据截至 YYYY-MM-DD（N 天前）」
+- **开关**：`--no-bofa-bb-refresh` / `BOFA_BB_AUTO=0` 关闭自动刷新；`--refresh-bofa-bb` 手工刷新后退出
+- **自检**：`pushplus_deepseek.py --selftest` 覆盖等宽 ASCII、数据日期、过期判定、新闻标题解析；
+  `test_push_sentiment.py::BofaBbRefreshTest` 覆盖优先级/刷新落盘/网络失败回退
+
 ### 国外专业投资机构一周研报 12 家（`foreign_institution_weekly.py`，2026-10-19 新增，独立栏目 `foreign_weekly`）
 
 | 键名 | 机构名 | 别名 | 角色 | 搜索链路 |

@@ -45,7 +45,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from statistics import median
@@ -1447,11 +1447,28 @@ def render_market_brief_rule(topic: str, feed_pack: FeedPack,
     return "\n\n".join([risk_md, foreign_md, other_md])
 
 
+# 美银牛熊指标（BofA Bull & Bear Indicator）——数据链路说明
+#   优先级从高到低：
+#     ① BOFA_BB_JSON 环境变量（手工覆盖，最高优先，永不联网）
+#     ② 本地快照文件（BOFA_BB_SNAPSHOT，默认 output/bofa_bb_snapshot.json，Actions 用 cache 持久化）
+#     ③ 内置最近一次已知读数 DEFAULT_BOFA_BB_DATA
+#   快照/内置值过期（>BOFA_BB_REFRESH_DAYS 天）且开启自动刷新时，用 Google 新闻 RSS
+#   抓「Bull & Bear」最新读数并回写快照；抓不到就退回快照/内置值，但正文一定标注
+#   数据日期与落后天数，不会再出现「永远显示 7.1 却写着 Latest」的情况。
+BOFA_BB_SNAPSHOT_ENV = "BOFA_BB_SNAPSHOT"
+BOFA_BB_AUTO_ENV = "BOFA_BB_AUTO"
+BOFA_BB_SNAPSHOT_PATH_DEFAULT = os.path.join("output", "bofa_bb_snapshot.json")
+BOFA_BB_NEWS_RSS = "https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
+BOFA_BB_REFRESH_DAYS = 6    # 周更指标（每周四 Flow Show），超过 6 天就尝试自动刷新
+BOFA_BB_STALE_DAYS = 10     # 超过 10 天在正文明确标注「已过期」
+
 DEFAULT_BOFA_BB_DATA: dict = {
-    "current": 7.1,
-    "previous": 7.2,
-    "signal": "Neutral",
-    "signal_cn": "中性",
+    "current": 8.8,
+    "previous": 9.3,
+    "as_of": "2026-10-01",
+    "source": "BofA The Flow Show 2026-10-01",
+    "signal": "Sell",
+    "signal_cn": "反向卖出",
     "components": [
         {"name": "Hedge Fund Positioning", "cn": "对冲基金仓位",
          "percentile": 64, "sentiment": "Neutral", "sentiment_cn": "中性"},
@@ -1469,31 +1486,268 @@ DEFAULT_BOFA_BB_DATA: dict = {
 }
 
 
-def load_bofa_bb_data() -> dict:
-    """读取美银牛熊指标（BofA Bull & Bear Indicator）最新快照；支持 BOFA_BB_JSON 环境变量覆盖。"""
+def bofa_bb_signal(value: float) -> tuple[str, str]:
+    """按 BofA 惯例把读数映射为信号：<2.0 反向买入，>8.0 反向卖出，其余中性。"""
+    if value < 2.0:
+        return "Buy", "反向买入"
+    if value > 8.0:
+        return "Sell", "反向卖出"
+    return "Neutral", "中性"
+
+
+def bofa_bb_as_of_date(data: dict) -> "date | None":
+    """解析数据日期（as_of，YYYY-MM-DD）；缺失或格式异常返回 None。"""
+    raw = str(data.get("as_of") or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def bofa_bb_age_days(data: dict, now: "date | None" = None) -> "int | None":
+    """数据日期距今天数；无 as_of 返回 None（调用方应标注「日期未知」）。"""
+    as_of = bofa_bb_as_of_date(data)
+    if as_of is None:
+        return None
+    return ((now or datetime.now(CST).date()) - as_of).days
+
+
+def bofa_bb_staleness(data: dict, now: "date | None" = None) -> tuple[bool, str]:
+    """返回 (是否过期, 中文说明)。周更指标超过 BOFA_BB_STALE_DAYS 天即视为过期。"""
+    age = bofa_bb_age_days(data, now)
+    if age is None:
+        return True, "数据日期未知（建议用 BOFA_BB_JSON / --refresh-bofa-bb 更新）"
+    if age < 0:
+        return False, f"数据日期在未来（{age} 天），请核对来源"
+    if age > BOFA_BB_STALE_DAYS:
+        weeks = age // 7
+        return True, (f"已落后约 {weeks} 个发布周期"
+                      f"（周更指标应 ≤{BOFA_BB_STALE_DAYS} 天）")
+    return False, f"周更正常（≤{BOFA_BB_STALE_DAYS} 天）"
+
+
+def _bofa_bb_snapshot_path() -> str:
+    return env(BOFA_BB_SNAPSHOT_ENV) or BOFA_BB_SNAPSHOT_PATH_DEFAULT
+
+
+def _bofa_bb_clean(data: dict) -> dict:
+    """规范化外部来源的快照：读数夹到 0-10，补齐信号与 as_of。"""
+    out = dict(data)
+    try:
+        val = max(0.0, min(10.0, float(out.get("current"))))
+    except (TypeError, ValueError):
+        raise PushError("BofA 牛熊指标快照缺少可用的 current 读数")
+    out["current"] = val
+    if out.get("previous") is not None:
+        try:
+            out["previous"] = max(0.0, min(10.0, float(out["previous"])))
+        except (TypeError, ValueError):
+            out["previous"] = None
+    sig, sig_cn = bofa_bb_signal(val)
+    out.setdefault("signal", sig)
+    out.setdefault("signal_cn", sig_cn)
+    return out
+
+
+def load_bofa_bb_snapshot() -> "dict | None":
+    """读取本地快照文件（不存在/损坏都返回 None，不抛异常）。"""
+    path = _bofa_bb_snapshot_path()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or "current" not in raw:
+        return None
+    try:
+        return _bofa_bb_clean(raw)
+    except PushError:
+        return None
+
+
+def save_bofa_bb_snapshot(data: dict) -> str:
+    """把快照落盘，返回实际写入路径；失败只记日志不中断推送。"""
+    path = _bofa_bb_snapshot_path()
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2, sort_keys=True)
+            fh.write("\n")
+    except OSError as e:
+        log(f"  ⚠️ BofA 牛熊指标快照写入失败（{path}）：{e}")
+    return path
+
+
+# 「Bull & Bear」新闻标题的取值正则：先认指标名，再认读数，最后可选认前值。
+_BB_NAME = r"bull\s*(?:&|and|/|-|–)\s*bear"
+_BB_VAL = r"(\d{1,2}(?:\.\d)?)"
+_BB_VALUE_PATTERNS = [
+    re.compile(_BB_NAME + r"[^.|]{0,90}?(?:to|at|of|hit|hits|climbed to|jumped to|"
+               r"rose to|rises to|fell to|falls to|dropped to|drops to|slipped to|"
+               r"eased to|down to|up to|reads?|reading of)\s*" + _BB_VAL, re.I),
+    re.compile(_BB_NAME + r"[^.|]{0,40}?" + _BB_VAL, re.I),
+]
+_BB_PREV = re.compile(r"\bfrom\s+" + _BB_VAL, re.I)
+
+
+def parse_bofa_bb_news(text: str, now: datetime | None = None,
+                       max_age_days: int = 30) -> "dict | None":
+    """从 Google 新闻 RSS 里解析最新一条「Bull & Bear 读数」。
+
+    只取标题里明确出现指标名（Bull & Bear / Bull-Bear / Bull and Bear）且读数落在
+    0-10 的条目；按发布时间取最新一条。解析不到返回 None（调用方回退快照）。
+    """
+    now = now or datetime.now(UTC)
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return None
+    best: "tuple[datetime, dict] | None" = None
+    for it in root.iter("item"):
+        title = (it.findtext("title", "") or "").strip()
+        if not re.search(_BB_NAME, title, re.I):
+            continue
+        try:
+            ts = parsedate_to_datetime(it.findtext("pubDate", "") or "")
+        except (TypeError, ValueError):
+            continue
+        if ts is None:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        if (now - ts).days > max_age_days or (now - ts).days < -1:
+            continue
+        value, tail = None, ""
+        for pat in _BB_VALUE_PATTERNS:
+            m = pat.search(title)
+            if not m:
+                continue
+            try:
+                cand = float(m.group(1))
+            except ValueError:
+                continue
+            if 0.0 <= cand <= 10.0:
+                value, tail = cand, title[m.end():]
+                break
+        if value is None:
+            continue
+        prev = None
+        mp = _BB_PREV.search(tail)
+        if mp:
+            try:
+                cand_prev = float(mp.group(1))
+                if 0.0 <= cand_prev <= 10.0:
+                    prev = cand_prev
+            except ValueError:
+                prev = None
+        sig, sig_cn = bofa_bb_signal(value)
+        link = (it.findtext("link", "") or "").strip()
+        # 推送正文只出现泛化名（非具体媒体品牌），原始标题留在快照 source_raw 里备查
+        src_name = title.rsplit(" - ", 1)[1] if " - " in title else "新闻"
+        cand = {
+            "current": value,
+            "previous": prev,
+            "as_of": ts.date().isoformat(),
+            "source": generalize_source(f"Google·{src_name}"),
+            "source_raw": title[:160],
+            "source_url": link,
+            "signal": sig,
+            "signal_cn": sig_cn,
+            "auto": True,
+        }
+        if best is None or ts > best[0]:
+            best = (ts, cand)
+    return best[1] if best else None
+
+
+def fetch_bofa_bb_latest(timeout: int = 15,
+                         now: datetime | None = None) -> "dict | None":
+    """联网抓取最新 Bull & Bear 读数；任何失败返回 None（绝不阻塞推送）。"""
+    q = urllib.parse.quote_plus('"bull and bear" OR "bull & bear" BofA indicator when:30d')
+    try:
+        status, body = http_request(BOFA_BB_NEWS_RSS.format(q=q), timeout=timeout)
+    except PushError as e:
+        log(f"  ⚠️ BofA 牛熊指标自动刷新失败：{e}")
+        return None
+    if status != 200:
+        log(f"  ⚠️ BofA 牛熊指标自动刷新失败：HTTP {status}")
+        return None
+    latest = parse_bofa_bb_news(body, now=now)
+    if latest is None:
+        log("  ⚠️ BofA 牛熊指标自动刷新：近期新闻里没解析到读数，沿用快照")
+    return latest
+
+
+def load_bofa_bb_data(*, allow_network: bool = False,
+                      timeout: int = 15) -> dict:
+    """读取美银牛熊指标最新快照。
+
+    优先级：BOFA_BB_JSON 环境变量 > 本地快照文件 > 内置 DEFAULT_BOFA_BB_DATA；
+    前两者都过期且 allow_network 时，尝试从 Google 新闻抓最新读数并回写快照。
+    """
+    base = dict(DEFAULT_BOFA_BB_DATA)
+    snap = load_bofa_bb_snapshot()
+    if snap:
+        merged = dict(base)
+        merged.update({k: v for k, v in snap.items() if k != "components"})
+        if snap.get("components"):
+            merged["components"] = snap["components"]
+        base = merged
+
     raw = env("BOFA_BB_JSON")
     if raw:
         try:
             parsed = json.loads(raw)
-            if isinstance(parsed, dict) and "current" in parsed:
-                merged = dict(DEFAULT_BOFA_BB_DATA)
-                merged.update(parsed)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict) and "current" in parsed:
+            merged = dict(base)
+            merged.update(parsed)
+            merged["manual_override"] = True
+            return _bofa_bb_clean(merged)
+
+    age = bofa_bb_age_days(base)
+    if allow_network and (age is None or age > BOFA_BB_REFRESH_DAYS):
+        latest = fetch_bofa_bb_latest(timeout=timeout)
+        if latest:
+            merged = dict(base)
+            # 抓到的可能只有读数：前值用旧读数补，分项沿用上一期公布值
+            if latest.get("previous") is None:
+                latest["previous"] = base.get("current")
+            merged.update(latest)
+            merged["components_as_of"] = base.get("components_as_of") or base.get("as_of")
+            merged = _bofa_bb_clean(merged)
+            old_age = age
+            new_age = bofa_bb_age_days(merged)
+            if old_age is None or (new_age is not None and new_age < old_age) \
+                    or (new_age is not None and new_age == old_age
+                        and merged.get("current") != base.get("current")):
+                save_bofa_bb_snapshot(merged)
+                merged["refreshed"] = True
                 return merged
-        except Exception:  # noqa: BLE001
-            pass
-    return DEFAULT_BOFA_BB_DATA
+            log("  ⚠️ BofA 牛熊指标自动刷新：抓到的读数不比快照新，沿用快照")
+    return base
 
 
 def render_bofa_bb_char_table(data: dict | None = None) -> str:
-    """用纯等宽 ASCII 字符绘制 BofA Bull & Bear Indicator 柱状图（Chart 21）与六大分项柱状表（Table 6）。"""
+    """把 BofA Bull & Bear 压成 8 行等宽字符卡：读数/信号/数据日期 + 0-10 刻度条。
+
+    框内保持纯 ASCII、整行固定 66 列（62 字内容）；分项与来源说明放在卡片下方正文里，
+    不再画 10 层柱状图与整套分项表格，避免置顶区块比正文还长。
+    """
     d = data or load_bofa_bb_data()
-    val = max(0.0, min(10.0, float(d.get("current", 7.1))))
-    prev = d.get("previous", 7.2)
+    val = max(0.0, min(10.0, float(d.get("current", 8.8))))
+    prev = d.get("previous", 9.3)
     prev_f = max(0.0, min(10.0, float(prev) if prev is not None else val))
-    signal = str(
-        d.get("signal")
-        or ("Buy" if val < 2.0 else ("Sell" if val > 8.0 else "Neutral"))
-    )
+    sig_en, _sig_cn = bofa_bb_signal(val)
+    signal = str(d.get("signal") or sig_en).upper()
+    as_of = bofa_bb_as_of_date(d)
+    age = bofa_bb_age_days(d)
+    is_stale, _note = bofa_bb_staleness(d)
 
     width = 62  # 框内宽度 62 → 整行固定 66 列，纯 ASCII 字符跨端严格等宽对齐
 
@@ -1502,101 +1756,61 @@ def render_bofa_bb_char_table(data: dict | None = None) -> str:
         return "| " + t.ljust(width) + " |"
 
     sep = "+-" + "-" * width + "-+"
-    tsep = "+------------------------------+------+------------+-------------+"
 
-    def trow(c1: str, c2: str, c3: str, c4: str) -> str:
-        return f"| {c1[:28]:<28} | {c2[:4]:>4} | {c3[:10]:<10} | {c4[:11]:<11} |"
+    # ---- 0-10 刻度条：51 格（每格 0.2），整数刻度每 5 格一个 ----
+    span = 50
 
-    if abs(val - prev_f) < 1e-6:
-        chg_note = f"Unchanged at {val:.1f}"
-    elif val < prev_f:
-        chg_note = f"Down to {val:.1f} from {prev_f:.1f}"
+    def _pos(v: float) -> int:
+        return max(0, min(span, int(round(v / 10.0 * span))))
+
+    scale = [" "] * (span + 1)
+    for point in range(0, 11, 2):  # 0 2 4 6 8 10
+        label = str(point)
+        at = _pos(float(point))
+        if len(label) == 2:
+            at -= 1
+        for i, ch in enumerate(label):
+            if 0 <= at + i <= span:
+                scale[at + i] = ch
+    scale_row = "".join(scale)
+
+    bar = ["."] * (span + 1)
+    for tick in range(10, span, 10):  # 每 2 个点位一条刻度，与上方数字对齐
+        bar[tick] = "|"
+    bar[_pos(prev_f)] = "^"
+    bar[_pos(val)] = "*"
+    bar_row = "[" + "".join(bar) + "]"
+
+    delta = val - prev_f
+    if abs(delta) < 1e-6:
+        tail = f"prev {prev_f:.1f} (flat)"
     else:
-        chg_note = f"Up to {val:.1f} from {prev_f:.1f}"
+        tail = f"prev {prev_f:.1f} ({delta:+.1f})"
+    head_left = "BofA Bull & Bear (B&B)"
+    head_right = f"{val:.1f} {signal}  {tail}"
+    gap = width - len(head_left) - len(head_right)
+    head = (head_left + " " * max(2, gap) + head_right)[:width] if gap >= 2 \
+        else f"{head_left} {head_right}"[:width]
 
-    series = [
-        ("Mar'20", 0.0, "_"),
-        ("Oct'22", 0.0, "_"),
-        ("Mar'23", 0.4, "="),
-        ("Prev", prev_f, "="),
-        ("Latest", val, "#"),
-    ]
+    if as_of is None:
+        date_line = "Data as of: UNKNOWN (no as_of in snapshot)"
+    elif age is not None and age < 0:
+        date_line = f"Data as of {as_of.isoformat()} (FUTURE {abs(age)}d?) | check"
+    else:
+        stale_tag = f"  STALE >{BOFA_BB_STALE_DAYS}d" if is_stale else ""
+        date_line = (f"Data as of {as_of.isoformat()} ({age}d ago)"
+                     f"{stale_tag} | weekly")
 
-    def _bar_rows(v: float) -> int:
-        if v <= 0.05:
-            return 0
-        if v < 1.0:
-            return 1
-        return max(1, min(10, int(round(v))))
-
-    heights = [_bar_rows(v) for _, v, _ in series]
-    chart_lines: list[str] = []
-    if max(heights) >= 10:
-        cap_cells = [
-            (f"{v:.1f}".center(7) if heights[idx] == 10 else " " * 7)
-            for idx, (_, v, _) in enumerate(series)
-        ]
-        chart_lines.append(row("     " + "".join(cap_cells)))
-
-    notes = {
-        10: f"  *{val:.1f} LATEST",
-        9: f"  Signal: {signal[:13]}",
-        8: "  <-- 8.0 Sell (8-10)",
-        5: "  Neutral Zone (2-8)",
-        2: "  <-- 2.0 Buy  (0-2)",
-    }
-    for lvl in range(10, 0, -1):
-        bg = "-" if lvl in (8, 2) else " "
-        cells: list[str] = []
-        for idx, (_lbl, v, ch) in enumerate(series):
-            h = heights[idx]
-            if lvl <= h:
-                if v < 1.0 and lvl == 1:
-                    cells.append(f"{bg}[...]{bg}")
-                else:
-                    cells.append(f"{bg}[{ch * 3}]{bg}")
-            elif lvl == h + 1:
-                cells.append(f"{v:.1f}".center(7, bg))
-            else:
-                cells.append(bg * 7)
-        chart_lines.append(row(f" {lvl:>2} |" + "".join(cells) + notes.get(lvl, "")))
-
-    chart_lines.append(row("  0 +" + "-" * 35 + "+  Ext.Bear<2 | >8Bull"))
-    lbl_cells = [lbl.center(7) for lbl, _, _ in series]
-    chart_lines.append(row("     " + "".join(lbl_cells) + "  [###]=Now [===]=Prev"))
-
+    legend = (f"* now {val:.1f}   ^ prev {prev_f:.1f}"
+              f"   <2 Buy | 2-8 Neutral | >8 Sell")
+    indent = "  "
     lines = [
         sep,
-        row("BofA Bull & Bear Indicator (B&B)"),
-        row(f"Our BofA Bull & Bear Indicator is at {val:.1f}... signal is {signal}."),
-        sep,
-        row(f"Chart 21: BofA Bull & Bear at {val:.1f}  ({chg_note})"),
-        row(""),
-        *chart_lines,
-        tsep,
-        row("Table 6: BofA B&B Indicator (Current Component Readings)"),
-        tsep,
-        trow("Components", "Pctl", "Bar Chart", "Sentiment"),
-        tsep,
-    ]
-
-    for comp in d.get("components", []):
-        pct = max(0, min(100, int(round(float(comp.get("percentile", 0))))))
-        filled = max(0, min(10, int(round(pct / 10.0))))
-        meter = "#" * filled + "." * (10 - filled)
-        sent = str(comp.get("sentiment", "Neutral"))
-        tag_map = {
-            "V Bullish": "V Bullish +",
-            "Bullish": "Bullish   +",
-            "Bearish": "Bearish   -",
-            "V Bearish": "V Bearish -",
-        }
-        lines.append(trow(str(comp.get("name", "")), f"{pct}%", meter, tag_map.get(sent, sent)))
-
-    lines += [
-        tsep,
-        row("Source: BofA Global Investment Strategy, Bloomberg, EPFR,"),
-        row("        Lipper FMI, Global FMS, CFTC, MSCI | BofA RESEARCH"),
+        row(head),
+        row(date_line),
+        row(indent + " " + scale_row),  # 与方括号内的格子逐列对齐
+        row(indent + bar_row),
+        row(legend),
         sep,
     ]
     return "\n".join(lines)
@@ -1605,17 +1819,12 @@ def render_bofa_bb_char_table(data: dict | None = None) -> str:
 def render_bofa_bb_char_block(data: dict | None = None) -> str:
     """生成置顶在报告开头的「美银牛熊指标（BofA Bull & Bear Indicator）」柱状图字符表区块。"""
     d = data or load_bofa_bb_data()
-    val = float(d.get("current", 7.1))
-    prev = d.get("previous", 7.2)
+    val = float(d.get("current", 8.8))
+    prev = d.get("previous", 9.3)
     prev_f = float(prev) if prev is not None else val
-    signal = str(
-        d.get("signal")
-        or ("Buy" if val < 2.0 else ("Sell" if val > 8.0 else "Neutral"))
-    )
-    signal_cn = str(
-        d.get("signal_cn")
-        or ("反向买入" if val < 2.0 else ("反向卖出" if val > 8.0 else "中性"))
-    )
+    sig_en, sig_cn_default = bofa_bb_signal(val)
+    signal = str(d.get("signal") or sig_en)
+    signal_cn = str(d.get("signal_cn") or sig_cn_default)
     delta = val - prev_f
     if abs(delta) < 1e-6:
         delta_cn = f"与前值 {prev_f:.1f} 持平"
@@ -1623,6 +1832,21 @@ def render_bofa_bb_char_block(data: dict | None = None) -> str:
         delta_cn = f"较前值 {prev_f:.1f} 回落 {abs(delta):.1f}"
     else:
         delta_cn = f"较前值 {prev_f:.1f} 上升 {delta:.1f}"
+
+    as_of = bofa_bb_as_of_date(d)
+    age = bofa_bb_age_days(d)
+    is_stale, stale_note = bofa_bb_staleness(d)
+    if as_of is None:
+        date_line_cn = f"**未知**（快照缺少 `as_of`）· {stale_note}"
+    else:
+        flag = "⏳ 已过期" if is_stale else "✅ 周更正常"
+        date_line_cn = f"截至 **{as_of.isoformat()}**（{age} 天前）· {flag} · {stale_note}"
+    source = str(d.get("source") or "").strip()
+    source_line = f"- **数据来源**：{source}" if source else ""
+    if d.get("manual_override"):
+        source_line += "（`BOFA_BB_JSON` 手工注入）"
+    elif d.get("refreshed"):
+        source_line += "（本次运行自动刷新，建议与研报原文核对）"
 
     cn_parts = []
     for comp in d.get("components", []):
@@ -1644,9 +1868,18 @@ def render_bofa_bb_char_block(data: dict | None = None) -> str:
         "",
         f"- **指标读数**：最新 **{val:.1f}**（{delta_cn}）→ 当前信号 **{signal}（{signal_cn}）**"
         "（`<2.0` 极度看空为反向买入区，`>8.0` 极度看多为反向卖出区）",
+        f"- **数据日期**：{date_line_cn}",
     ]
+    if source_line:
+        lines.append(source_line)
     if cn_parts:
-        lines.append("- **六大分项构成（Table 6）**：" + "｜".join(cn_parts))
+        lines.append("- **分项**（最近一期公布，可能与聚合读数不同期）："
+                     + "｜".join(cn_parts))
+    if is_stale:
+        lines.append(
+            "- ⚙️ 公开新闻转述值（BofA 付费周报无公开接口）：默认自动刷新，"
+            "`BOFA_BB_AUTO=0` 关闭；手工 `--refresh-bofa-bb` 或 `BOFA_BB_JSON`。"
+        )
     return "\n".join(lines)
 
 
@@ -4438,11 +4671,31 @@ def _quote_freshness_line(qb: dict, prev_price) -> str:
     return f"{base}｜较上次推送 {diff:+.3f}（{dpct:+.2f}%）"
 
 
+def render_bofa_bb_freshness_line(data: dict | None = None) -> str:
+    """数据新鲜度看板里的美银牛熊指标一行：读数 + 数据日期 + 是否过期。"""
+    d = data or load_bofa_bb_data()
+    try:
+        val = float(d.get("current", 8.8))
+    except (TypeError, ValueError):
+        return ""
+    sig_en, _ = bofa_bb_signal(val)
+    sig = str(d.get("signal") or sig_en)
+    as_of = bofa_bb_as_of_date(d)
+    age = bofa_bb_age_days(d)
+    is_stale, _note = bofa_bb_staleness(d)
+    if as_of is None:
+        tail = "数据日期未知 · ⏳ 需更新"
+    else:
+        tail = (f"数据截至 {as_of.isoformat()}（{age} 天前）"
+                + (" · ⏳ 已过期" if is_stale else " · ✅ 周更内"))
+    return f"🧭 美银牛熊指标：{val:.1f}（{sig}）· {tail}"
+
+
 def render_freshness_md(*, now_cst: str, template: str, hours: int,
                         fingerprint: str, dup: bool | None,
                         quote_line: str, new_items: dict[str, list[str]],
                         first_run: bool, anchor_line: str,
-                        state_enabled: bool) -> str:
+                        state_enabled: bool, bofa_bb_line: str = "") -> str:
     """推送正文顶部的数据新鲜度看板：一眼看出本次运行有没有更新。"""
     if not state_enabled:
         fp_note = "状态对比已关闭（--no-state）"
@@ -4463,7 +4716,7 @@ def render_freshness_md(*, now_cst: str, template: str, hours: int,
         new_line = f"🆕 新增样本：{total_new} 条（{per_src}）"
     else:
         new_line = "🆕 新增样本：0 条（窗口内条目与上次相同）"
-    return "\n".join([
+    lines = [
         "### 🧭 数据新鲜度 · 本次运行指纹",
         f"- ⏱ 运行时间：{now_cst}（北京时间）"
         f" · 模板「{TEMPLATE_TITLES.get(template, template)}」"
@@ -4472,7 +4725,10 @@ def render_freshness_md(*, now_cst: str, template: str, hours: int,
         f"- {new_line}",
         f"- 🎯 本地计算：{anchor_line}",
         f"- 🔢 内容指纹 `{fingerprint}`：{fp_note}",
-    ])
+    ]
+    if bofa_bb_line:
+        lines.insert(2, f"- {bofa_bb_line}")
+    return "\n".join(lines)
 
 
 def _utf8_len(text: str) -> int:
@@ -5995,16 +6251,49 @@ def _selftest_impl() -> int:
         check("BofA 牛熊指标字符表严格等宽且纯 ASCII",
               len({len(ln) for ln in _bofa_tbl.splitlines()}) == 1
               and all(ord(ch) < 128 for ch in _bofa_tbl))
-        check("BofA 牛熊指标字符表完整还原读数与六大分项",
+        check("BofA 牛熊指标字符卡还原读数/前值/数据日期/阈值刻度",
               all(x in _bofa_tbl for x in (
-                  "7.1", "Down to 7.1 from 7.2", "Neutral",
-                  "Hedge Fund Positioning", "64%",
-                  "Equity Flow", "89%", "V Bullish",
-                  "Bond Flow", "62%",
-                  "Credit Market Technicals", "55%",
-                  "Global Stock Index Breadth", "21%", "Bearish",
-                  "FMS Positioning", "100%",
-              )) and _fbl(_bofa_blk) == [])
+                  "8.8 SELL", "prev 9.3", "Data as of 2026-10-01",
+                  "STALE", "* now 8.8", "^ prev 9.3",
+                  "<2 Buy | 2-8 Neutral | >8 Sell",
+              )) and _bofa_tbl.count("\n") <= 7 and _fbl(_bofa_blk) == [])
+        check("BofA 牛熊指标正文保留分项与来源",
+              all(x in _bofa_blk for x in (
+                  "对冲基金仓位", "基金经理调查仓位", "**分项**",
+                  "BofA The Flow Show 2026-10-01",
+              )))
+        check("BofA 牛熊指标正文标注数据日期/来源/过期状态",
+              all(x in _bofa_blk for x in (
+                  "- **数据日期**：截至 **2026-10-01**", "已过期",
+                  "- **数据来源**：BofA The Flow Show",
+              )))
+        _bb_news = """<?xml version="1.0"?><rss><channel>
+        <item><title>BofA's Bull &amp; Bear Indicator hits 9.5 from 9.3 in Extreme
+        Bullish territory - Seeking Alpha</title><link>https://example.com/x</link>
+        <pubDate>Tue, 03 Nov 2026 12:00:00 GMT</pubDate></item>
+        <item><title>BofA Bull &amp; Bear Indicator fell to 8.8 from 9.3 - Reuters</title>
+        <link>https://example.com/y</link>
+        <pubDate>Thu, 01 Oct 2026 12:00:00 GMT</pubDate></item>
+        <item><title>Nothing about the gauge - X</title>
+        <pubDate>Thu, 05 Nov 2026 12:00:00 GMT</pubDate></item>
+        </channel></rss>"""
+        _bb_parsed = parse_bofa_bb_news(
+            _bb_news, now=datetime(2026, 11, 6, tzinfo=UTC))
+        check("BofA 牛熊指标能从新闻标题解析最新读数（含前值/日期/信号）",
+              bool(_bb_parsed)
+              and _bb_parsed["current"] == 9.5
+              and _bb_parsed["previous"] == 9.3
+              and _bb_parsed["as_of"] == "2026-11-03"
+              and _bb_parsed["signal"] == "Sell")
+        _stale_ok, _stale_note = bofa_bb_staleness(
+            {"current": 8.8, "as_of": "2026-10-01"},
+            now=date(2026, 11, 6))
+        _fresh_ok, _ = bofa_bb_staleness(
+            {"current": 8.8, "as_of": "2026-11-03"}, now=date(2026, 11, 6))
+        check("BofA 牛熊指标过期判定（>10 天标记已过期，周更内不误报）",
+              _stale_ok is True and "落后" in _stale_note and _fresh_ok is False)
+        check("BofA 牛熊指标新鲜度行包含数据日期",
+              "数据截至" in render_bofa_bb_freshness_line())
         _scrambled = (
             "### 🧭 数据新鲜度 · 本次运行指纹\n- 指纹 `deadbeef1234`\n\n"
             "## 📊 全市场快讯与机构动态\n\n- 主线A\n\n"
@@ -6374,6 +6663,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "嵌入推送正文顶部，纯字符无需上传）")
     p.add_argument("--no-bofa-bb", action="store_true", dest="no_bofa_bb",
                    help="关闭置顶的 BofA Bull & Bear Indicator 字符表（也可用环境变量 BOFA_BB_BLOCK=0 关闭）")
+    p.add_argument("--no-bofa-bb-refresh", action="store_true", dest="no_bofa_bb_refresh",
+                   help="关闭 BofA 牛熊指标的自动刷新（默认：快照超过 6 天时用 Google 新闻 "
+                        "RSS 抓最新读数；也可用环境变量 BOFA_BB_AUTO=0 关闭）")
+    p.add_argument("--refresh-bofa-bb", action="store_true", dest="refresh_bofa_bb",
+                   help="只刷新 BofA 牛熊指标快照后退出（联网抓最新读数并写入 "
+                        "BOFA_BB_SNAPSHOT，默认 output/bofa_bb_snapshot.json）")
     p.add_argument("--no-ai-compress", action="store_false", dest="ai_compress",
                    default=True,
                    help="关闭 AI 分节压缩（默认开启：正文按章节逐节调用 AI 简化+压缩，"
@@ -6388,6 +6683,27 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     if args.selftest:
         return selftest()
+    if getattr(args, "refresh_bofa_bb", False):
+        log("🔄 刷新美银牛熊指标（BofA Bull & Bear）快照……")
+        before = load_bofa_bb_data(allow_network=False)
+        latest = fetch_bofa_bb_latest(timeout=max(10, args.timeout))
+        if not latest:
+            log("  ❌ 未能从公开新闻解析到新的读数；快照保持不变。"
+                "可改用 BOFA_BB_JSON 注入核对后的数值。")
+            log(f"  当前快照：{before.get('current')}（截至 {before.get('as_of') or '未知'}）")
+            return 1
+        if latest.get("previous") is None:
+            latest["previous"] = before.get("current")
+        merged = dict(before)
+        merged.update(latest)
+        merged["components_as_of"] = before.get("as_of")
+        merged = _bofa_bb_clean(merged)
+        path = save_bofa_bb_snapshot(merged)
+        log(f"  ✅ 已更新：{merged['current']:.1f}（前值 "
+            f"{float(merged.get('previous') or 0):.1f}）· 截至 {merged.get('as_of')}"
+            f" · 来源：{merged.get('source', '')}")
+        log(f"  → 快照写入 {path}")
+        return 0
 
     channel, provider, template = args.channel, args.ai_provider, args.template
     if template == "hk_brokers" and not any(
@@ -6870,13 +7186,31 @@ def main(argv: list[str]) -> int:
         except Exception:
             pass
 
+    show_bofa_bb = not (getattr(args, "no_bofa_bb", False) or env("BOFA_BB_BLOCK") == "0")
+    # 美银牛熊指标：默认允许自动刷新（快照过期时才联网），--no-bofa-bb-refresh / BOFA_BB_AUTO=0 关闭
+    bofa_allow_net = not (
+        getattr(args, "no_bofa_bb_refresh", False)
+        or env(BOFA_BB_AUTO_ENV) in ("0", "false", "off", "no", "n")
+    )
+    bofa_bb_data = load_bofa_bb_data(
+        allow_network=(bofa_allow_net and show_bofa_bb),
+        timeout=max(10, min(30, args.timeout)))
+    if show_bofa_bb:
+        log("  · 美银牛熊指标："
+            f"{float(bofa_bb_data.get('current', 0)):.1f}"
+            f" · 截至 {bofa_bb_data.get('as_of') or '未知'}"
+            f" · {'本次自动刷新' if bofa_bb_data.get('refreshed') else '沿用快照'}"
+            f" · {bofa_bb_staleness(bofa_bb_data)[1]}")
+    bofa_bb_md = render_bofa_bb_char_block(bofa_bb_data) if show_bofa_bb else ""
+
     freshness_md = render_freshness_md(
         now_cst=datetime.now(CST).strftime("%m-%d %H:%M"),
         template=template, hours=args.hours, fingerprint=fp,
         dup=(dup if state_enabled else None),
         quote_line=_quote_freshness_line(qb, prev.get("price")),
         new_items=new_items, first_run=not prev,
-        anchor_line=anchor_line, state_enabled=state_enabled)
+        anchor_line=anchor_line, state_enabled=state_enabled,
+        bofa_bb_line=render_bofa_bb_freshness_line(bofa_bb_data) if show_bofa_bb else "")
 
     # 字符模拟图：任何失败自动降级为空串（兼容 --no-kline）
     no_chart = bool(getattr(args, "no_chart", False) or getattr(args, "no_kline", False))
@@ -6885,8 +7219,6 @@ def main(argv: list[str]) -> int:
     # 推送标题保持品牌名（支持 --title / PUSH_TITLE 覆盖）：不展示渠道名、主题、标的或时间。
     title = (getattr(args, "title", "") or env("PUSH_TITLE") or SCHEDULED_PUSH_TITLE).strip()
 
-    show_bofa_bb = not (getattr(args, "no_bofa_bb", False) or env("BOFA_BB_BLOCK") == "0")
-    bofa_bb_md = render_bofa_bb_char_block() if show_bofa_bb else ""
 
     if template in ("feedscan", "foreign_weekly"):
         # 严格固定顺序：⓪ BofA 牛熊指标字符表（开头）→ ① 研报 AI 风险点提示 →

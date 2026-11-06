@@ -489,7 +489,7 @@ S1 15.90 ── 支撑  ·  R1 17.40 ── 压力
 - **标题**：章鱼 AI.券商研报 007（推送标题不附带渠道名或时间，支持 `--title` / `PUSH_TITLE` 覆盖）
 - **副标题**：全网 AI 调研境内境外数据，由多个大模型混合部署。
 - **简报固定章节顺序**（`feedscan` 定时全市场简报与 `foreign_weekly` 国外研报栏目，无论 AI 或 `rule` 降级均由 `arrange_brief_layout` 强制重排）：
-  1. **开头**：`## 🧭 美银牛熊指标 · BofA Bull & Bear Indicator (B&B)`（纯等宽字符绘制 `Chart 21` 指针仪表盘 + `Table 6` 六大分项构成字符表，支持 `BOFA_BB_JSON` 更新与 `--no-bofa-bb` / `BOFA_BB_BLOCK=0` 开关）
+  1. **开头**：`## 📊 美银牛熊指标 · BofA Bull & Bear Indicator (B&B)`（纯等宽 **7 行字符卡**：读数/信号/前值 + 0-10 刻度条 + 数据日期，固定 66 列；六大分项下沉为正文一行，正文强制标注**数据日期 / 来源 / 是否过期**，支持自动刷新、`BOFA_BB_JSON` 手工注入与 `--no-bofa-bb` / `BOFA_BB_BLOCK=0` 开关，详见下节）
   2. **风险提示**：`## ⚠️ 研报 AI 风险点提示`（市场级风险、机构评级下调/分歧预警及触发信号）
   3. **国外研报**：`## 🏛 国外研报`（AI/规则摘要 + 国外专业投资机构一周研报明细）
   4. **其他内容**：全市场快讯与机构动态、香港券商新闻与数据、金融情绪复核
@@ -502,6 +502,41 @@ S1 15.90 ── 支撑  ·  R1 17.40 ── 压力
 只在运行日志里回报（如 `已按 4096 字节截断`）。
 
 工作流会先运行 **Check required secrets** 步骤：缺少所需 Secret 时立即变红并指出缺哪一个。
+
+### 美银牛熊指标（BofA Bull & Bear）的数据更新链路
+
+BofA 的 Bull & Bear 指标只出现在付费周报 *The Flow Show* 里，没有任何公开授权接口，
+所以**不能直接调用官方 API**。旧版实现把读数写死在代码里（7.1 / Neutral），
+正文却标着 `Latest`，看起来就是「数据一直没更新」。现在改成三层数据链路：
+
+| 优先级 | 来源 | 说明 |
+| --- | --- | --- |
+| ① | `BOFA_BB_JSON` 环境变量 | 手工注入核对后的快照（`{"current":8.8,"previous":9.3,"as_of":"2026-10-01"}`），永远不联网、优先级最高 |
+| ② | 快照文件 `output/bofa_bb_snapshot.json` | 自动刷新结果或手工写入；工作流用 `actions/cache` 跨运行持久化，`BOFA_BB_SNAPSHOT` 可改路径 |
+| ③ | 代码内置 `DEFAULT_BOFA_BB_DATA` | 最近一次已知公开读数（含 `as_of`），仅作兜底 |
+
+- **自动刷新**：快照超过 6 天（周更指标）且未关闭刷新时，用**公开新闻 RSS** 抓
+  「Bull & Bear」最新读数（只接受标题里明确出现指标名、读数在 0–10 且 30 天内的条目），
+  成功后回写快照并标注「本次运行自动刷新」；失败/解析不到就沿用快照，**绝不阻塞推送**。
+  关闭方式：`--no-bofa-bb-refresh` 或 `BOFA_BB_AUTO=0`。
+- **手工刷新**：`python pushplus_deepseek.py --refresh-bofa-bb`（打印新读数与来源，写快照后退出）。
+- **过期标注**：正文固定输出「**数据日期**：截至 YYYY-MM-DD（N 天前）· ✅ 周更正常 / ⏳ 已过期」，
+  超过 10 天判定过期，并在字符框里打印 `Data as of ... STALE >10d`；
+  同一行也出现在文末「数据新鲜度看板」里，一眼就能看出这次推送的指标是哪一周的。
+- **分项** 不再画整张字符表，压缩成正文一行（`对冲基金仓位 64%` …），并标注
+  「最近一期公布，可能与聚合读数不同期」——公开转述通常只给聚合读数，不公布六个分项百分位。
+
+卡片真实样子（7 行、66 列、纯 ASCII；刻度每 2 点一格，`*`=最新、`^`=前值）：
+
+```text
++----------------------------------------------------------------+
+| BofA Bull & Bear (B&B)               8.8 SELL  prev 9.3 (-0.5) |
+| Data as of 2026-10-01 (36d ago)  STALE >10d | weekly           |
+|    0         2         4         6         8        10         |
+|   [..........|.........|.........|.........|...*.^....]        |
+| * now 8.8   ^ prev 9.3   <2 Buy | 2-8 Neutral | >8 Sell        |
++----------------------------------------------------------------+
+```
 
 ### 数据新鲜度看板（每次推送可验证"有没有更新"）
 
@@ -529,6 +564,7 @@ python pushplus_deepseek.py --template analysis --hk-code 09988 --hours 48 --dry
 python pushplus_deepseek.py --template feedscan --topic "全球市场早报" --theme dos --hours 24 --no-chart --dry-run
 python pushplus_deepseek.py --template sentiment --hk-code 09988 --topic 阿里巴巴 --hours 156 --dry-run
 python pushplus_deepseek.py --channel all         # 三个通道全部推送
+python pushplus_deepseek.py --refresh-bofa-bb     # 只刷新美银牛熊指标快照后退出
 ```
 
 ### 量价舆情动量 · 十七平台股票扫描（`stock_news_scan.py`）

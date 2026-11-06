@@ -42,6 +42,11 @@ jobs:
       SENTIMENT_ENGINE: ${{ vars.SENTIMENT_ENGINE }}
       PUSH_TITLE: '章鱼 AI.券商研报 007'
       PUSH_STATE_PATH: output/market_push_state.json
+      # 美银牛熊指标（BofA B&B）自动刷新：周更指标，快照超过 6 天时用公开新闻
+      # RSS 抓最新读数并写入 output/bofa_bb_snapshot.json（随下面的 cache 持久化）。
+      # 设 0 可关闭，改用 BOFA_BB_JSON 手工注入。
+      BOFA_BB_AUTO: '1'
+      BOFA_BB_SNAPSHOT: output/bofa_bb_snapshot.json
       PYTHONUNBUFFERED: '1'
 
     steps:
@@ -69,7 +74,9 @@ jobs:
       - name: Restore market push state
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: output/market_push_state.json
+          path: |
+            output/market_push_state.json
+            output/bofa_bb_snapshot.json
           key: market-push-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             market-push-state-
@@ -128,5 +135,7 @@ jobs:
         if: ${{ success() && hashFiles('output/market_push_state.json') != '' }}
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: output/market_push_state.json
+          path: |
+            output/market_push_state.json
+            output/bofa_bb_snapshot.json
           key: market-push-state-${{ github.run_id }}-${{ github.run_attempt }}

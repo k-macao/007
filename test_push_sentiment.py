@@ -7,6 +7,13 @@ import pushplus_deepseek as pp
 
 
 class PushSentimentTest(unittest.TestCase):
+    def setUp(self):
+        # 美银牛熊指标默认会自动刷新（会联网）：单测里固定关掉，
+        # 保证断言只依赖内置快照，与运行环境的网络/最新新闻无关。
+        env_patch = patch.dict('os.environ', {'BOFA_BB_AUTO': '0'})
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+
     def test_empty(self):
         md = pp.render_sentiment_appendix(pp.SentPack(hours=48))
         self.assertIn('金融情绪复核', md)
@@ -255,18 +262,20 @@ class PushSentimentTest(unittest.TestCase):
         self.assertNotIn('## 🧭 美银牛熊指标', blk)
         self.assertNotIn('.---~~~~---.', tbl)
         for token in (
-            'Our BofA Bull & Bear Indicator is at 7.1... signal is Neutral.',
-            'Chart 21: BofA Bull & Bear at 7.1  (Down to 7.1 from 7.2)',
-            '[===]', '[###]', 'Bar Chart',
-            'Table 6: BofA B&B Indicator (Current Component Readings)',
-            'Hedge Fund Positioning', '64%',
-            'Equity Flow', '89%', 'V Bullish +',
-            'Bond Flow', '62%',
-            'Credit Market Technicals', '55%',
-            'Global Stock Index Breadth', '21%', 'Bearish   -',
-            'FMS Positioning', '100%',
+            'BofA Bull & Bear (B&B)',
+            '8.8 SELL', 'prev 9.3 (-0.5)',
+            'Data as of 2026-10-01',
+            '* now 8.8', '^ prev 9.3',
+            '<2 Buy | 2-8 Neutral | >8 Sell',
         ):
             self.assertIn(token, tbl)
+        # 字符卡要够简洁：整块不超过 8 行
+        self.assertLessEqual(len(tbl.splitlines()), 8)
+        # 六大分项下沉到正文行，不再画表格
+        for token in ('对冲基金仓位', '64%', '股票资金流向', '89%',
+                      '债券资金流向', '信贷市场技术面', '全球股指广度',
+                      '基金经理调查仓位', '100%'):
+            self.assertIn(token, blk)
 
         captured = []
 
@@ -456,6 +465,105 @@ class PushSentimentTest(unittest.TestCase):
         for txt in (rule_brief, rule_fw, rule_hk):
             for banned in ('首先，', '其次，', '最后，', '综上所述', '毫无疑问', '值得注意的是', '一般来说'):
                 self.assertNotIn(banned, txt)
+
+
+class BofaBbRefreshTest(unittest.TestCase):
+    """美银牛熊指标「数据没更新」回归测试：日期、过期标注、快照优先级、新闻解析。"""
+
+    NEWS = """<?xml version="1.0"?><rss><channel>
+<item><title>BofA's Bull &amp; Bear Indicator hits 9.5 from 9.3 - Seeking Alpha</title>
+<link>https://example.com/a</link><pubDate>Tue, 03 Nov 2026 12:00:00 GMT</pubDate></item>
+<item><title>BofA Bull &amp; Bear Indicator fell to 8.8 from 9.3 - Reuters</title>
+<link>https://example.com/b</link><pubDate>Thu, 01 Oct 2026 12:00:00 GMT</pubDate></item>
+<item><title>Unrelated market wrap - X</title>
+<pubDate>Wed, 04 Nov 2026 12:00:00 GMT</pubDate></item>
+</channel></rss>"""
+
+    def test_char_box_carries_as_of_and_stale_flag(self):
+        tbl = pp.render_bofa_bb_char_table({
+            'current': 8.8, 'previous': 9.3, 'as_of': '2026-10-01',
+            'signal': 'Sell', 'components': [],
+        })
+        self.assertIn('Data as of 2026-10-01', tbl)
+        self.assertIn('STALE', tbl)
+        self.assertLessEqual(len(tbl.splitlines()), 8)  # 简洁：≤8 行
+        self.assertEqual({len(ln) for ln in tbl.splitlines()}, {66})
+        self.assertTrue(all(ord(ch) < 128 for ch in tbl))
+        fresh = pp.render_bofa_bb_char_table({
+            'current': 9.5, 'previous': 8.8,
+            'as_of': pp.datetime.now(pp.CST).date().isoformat(),
+            'signal': 'Sell', 'components': [],
+        })
+        self.assertNotIn('STALE', fresh)
+
+    def test_block_reports_date_and_never_pretends_latest(self):
+        blk = pp.render_bofa_bb_char_block({
+            'current': 8.8, 'previous': 9.3, 'as_of': '2026-10-01',
+            'signal': 'Sell', 'signal_cn': '反向卖出',
+            'source': 'BofA The Flow Show 2026-10-01', 'components': [],
+        })
+        self.assertIn('截至 **2026-10-01**', blk)
+        self.assertIn('已过期', blk)
+        self.assertIn('数据来源', blk)
+        from source_names import find_brand_leaks
+        self.assertEqual(find_brand_leaks(blk), [])
+
+    def test_news_parse_picks_newest_reading(self):
+        parsed = pp.parse_bofa_bb_news(
+            self.NEWS, now=pp.datetime(2026, 11, 6, tzinfo=pp.UTC))
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed['current'], 9.5)
+        self.assertEqual(parsed['previous'], 9.3)
+        self.assertEqual(parsed['as_of'], '2026-11-03')
+        self.assertEqual(parsed['signal'], 'Sell')
+        self.assertNotIn('Seeking', parsed['source'])  # 品牌名不外泄到正文
+
+    def test_snapshot_beats_default_and_json_beats_snapshot(self):
+        import json, os, tempfile
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, 'bofa_bb.json')
+            with open(path, 'w', encoding='utf-8') as fh:
+                json.dump({'current': 9.5, 'previous': 9.3, 'as_of': '2026-11-03',
+                           'signal': 'Sell', 'signal_cn': '反向卖出',
+                           'source': '演示快照'}, fh)
+            with patch.dict('os.environ', {'BOFA_BB_SNAPSHOT': path}, clear=False):
+                data = pp.load_bofa_bb_data(allow_network=False)
+                self.assertEqual(data['current'], 9.5)
+                self.assertEqual(data['as_of'], '2026-11-03')
+                with patch.dict(
+                    'os.environ',
+                    {'BOFA_BB_JSON': json.dumps({'current': 7.0, 'previous': 6.8,
+                                                 'as_of': '2026-01-02'})},
+                    clear=False,
+                ):
+                    manual = pp.load_bofa_bb_data(allow_network=False)
+                    self.assertEqual(manual['current'], 7.0)
+                    self.assertTrue(manual['manual_override'])
+
+    def test_refresh_writes_snapshot_from_news(self):
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, 'bofa_bb.json')
+            with patch.dict('os.environ', {'BOFA_BB_SNAPSHOT': path}, clear=False), \
+                 patch.object(pp, 'http_request',
+                              return_value=(200, self.NEWS)):
+                data = pp.load_bofa_bb_data(allow_network=True)
+            self.assertEqual(data['current'], 9.5)
+            self.assertTrue(data.get('refreshed'))
+            self.assertTrue(os.path.exists(path))
+            self.assertEqual(data['components'],
+                             pp.DEFAULT_BOFA_BB_DATA['components'])
+
+    def test_network_failure_falls_back_to_snapshot(self):
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, 'bofa_bb.json')
+            with patch.dict('os.environ', {'BOFA_BB_SNAPSHOT': path}, clear=False), \
+                 patch.object(pp, 'http_request',
+                              side_effect=pp.PushError('offline')):
+                data = pp.load_bofa_bb_data(allow_network=True)
+            self.assertEqual(data['current'], pp.DEFAULT_BOFA_BB_DATA['current'])
+            self.assertFalse(os.path.exists(path))
 
 
 if __name__ == '__main__':
