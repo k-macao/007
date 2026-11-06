@@ -1734,17 +1734,17 @@ def load_bofa_bb_data(*, allow_network: bool = False,
 
 
 def render_bofa_bb_char_table(data: dict | None = None) -> str:
-    """用纯等宽 ASCII 字符绘制 BofA Bull & Bear Indicator 柱状图（Chart 21）与六大分项柱状表（Table 6）。
+    """把 BofA Bull & Bear 压成 8 行等宽字符卡：读数/信号/数据日期 + 0-10 刻度条。
 
-    框内保持纯 ASCII、整行固定 66 列；数据日期与落后天数也写进框里，
-    避免「读数永远不变却标注 Latest」的误导。
+    框内保持纯 ASCII、整行固定 66 列（62 字内容）；分项与来源说明放在卡片下方正文里，
+    不再画 10 层柱状图与整套分项表格，避免置顶区块比正文还长。
     """
     d = data or load_bofa_bb_data()
     val = max(0.0, min(10.0, float(d.get("current", 8.8))))
     prev = d.get("previous", 9.3)
     prev_f = max(0.0, min(10.0, float(prev) if prev is not None else val))
     sig_en, _sig_cn = bofa_bb_signal(val)
-    signal = str(d.get("signal") or sig_en)
+    signal = str(d.get("signal") or sig_en).upper()
     as_of = bofa_bb_as_of_date(d)
     age = bofa_bb_age_days(d)
     is_stale, _note = bofa_bb_staleness(d)
@@ -1756,68 +1756,41 @@ def render_bofa_bb_char_table(data: dict | None = None) -> str:
         return "| " + t.ljust(width) + " |"
 
     sep = "+-" + "-" * width + "-+"
-    tsep = "+------------------------------+------+------------+-------------+"
 
-    def trow(c1: str, c2: str, c3: str, c4: str) -> str:
-        return f"| {c1[:28]:<28} | {c2[:4]:>4} | {c3[:10]:<10} | {c4[:11]:<11} |"
+    # ---- 0-10 刻度条：51 格（每格 0.2），整数刻度每 5 格一个 ----
+    span = 50
 
-    if abs(val - prev_f) < 1e-6:
-        chg_note = f"Unchanged at {val:.1f}"
-    elif val < prev_f:
-        chg_note = f"Down to {val:.1f} from {prev_f:.1f}"
+    def _pos(v: float) -> int:
+        return max(0, min(span, int(round(v / 10.0 * span))))
+
+    scale = [" "] * (span + 1)
+    for point in range(0, 11, 2):  # 0 2 4 6 8 10
+        label = str(point)
+        at = _pos(float(point))
+        if len(label) == 2:
+            at -= 1
+        for i, ch in enumerate(label):
+            if 0 <= at + i <= span:
+                scale[at + i] = ch
+    scale_row = "".join(scale)
+
+    bar = ["."] * (span + 1)
+    for tick in range(10, span, 10):  # 每 2 个点位一条刻度，与上方数字对齐
+        bar[tick] = "|"
+    bar[_pos(prev_f)] = "^"
+    bar[_pos(val)] = "*"
+    bar_row = "[" + "".join(bar) + "]"
+
+    delta = val - prev_f
+    if abs(delta) < 1e-6:
+        tail = f"prev {prev_f:.1f} (flat)"
     else:
-        chg_note = f"Up to {val:.1f} from {prev_f:.1f}"
-
-    series = [
-        ("Mar'20", 0.0, "_"),
-        ("Oct'22", 0.0, "_"),
-        ("Mar'23", 0.4, "="),
-        ("Prev", prev_f, "="),
-        ("Latest", val, "#"),
-    ]
-
-    def _bar_rows(v: float) -> int:
-        if v <= 0.05:
-            return 0
-        if v < 1.0:
-            return 1
-        return max(1, min(10, int(round(v))))
-
-    heights = [_bar_rows(v) for _, v, _ in series]
-    chart_lines: list[str] = []
-    if max(heights) >= 10:
-        cap_cells = [
-            (f"{v:.1f}".center(7) if heights[idx] == 10 else " " * 7)
-            for idx, (_, v, _) in enumerate(series)
-        ]
-        chart_lines.append(row("     " + "".join(cap_cells)))
-
-    notes = {
-        10: f"  *{val:.1f} LATEST",
-        9: f"  Signal: {signal[:13]}",
-        8: "  <-- 8.0 Sell (8-10)",
-        5: "  Neutral Zone (2-8)",
-        2: "  <-- 2.0 Buy  (0-2)",
-    }
-    for lvl in range(10, 0, -1):
-        bg = "-" if lvl in (8, 2) else " "
-        cells: list[str] = []
-        for idx, (_lbl, v, ch) in enumerate(series):
-            h = heights[idx]
-            if lvl <= h:
-                if v < 1.0 and lvl == 1:
-                    cells.append(f"{bg}[...]{bg}")
-                else:
-                    cells.append(f"{bg}[{ch * 3}]{bg}")
-            elif lvl == h + 1:
-                cells.append(f"{v:.1f}".center(7, bg))
-            else:
-                cells.append(bg * 7)
-        chart_lines.append(row(f" {lvl:>2} |" + "".join(cells) + notes.get(lvl, "")))
-
-    chart_lines.append(row("  0 +" + "-" * 35 + "+  Ext.Bear<2 | >8Bull"))
-    lbl_cells = [lbl.center(7) for lbl, _, _ in series]
-    chart_lines.append(row("     " + "".join(lbl_cells) + "  [###]=Now [===]=Prev"))
+        tail = f"prev {prev_f:.1f} ({delta:+.1f})"
+    head_left = "BofA Bull & Bear (B&B)"
+    head_right = f"{val:.1f} {signal}  {tail}"
+    gap = width - len(head_left) - len(head_right)
+    head = (head_left + " " * max(2, gap) + head_right)[:width] if gap >= 2 \
+        else f"{head_left} {head_right}"[:width]
 
     if as_of is None:
         date_line = "Data as of: UNKNOWN (no as_of in snapshot)"
@@ -1827,39 +1800,17 @@ def render_bofa_bb_char_table(data: dict | None = None) -> str:
         stale_tag = f"  STALE >{BOFA_BB_STALE_DAYS}d" if is_stale else ""
         date_line = (f"Data as of {as_of.isoformat()} ({age}d ago)"
                      f"{stale_tag} | weekly")
+
+    legend = (f"* now {val:.1f}   ^ prev {prev_f:.1f}"
+              f"   <2 Buy | 2-8 Neutral | >8 Sell")
+    indent = "  "
     lines = [
         sep,
-        row("BofA Bull & Bear Indicator (B&B)"),
-        row(f"Our BofA Bull & Bear Indicator is at {val:.1f}... signal is {signal}."),
+        row(head),
         row(date_line),
-        sep,
-        row(f"Chart 21: BofA Bull & Bear at {val:.1f}  ({chg_note})"),
-        row(""),
-        *chart_lines,
-        tsep,
-        row("Table 6: BofA B&B Indicator (Component Readings)"),
-        tsep,
-        trow("Components", "Pctl", "Bar Chart", "Sentiment"),
-        tsep,
-    ]
-
-    for comp in d.get("components", []):
-        pct = max(0, min(100, int(round(float(comp.get("percentile", 0))))))
-        filled = max(0, min(10, int(round(pct / 10.0))))
-        meter = "#" * filled + "." * (10 - filled)
-        sent = str(comp.get("sentiment", "Neutral"))
-        tag_map = {
-            "V Bullish": "V Bullish +",
-            "Bullish": "Bullish   +",
-            "Bearish": "Bearish   -",
-            "V Bearish": "V Bearish -",
-        }
-        lines.append(trow(str(comp.get("name", "")), f"{pct}%", meter, tag_map.get(sent, sent)))
-
-    lines += [
-        tsep,
-        row("Source: BofA Global Investment Strategy, Bloomberg, EPFR,"),
-        row("        Lipper FMI, Global FMS, CFTC, MSCI | BofA RESEARCH"),
+        row(indent + " " + scale_row),  # 与方括号内的格子逐列对齐
+        row(indent + bar_row),
+        row(legend),
         sep,
     ]
     return "\n".join(lines)
@@ -1922,14 +1873,12 @@ def render_bofa_bb_char_block(data: dict | None = None) -> str:
     if source_line:
         lines.append(source_line)
     if cn_parts:
-        lines.append("- **六大分项构成（Table 6，最近一期公布的构成表，"
-                     "可能与聚合读数不同期）**：" + "｜".join(cn_parts))
+        lines.append("- **分项**（最近一期公布，可能与聚合读数不同期）："
+                     + "｜".join(cn_parts))
     if is_stale:
         lines.append(
-            "- **⚠️ 更新提示**：该指标为 BofA 每周发布的付费研报数据，本仓库无授权接口，"
-            "只能取公开新闻转述值。默认会用公开新闻 RSS 抓最新读数"
-            "（`BOFA_BB_AUTO=0` 关闭）；也可用 `--refresh-bofa-bb` 手工刷新，"
-            "或 `BOFA_BB_JSON` 注入核对后的数值。"
+            "- ⚙️ 公开新闻转述值（BofA 付费周报无公开接口）：默认自动刷新，"
+            "`BOFA_BB_AUTO=0` 关闭；手工 `--refresh-bofa-bb` 或 `BOFA_BB_JSON`。"
         )
     return "\n".join(lines)
 
@@ -6302,17 +6251,17 @@ def _selftest_impl() -> int:
         check("BofA 牛熊指标字符表严格等宽且纯 ASCII",
               len({len(ln) for ln in _bofa_tbl.splitlines()}) == 1
               and all(ord(ch) < 128 for ch in _bofa_tbl))
-        check("BofA 牛熊指标字符表完整还原读数、数据日期与六大分项",
+        check("BofA 牛熊指标字符卡还原读数/前值/数据日期/阈值刻度",
               all(x in _bofa_tbl for x in (
-                  "8.8", "Down to 8.8 from 9.3", "Sell",
-                  "Data as of 2026-10-01",
-                  "Hedge Fund Positioning", "64%",
-                  "Equity Flow", "89%", "V Bullish",
-                  "Bond Flow", "62%",
-                  "Credit Market Technicals", "55%",
-                  "Global Stock Index Breadth", "21%", "Bearish",
-                  "FMS Positioning", "100%",
-              )) and _fbl(_bofa_blk) == [])
+                  "8.8 SELL", "prev 9.3", "Data as of 2026-10-01",
+                  "STALE", "* now 8.8", "^ prev 9.3",
+                  "<2 Buy | 2-8 Neutral | >8 Sell",
+              )) and _bofa_tbl.count("\n") <= 7 and _fbl(_bofa_blk) == [])
+        check("BofA 牛熊指标正文保留分项与来源",
+              all(x in _bofa_blk for x in (
+                  "对冲基金仓位", "基金经理调查仓位", "**分项**",
+                  "BofA The Flow Show 2026-10-01",
+              )))
         check("BofA 牛熊指标正文标注数据日期/来源/过期状态",
               all(x in _bofa_blk for x in (
                   "- **数据日期**：截至 **2026-10-01**", "已过期",

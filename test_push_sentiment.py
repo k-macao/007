@@ -262,19 +262,20 @@ class PushSentimentTest(unittest.TestCase):
         self.assertNotIn('## 🧭 美银牛熊指标', blk)
         self.assertNotIn('.---~~~~---.', tbl)
         for token in (
-            'Our BofA Bull & Bear Indicator is at 8.8... signal is Sell.',
-            'Chart 21: BofA Bull & Bear at 8.8  (Down to 8.8 from 9.3)',
+            'BofA Bull & Bear (B&B)',
+            '8.8 SELL', 'prev 9.3 (-0.5)',
             'Data as of 2026-10-01',
-            '[===]', '[###]', 'Bar Chart',
-            'Table 6: BofA B&B Indicator (Component Readings)',
-            'Hedge Fund Positioning', '64%',
-            'Equity Flow', '89%', 'V Bullish +',
-            'Bond Flow', '62%',
-            'Credit Market Technicals', '55%',
-            'Global Stock Index Breadth', '21%', 'Bearish   -',
-            'FMS Positioning', '100%',
+            '* now 8.8', '^ prev 9.3',
+            '<2 Buy | 2-8 Neutral | >8 Sell',
         ):
             self.assertIn(token, tbl)
+        # 字符卡要够简洁：整块不超过 8 行
+        self.assertLessEqual(len(tbl.splitlines()), 8)
+        # 六大分项下沉到正文行，不再画表格
+        for token in ('对冲基金仓位', '64%', '股票资金流向', '89%',
+                      '债券资金流向', '信贷市场技术面', '全球股指广度',
+                      '基金经理调查仓位', '100%'):
+            self.assertIn(token, blk)
 
         captured = []
 
@@ -485,6 +486,7 @@ class BofaBbRefreshTest(unittest.TestCase):
         })
         self.assertIn('Data as of 2026-10-01', tbl)
         self.assertIn('STALE', tbl)
+        self.assertLessEqual(len(tbl.splitlines()), 8)  # 简洁：≤8 行
         self.assertEqual({len(ln) for ln in tbl.splitlines()}, {66})
         self.assertTrue(all(ord(ch) < 128 for ch in tbl))
         fresh = pp.render_bofa_bb_char_table({
