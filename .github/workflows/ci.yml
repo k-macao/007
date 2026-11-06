@@ -71,6 +71,8 @@ jobs:
       INFERENCE_PROVIDER: ''
       INFERENCE_BASE_URL: ''
       SENTIMENT_ENGINE: ''
+      # 单测/自检不联网：关掉美银牛熊指标的自动刷新，断言只依赖内置快照
+      BOFA_BB_AUTO: '0'
 
     steps:
       - name: Checkout
