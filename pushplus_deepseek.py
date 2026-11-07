@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import math
 import os
@@ -1463,12 +1464,15 @@ BOFA_BB_REFRESH_DAYS = 0    # 每个新自然日首次运行时尝试刷新；�
 BOFA_BB_STALE_DAYS = 10     # 超过 10 天在正文明确标注「已过期」
 
 DEFAULT_BOFA_BB_DATA: dict = {
-    "current": 8.8,
-    "previous": 9.3,
-    "as_of": "2026-10-01",
-    "source": "BofA The Flow Show 2026-10-01",
-    "signal": "Sell",
-    "signal_cn": "反向卖出",
+    "current": 7.2,
+    "previous": 7.4,
+    # 最新可核验读数：Flow Show 图表标注数据截至 2026-10-21，报告发布于 10-22。
+    "as_of": "2026-10-21",
+    "source": "BofA The Flow Show 2026-10-22",
+    "source_url": "https://finvaulta.com/research/bank-of-america/the-flow-show-enter-the-dragon-2026-10-22",
+    "signal": "Neutral",
+    "signal_cn": "中性",
+    "components_as_of": "2026-10-01",
     "components": [
         {"name": "Hedge Fund Positioning", "cn": "对冲基金仓位",
          "percentile": 64, "sentiment": "Neutral", "sentiment_cn": "中性"},
@@ -1609,7 +1613,10 @@ def parse_bofa_bb_news(text: str, now: datetime | None = None,
     best: "tuple[datetime, dict] | None" = None
     for it in root.iter("item"):
         title = (it.findtext("title", "") or "").strip()
-        if not re.search(_BB_NAME, title, re.I):
+        # 有些新闻标题不带读数，数值只出现在 RSS description/snippet；同时检查两者。
+        description = it.findtext("description", "") or ""
+        searchable = f"{title} {html.unescape(re.sub(r'<[^>]+>', ' ', description))}"
+        if not re.search(_BB_NAME, searchable, re.I):
             continue
         try:
             ts = parsedate_to_datetime(it.findtext("pubDate", "") or "")
@@ -1623,7 +1630,7 @@ def parse_bofa_bb_news(text: str, now: datetime | None = None,
             continue
         value, tail = None, ""
         for pat in _BB_VALUE_PATTERNS:
-            m = pat.search(title)
+            m = pat.search(searchable)
             if not m:
                 continue
             try:
@@ -1631,7 +1638,7 @@ def parse_bofa_bb_news(text: str, now: datetime | None = None,
             except ValueError:
                 continue
             if 0.0 <= cand <= 10.0:
-                value, tail = cand, title[m.end():]
+                value, tail = cand, searchable[m.end():]
                 break
         if value is None:
             continue
@@ -1653,7 +1660,7 @@ def parse_bofa_bb_news(text: str, now: datetime | None = None,
             "previous": prev,
             "as_of": ts.date().isoformat(),
             "source": generalize_source(f"Google·{src_name}"),
-            "source_raw": title[:160],
+            "source_raw": searchable[:160],
             "source_url": link,
             "signal": sig,
             "signal_cn": sig_cn,
@@ -1692,11 +1699,15 @@ def load_bofa_bb_data(*, allow_network: bool = False,
     base = dict(DEFAULT_BOFA_BB_DATA)
     snap = load_bofa_bb_snapshot()
     if snap:
-        merged = dict(base)
-        merged.update({k: v for k, v in snap.items() if k != "components"})
-        if snap.get("components"):
-            merged["components"] = snap["components"]
-        base = merged
+        # 不允许旧/无日期缓存覆盖比它更新的内置基准；以快照日期决定优先级。
+        snap_date = bofa_bb_as_of_date(snap)
+        base_date = bofa_bb_as_of_date(base)
+        if snap_date is not None and (base_date is None or snap_date >= base_date):
+            merged = dict(base)
+            merged.update({k: v for k, v in snap.items() if k != "components"})
+            if snap.get("components"):
+                merged["components"] = snap["components"]
+            base = merged
 
     raw = env("BOFA_BB_JSON")
     if raw:
@@ -1873,7 +1884,8 @@ def render_bofa_bb_char_block(data: dict | None = None) -> str:
     if source_line:
         lines.append(source_line)
     if cn_parts:
-        lines.append("- **分项**（最近一期公布，可能与聚合读数不同期）："
+        comp_date = str(d.get("components_as_of") or d.get("as_of") or "日期未知")
+        lines.append(f"- **分项**（截至 {comp_date}，可能与聚合读数不同期）："
                      + "｜".join(cn_parts))
     if is_stale:
         lines.append(
@@ -6253,18 +6265,19 @@ def _selftest_impl() -> int:
               and all(ord(ch) < 128 for ch in _bofa_tbl))
         check("BofA 牛熊指标字符卡还原读数/前值/数据日期/阈值刻度",
               all(x in _bofa_tbl for x in (
-                  "8.8 SELL", "prev 9.3", "Data as of 2026-10-01",
-                  "STALE", "* now 8.8", "^ prev 9.3",
+                  "7.2 NEUTRAL", "prev 7.4", "Data as of 2026-10-21",
+                  "STALE", "* now 7.2", "^ prev 7.4",
                   "<2 Buy | 2-8 Neutral | >8 Sell",
               )) and _bofa_tbl.count("\n") <= 7 and _fbl(_bofa_blk) == [])
         check("BofA 牛熊指标正文保留分项与来源",
               all(x in _bofa_blk for x in (
                   "对冲基金仓位", "基金经理调查仓位", "**分项**",
-                  "BofA The Flow Show 2026-10-01",
+                  "BofA The Flow Show 2026-10-22",
+                  "分项**（截至 2026-10-01",
               )))
         check("BofA 牛熊指标正文标注数据日期/来源/过期状态",
               all(x in _bofa_blk for x in (
-                  "- **数据日期**：截至 **2026-10-01**", "已过期",
+                  "- **数据日期**：截至 **2026-10-21**", "已过期",
                   "- **数据来源**：BofA The Flow Show",
               )))
         _bb_news = """<?xml version="1.0"?><rss><channel>

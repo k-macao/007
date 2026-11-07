@@ -263,9 +263,9 @@ class PushSentimentTest(unittest.TestCase):
         self.assertNotIn('.---~~~~---.', tbl)
         for token in (
             'BofA Bull & Bear (B&B)',
-            '8.8 SELL', 'prev 9.3 (-0.5)',
-            'Data as of 2026-10-01',
-            '* now 8.8', '^ prev 9.3',
+            '7.2 NEUTRAL', 'prev 7.4 (-0.2)',
+            'Data as of 2026-10-21',
+            '* now 7.2', '^ prev 7.4',
             '<2 Buy | 2-8 Neutral | >8 Sell',
         ):
             self.assertIn(token, tbl)
@@ -518,6 +518,20 @@ class BofaBbRefreshTest(unittest.TestCase):
         self.assertEqual(parsed['signal'], 'Sell')
         self.assertNotIn('Seeking', parsed['source'])  # 品牌名不外泄到正文
 
+    def test_news_parse_reads_value_from_rss_description(self):
+        rss = """<rss><channel><item>
+<title>Weekly positioning update</title>
+<description><![CDATA[Bank of America Bull &amp; Bear Indicator rose to 9.1 from 8.8.]]></description>
+<link>https://example.com/weekly</link>
+<pubDate>Thu, 05 Nov 2026 12:00:00 GMT</pubDate>
+</item></channel></rss>"""
+        parsed = pp.parse_bofa_bb_news(
+            rss, now=pp.datetime(2026, 11, 6, tzinfo=pp.UTC))
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed['current'], 9.1)
+        self.assertEqual(parsed['previous'], 8.8)
+        self.assertEqual(parsed['as_of'], '2026-11-05')
+
     def test_snapshot_beats_default_and_json_beats_snapshot(self):
         import json, os, tempfile
         with tempfile.TemporaryDirectory() as td:
@@ -553,6 +567,20 @@ class BofaBbRefreshTest(unittest.TestCase):
             self.assertTrue(os.path.exists(path))
             self.assertEqual(data['components'],
                              pp.DEFAULT_BOFA_BB_DATA['components'])
+
+    def test_newer_embedded_reading_wins_over_stale_snapshot(self):
+        import json, os, tempfile
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, 'bofa_bb.json')
+            with open(path, 'w', encoding='utf-8') as fh:
+                json.dump({'current': 8.8, 'previous': 9.3,
+                           'as_of': '2026-10-16', 'source': '旧快照'}, fh)
+            with patch.dict('os.environ', {'BOFA_BB_SNAPSHOT': path}, clear=False):
+                data = pp.load_bofa_bb_data(allow_network=False)
+        self.assertEqual(data['current'], 7.2)
+        self.assertEqual(data['previous'], 7.4)
+        self.assertEqual(data['as_of'], '2026-10-21')
+        self.assertEqual(data['components_as_of'], '2026-10-01')
 
     def test_network_failure_falls_back_to_snapshot(self):
         import os, tempfile
