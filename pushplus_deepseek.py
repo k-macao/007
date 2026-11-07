@@ -1459,7 +1459,7 @@ BOFA_BB_SNAPSHOT_ENV = "BOFA_BB_SNAPSHOT"
 BOFA_BB_AUTO_ENV = "BOFA_BB_AUTO"
 BOFA_BB_SNAPSHOT_PATH_DEFAULT = os.path.join("output", "bofa_bb_snapshot.json")
 BOFA_BB_NEWS_RSS = "https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
-BOFA_BB_REFRESH_DAYS = 6    # 周更指标（每周四 Flow Show），超过 6 天就尝试自动刷新
+BOFA_BB_REFRESH_DAYS = 0    # 每个新自然日首次运行时尝试刷新；快照日期为今天则不重复请求
 BOFA_BB_STALE_DAYS = 10     # 超过 10 天在正文明确标注「已过期」
 
 DEFAULT_BOFA_BB_DATA: dict = {
